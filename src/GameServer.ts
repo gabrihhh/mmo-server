@@ -18,6 +18,7 @@ import {
 import { Zone, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { AccountStore, GuestLogin, SavedPosition } from "./accounts/AccountStore.js";
+import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
 export interface GameServerOptions {
@@ -31,6 +32,8 @@ export interface GameServerOptions {
   readonly heartbeatIntervalMs?: number;
   /** Escreve as entradas/saídas no console. Padrão: `true`. */
   readonly log?: boolean;
+  /** Pasta servida em `/updates/` (manifesto + pacotes do jogo). Padrão: `updates`. Ver mmo-docs [INFRA-08]. */
+  readonly updatesDir?: string;
 }
 
 /** Tamanho máximo de uma mensagem do cliente, em bytes. Maior que isso, o `ws` fecha a conexão (1009). */
@@ -52,7 +55,7 @@ interface Session {
 }
 
 /**
- * Servidor do jogo: HTTP (`GET /health`) + WebSocket na mesma porta.
+ * Servidor do jogo: HTTP (`GET /health`, `GET /updates/*`) + WebSocket na mesma porta.
  *
  * Cada conexão vira uma {@link Session}. O `join` faz o login de convidado no
  * {@link AccountStore} e coloca o jogador na {@link Zone} (na última posição salva,
@@ -76,6 +79,7 @@ export class GameServer {
       tickRateHz: options.tickRateHz ?? 20,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 10_000,
       log: options.log ?? true,
+      updatesDir: options.updatesDir ?? DEFAULT_UPDATES_DIR,
     };
     for (const config of this.options.zones) this.zones.set(config.id, new Zone(config));
 
@@ -138,9 +142,18 @@ export class GameServer {
     }, this.options.heartbeatIntervalMs);
   }
 
-  /** `GET /health`: 200 "ok" se o banco responde; 503 "db down" se não. */
+  /**
+   * `GET /health`: 200 "ok" se o banco responde; 503 "db down" se não.
+   * `GET /updates/<arquivo>`: arquivos do atualizador (ver `src/http/updates.ts`).
+   */
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method === "GET" && req.url === "/health") {
+    const url: string = req.url ?? "";
+    if (req.method === "GET" && url.startsWith(UPDATES_ROUTE)) {
+      const fileName: string = url.slice(UPDATES_ROUTE.length).split("?")[0] ?? "";
+      await serveUpdateFile(fileName, this.options.updatesDir, res);
+      return;
+    }
+    if (req.method === "GET" && url === "/health") {
       const healthy: boolean = await this.options.accounts.isHealthy();
       res.writeHead(healthy ? 200 : 503, { "content-type": "text/plain" }).end(healthy ? "ok" : "db down");
       return;
