@@ -31,6 +31,12 @@ export interface AbilityDef {
   readonly cooldown: number;
   /** Dano por acerto (0 = não causa dano). Só o servidor usa; não vai para o cliente. */
   readonly damage: number;
+  /**
+   * Tempo de lançamento em segundos: do início da ação até o efeito ([JOGO-05]). Durante ele o personagem fica
+   * virado para o alvo/direção; no fim, o alvo precisa estar no alcance, senão erra. No ataque simples é
+   * igual ao intervalo entre golpes (espada: 1 golpe por segundo).
+   */
+  readonly castTime: number;
 }
 
 /** Item vestível. */
@@ -53,10 +59,11 @@ const ability = (
   range: number = 0,
   radius: number = 0,
   damage: number = 0,
-): AbilityDef => ({ id, title, aim, range, radius, cooldown, damage });
+  castTime: number = 0,
+): AbilityDef => ({ id, title, aim, range, radius, cooldown, damage, castTime });
 
 /** Ataque sem arma na mão. */
-export const UNARMED_ATTACK: AbilityDef = ability("punch", "Soco", "target", 0.8, 1.5, 0, 4);
+export const UNARMED_ATTACK: AbilityDef = ability("punch", "Soco", "target", 0.8, 1.5, 0, 4, 0.8);
 
 /** Todos os itens que existem. Placeholders de treino ([JOGO-03]). */
 export const ITEMS: Readonly<Record<string, ItemDef>> = {
@@ -64,22 +71,22 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     id: "training_sword",
     name: "Espada de treino",
     slot: "hand",
-    basicAttack: ability("sword_attack", "Ataque", "target", 1, 2.5, 0, 10),
+    basicAttack: ability("sword_attack", "Ataque", "target", 1, 2.5, 0, 10, 1),
     abilities: [
-      ability("heavy_strike", "Golpe forte", "target", 6, 3),
-      ability("dash", "Investida", "direction", 8, 6, 1),
-      ability("spin", "Giro", "area_self", 10, 0, 3),
+      ability("heavy_strike", "Golpe forte", "target", 6, 3, 0, 0, 0.5),
+      ability("dash", "Investida", "direction", 8, 6, 1, 0, 0.15),
+      ability("spin", "Giro", "area_self", 10, 0, 3, 0, 0.4),
     ],
   },
   training_staff: {
     id: "training_staff",
     name: "Cajado de treino",
     slot: "hand",
-    basicAttack: ability("staff_attack", "Ataque", "target", 1.2, 8, 0, 7),
+    basicAttack: ability("staff_attack", "Ataque", "target", 1.2, 8, 0, 7, 1.2),
     abilities: [
-      ability("fireball", "Bola de fogo", "direction", 4, 12, 0.6),
-      ability("meteor", "Meteoro", "area", 12, 10, 2.5),
-      ability("bolt", "Raio", "target", 7, 10),
+      ability("fireball", "Bola de fogo", "direction", 4, 12, 0.6, 0, 0.6),
+      ability("meteor", "Meteoro", "area", 12, 10, 2.5, 0, 1),
+      ability("bolt", "Raio", "target", 7, 10, 0, 0, 0.4),
     ],
   },
   training_hood: {
@@ -87,21 +94,21 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Capuz de treino",
     slot: "head",
     basicAttack: null,
-    abilities: [ability("heal", "Cura", "self", 15)],
+    abilities: [ability("heal", "Cura", "self", 15, 0, 0, 0, 0.8)],
   },
   training_vest: {
     id: "training_vest",
     name: "Colete de treino",
     slot: "chest",
     basicAttack: null,
-    abilities: [ability("shield", "Escudo", "self", 18)],
+    abilities: [ability("shield", "Escudo", "self", 18, 0, 0, 0, 0.2)],
   },
   training_boots: {
     id: "training_boots",
     name: "Bota de treino",
     slot: "feet",
     basicAttack: null,
-    abilities: [ability("sprint", "Disparada", "self", 12)],
+    abilities: [ability("sprint", "Disparada", "self", 12, 0, 0, 0, 0)],
   },
 };
 

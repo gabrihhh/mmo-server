@@ -214,6 +214,8 @@ export interface NpcSnapshot extends PlayerSnapshot {
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
 export type CombatEvent =
   | { readonly type: "damage"; readonly source: string; readonly target: string; readonly amount: number; readonly ability: string }
+  | { readonly type: "cast_start"; readonly source: string; readonly ability: string; readonly target: string; readonly duration: number }
+  | { readonly type: "miss"; readonly source: string; readonly target: string; readonly ability: string }
   | { readonly type: "death"; readonly id: string; readonly killer: string }
   | { readonly type: "respawn"; readonly id: string };
 
@@ -225,6 +227,8 @@ export interface OwnStatus {
   readonly respawnIn: number;
   /** Alvo fixo do ataque simples (`null` = nenhum). */
   readonly target: string | null;
+  /** Lançamento em andamento (`null` = nenhum): habilidade, alvo e segundos que faltam. */
+  readonly casting: { readonly ability: string; readonly target: string; readonly remaining: number } | null;
 }
 
 /** Jogador completo, como vai no `welcome` e no `player_joined`: posição + nome exibido. */
@@ -253,6 +257,8 @@ export interface AbilityView {
   readonly radius: number;
   /** Tempo de recarga em segundos (o cliente mostra o "relógio" na carta; o servidor é quem recusa antes da hora). */
   readonly cooldown: number;
+  /** Tempo de lançamento em segundos (o personagem fica virado para o alvo/direção durante ele). */
+  readonly castTime: number;
 }
 
 /** Item como o cliente vê. */

@@ -44,18 +44,49 @@ function hpOf(member: Member, id: string): number {
 }
 
 describe("combate (ataque simples)", () => {
-  it("bate no boneco quando em alcance, no ritmo da arma", () => {
+  it("golpe tem tempo de lançamento: dano só no fim, 1 golpe por lançamento", () => {
     const z = zone();
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     assert.strictEqual(z.setAttackTarget("a", "dummy"), "ok");
+    const castTicks: number = SWORD.castTime * TICK_RATE_HZ;
+    z.tick();
+    assert.ok(a.events().some((e) => e["type"] === "cast_start" && e["target"] === "dummy"), "começa o golpe");
+    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP, "ainda sem dano");
+    for (let i = 1; i < castTicks; i++) z.tick();
+    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP, "não acerta antes do fim do lançamento");
     z.tick();
     assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - SWORD.damage);
-    assert.ok(a.events().some((e) => e["type"] === "damage" && e["target"] === "dummy" && e["amount"] === SWORD.damage));
-    for (let i = 1; i < SWORD.cooldown * TICK_RATE_HZ; i++) z.tick();
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - SWORD.damage, "não bate antes do intervalo");
+    assert.ok(a.events().some((e) => e["type"] === "damage" && e["amount"] === SWORD.damage));
+    for (let i = 0; i < castTicks; i++) z.tick();
+    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - 2 * SWORD.damage, "segundo golpe 1 lançamento depois");
+  });
+
+  it("durante o golpe fica virado para o alvo, mesmo andando para outro lado", () => {
+    const z = zone();
+    const a = new Member("a");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    z.setAttackTarget("a", "dummy"); // boneco em (0, -2): à frente (-Z) → rotY 0
+    z.queueInput("a", { seq: 1, x: 1, z: 0 }); // anda para +X (viraria para -PI/2)
     z.tick();
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - 2 * SWORD.damage);
+    const rot: number | undefined = z.getSnapshot("a")?.rotY;
+    assert.ok(rot !== undefined && Math.abs(Math.atan2(Math.sin(rot), Math.cos(rot))) < 0.2, `virado para o boneco (rotY=${rot})`);
+  });
+
+  it("se no fim do golpe o alvo saiu do alcance, erra (miss)", () => {
+    const z = zone();
+    const a = new Member("a");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    z.setAttackTarget("a", "dummy");
+    z.tick(); // começa o golpe em alcance
+    let seq = 0;
+    for (let i = 0; i < SWORD.castTime * TICK_RATE_HZ; i++) {
+      z.queueInput("a", { seq: ++seq, x: 0, z: 1 }); // se afasta do boneco (que está em -Z)
+      z.tick();
+      if (a.events().some((e) => e["type"] === "miss")) break;
+    }
+    assert.ok(a.events().some((e) => e["type"] === "miss" && e["target"] === "dummy"), "errou");
+    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP);
   });
 
   it("fora de alcance não bate (mas o alvo continua fixo)", () => {
@@ -72,9 +103,10 @@ describe("combate (ataque simples)", () => {
   it("boneco morre, perde o alvo de quem batia e reaparece", () => {
     const z = zone();
     const a = new Member("a");
-    const hit: AbilityDef = { ...SWORD, damage: DUMMY_MAX_HP, cooldown: 0.05 };
+    const hit: AbilityDef = { ...SWORD, damage: DUMMY_MAX_HP, cooldown: 0.05, castTime: 0.05 };
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, hit);
     z.setAttackTarget("a", "dummy");
+    z.tick();
     z.tick();
     assert.ok(a.events().some((e) => e["type"] === "death" && e["id"] === "dummy" && e["killer"] === "a"));
     assert.strictEqual(z.setAttackTarget("a", "dummy"), "invalid_target", "morto não é alvo");
@@ -101,10 +133,11 @@ describe("combate (ataque simples)", () => {
     const z = zone();
     const a = new Member("a");
     const b = new Member("b");
-    const lethal: AbilityDef = { ...SWORD, damage: PLAYER_MAX_HP, cooldown: 0.05 };
+    const lethal: AbilityDef = { ...SWORD, damage: PLAYER_MAX_HP, cooldown: 0.05, castTime: 0.05 };
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, lethal);
     z.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, SWORD);
     z.setAttackTarget("a", "b");
+    z.tick();
     z.tick();
     assert.strictEqual(z.getSnapshot("b")?.dead, true);
     z.queueInput("b", { seq: 1, x: 1, z: 0 });

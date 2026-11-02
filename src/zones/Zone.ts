@@ -111,8 +111,16 @@ interface ZonePlayer extends Combatant {
   basicAttack: AbilityDef;
   /** Alvo fixo do ataque simples (`null` = nenhum). */
   attackTarget: string | null;
-  /** Primeiro tick em que pode dar o próximo golpe. */
-  nextAttackTick: number;
+  /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
+  cast: Cast | null;
+}
+
+/** Um lançamento em andamento ([JOGO-05]). */
+interface Cast {
+  readonly ability: AbilityDef;
+  readonly targetId: string;
+  /** Tick em que o efeito acontece. */
+  readonly endTick: number;
 }
 
 /** Boneco de treino: parado, sem regeneração, reaparece no mesmo lugar. */
@@ -218,7 +226,7 @@ export class Zone {
       lastAppliedSeq: 0,
       basicAttack,
       attackTarget: null,
-      nextAttackTick: 0,
+      cast: null,
     };
     this.players.set(member.id, player);
 
@@ -260,11 +268,14 @@ export class Zone {
     if (player === undefined) return "invalid_target";
     if (targetId === null) {
       player.attackTarget = null;
+      player.cast = null;
       return "ok";
     }
     const target: Entity | undefined = this.entity(targetId);
     if (target === undefined || target.dead || targetId === id || player.dead) return "invalid_target";
     if (target.kind === "player" && !this.config.pvp) return "invalid_target";
+    // Trocar de alvo cancela o golpe em andamento.
+    if (player.cast !== null && player.cast.targetId !== targetId) player.cast = null;
     player.attackTarget = targetId;
     return "ok";
   }
@@ -277,6 +288,7 @@ export class Zone {
 
   /**
    * Um passo da simulação, nesta ordem: renascimentos → movimento → ataques → regeneração → snapshot.
+   * Os ataques vêm depois do movimento: quem está lançando termina o tick virado para o alvo.
    * Morto não anda (os inputs são consumidos e confirmados sem mover, para o cliente não acumular).
    */
   tick(): void {
@@ -317,23 +329,52 @@ export class Zone {
     }
   }
 
-  /** Ataque simples: quem tem alvo vivo dentro do alcance (+ folga) e já pode bater, bate. */
+  /**
+   * Ataque simples com tempo de lançamento ([JOGO-05]):
+   * - sem golpe em andamento e com o alvo no alcance (+ folga) → começa um golpe (`cast_start`);
+   * - durante o golpe, o personagem fica virado para o alvo (mesmo andando);
+   * - no fim do golpe, acerta se o alvo ainda estiver vivo e no alcance; senão erra (`miss`).
+   * O golpe seguinte pode começar no mesmo tick: com lançamento de 1 s, bate 1 vez por segundo.
+   */
   private applyAttacks(): void {
     for (const player of this.players.values()) {
       if (player.dead || player.attackTarget === null) continue;
       const target: Entity | undefined = this.entity(player.attackTarget);
       if (target === undefined || target.dead) {
         player.attackTarget = null;
+        player.cast = null;
         continue;
       }
-      if (this.currentTick < player.nextAttackTick) continue;
+      if (player.cast !== null) {
+        Zone.face(player, target);
+        if (this.currentTick < player.cast.endTick) continue;
+        const ability: AbilityDef = player.cast.ability;
+        player.cast = null;
+        if (Zone.inRange(player, target, ability.range)) this.damage(player, target, ability.damage, ability.id);
+        else this.events.push({ type: "miss", source: player.id, target: target.id, ability: ability.id });
+      }
       const attack: AbilityDef = player.basicAttack;
-      const dx: number = target.state.x - player.state.x;
-      const dz: number = target.state.z - player.state.z;
-      if (Math.sqrt(dx * dx + dz * dz) > attack.range + RANGE_TOLERANCE) continue;
-      player.nextAttackTick = this.currentTick + secondsToTicks(attack.cooldown);
-      this.damage(player, target, attack.damage, attack.id);
+      if (!Zone.inRange(player, target, attack.range)) continue;
+      const duration: number = secondsToTicks(attack.castTime);
+      player.cast = { ability: attack, targetId: target.id, endTick: this.currentTick + duration };
+      Zone.face(player, target);
+      this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS });
     }
+  }
+
+  /** `true` se `target` está a até `range` (+ folga) de `source`, no plano XZ. */
+  private static inRange(source: Combatant, target: Combatant, range: number): boolean {
+    const dx: number = target.state.x - source.state.x;
+    const dz: number = target.state.z - source.state.z;
+    return Math.sqrt(dx * dx + dz * dz) <= range + RANGE_TOLERANCE;
+  }
+
+  /** Vira `source` para `target` (mesma convenção da simulação: rotY = 0 olha para -Z). */
+  private static face(source: Combatant, target: Combatant): void {
+    const dx: number = target.state.x - source.state.x;
+    const dz: number = target.state.z - source.state.z;
+    if (dx * dx + dz * dz < 1e-6) return;
+    source.state = { ...source.state, rotY: Math.atan2(-dx, -dz) };
   }
 
   /** Aplica dano; em 0 de vida, morre (e quem mirava nele perde o alvo). */
@@ -349,6 +390,7 @@ export class Zone {
     target.respawnTick = this.currentTick + secondsToTicks(respawnSeconds);
     if (target.kind === "player") {
       target.attackTarget = null;
+      target.cast = null;
       target.inputs.length = 0;
     }
     for (const player of this.players.values()) if (player.attackTarget === target.id) player.attackTarget = null;
@@ -380,6 +422,14 @@ export class Zone {
         maxMana: player.maxMana,
         respawnIn: player.dead ? round1(Math.max(0, player.respawnTick - this.currentTick) * TICK_SECONDS) : 0,
         target: player.attackTarget,
+        casting:
+          player.cast === null
+            ? null
+            : {
+                ability: player.cast.ability.id,
+                target: player.cast.targetId,
+                remaining: round1(Math.max(0, player.cast.endTick - this.currentTick) * TICK_SECONDS),
+              },
       };
       player.member.send(
         `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},${shared},"me":${JSON.stringify(me)}}}`,
