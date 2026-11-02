@@ -261,6 +261,21 @@ describe("GameServer", () => {
       assert.deepStrictEqual({ ...me, name: undefined }, { ...where, name: undefined });
     });
 
+    it("attack fixa o alvo (aparece em snapshot.me.target) e recusa alvo inexistente", async () => {
+      const a: Player = await registered();
+      const players: unknown[] = await join(a);
+      assert.ok(players.length >= 1);
+      a.client.send("attack", { targetId: "nao-existe" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "invalid_target");
+      a.client.send("attack", { targetId: "dummy_1" });
+      const snap: ReceivedMessage = await a.client.nextMatching("snapshot", (m) => {
+        const me: unknown = m.data["me"];
+        return typeof me === "object" && me !== null && "target" in me && me.target === "dummy_1";
+      });
+      const npcs: unknown = snap.data["npcs"];
+      assert.ok(Array.isArray(npcs) && npcs.length === 3, "bonecos no snapshot");
+    });
+
     it("ignora o antigo `move` com posição (o cliente não diz onde está)", async () => {
       const a: Player = await registered();
       await join(a);

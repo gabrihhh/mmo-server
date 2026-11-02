@@ -29,6 +29,8 @@ export interface AbilityDef {
   readonly radius: number;
   /** Tempo de recarga em segundos (no ataque simples: intervalo entre golpes). */
   readonly cooldown: number;
+  /** Dano por acerto (0 = não causa dano). Só o servidor usa; não vai para o cliente. */
+  readonly damage: number;
 }
 
 /** Item vestível. */
@@ -50,10 +52,11 @@ const ability = (
   cooldown: number,
   range: number = 0,
   radius: number = 0,
-): AbilityDef => ({ id, title, aim, range, radius, cooldown });
+  damage: number = 0,
+): AbilityDef => ({ id, title, aim, range, radius, cooldown, damage });
 
 /** Ataque sem arma na mão. */
-export const UNARMED_ATTACK: AbilityDef = ability("punch", "Soco", "target", 0.8, 1.5);
+export const UNARMED_ATTACK: AbilityDef = ability("punch", "Soco", "target", 0.8, 1.5, 0, 4);
 
 /** Todos os itens que existem. Placeholders de treino ([JOGO-03]). */
 export const ITEMS: Readonly<Record<string, ItemDef>> = {
@@ -61,7 +64,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     id: "training_sword",
     name: "Espada de treino",
     slot: "hand",
-    basicAttack: ability("sword_attack", "Ataque", "target", 1, 2.5),
+    basicAttack: ability("sword_attack", "Ataque", "target", 1, 2.5, 0, 10),
     abilities: [
       ability("heavy_strike", "Golpe forte", "target", 6, 3),
       ability("dash", "Investida", "direction", 8, 6, 1),
@@ -72,7 +75,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     id: "training_staff",
     name: "Cajado de treino",
     slot: "hand",
-    basicAttack: ability("staff_attack", "Ataque", "target", 1.2, 8),
+    basicAttack: ability("staff_attack", "Ataque", "target", 1.2, 8, 0, 7),
     abilities: [
       ability("fireball", "Bola de fogo", "direction", 4, 12, 0.6),
       ability("meteor", "Meteoro", "area", 12, 10, 2.5),

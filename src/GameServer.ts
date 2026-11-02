@@ -26,7 +26,7 @@ import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition 
 import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
-import { equip, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
+import { basicAttackOf, equip, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
 import { inventoryView } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
@@ -255,6 +255,15 @@ export class GameServer {
       case ClientMessageType.Unequip:
         void this.changeInventory(session, (inventory) => unequip(inventory, GameServer.slotOf(message.data.slot)));
         return;
+      case ClientMessageType.Attack:
+        if (session.zone === null || session.account === null) {
+          this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+          return;
+        }
+        if (session.zone.setAttackTarget(session.account.playerId, message.data.targetId) !== "ok") {
+          this.sendError(session, ErrorCode.InvalidTarget, "Esse alvo não pode ser atacado.");
+        }
+        return;
     }
   }
 
@@ -393,6 +402,8 @@ export class GameServer {
       return;
     }
     session.account = { ...account, inventory: result.inventory };
+    // A arma pode ter mudado: o ataque simples na zona acompanha.
+    session.zone?.setBasicAttack(account.playerId, basicAttackOf(result.inventory));
     try {
       await this.options.accounts.saveInventory(account.playerId, result.inventory);
     } catch (error: unknown) {
@@ -463,6 +474,7 @@ export class GameServer {
         },
       },
       GameServer.spawnFrom(account.lastPosition, zone),
+      basicAttackOf(account.inventory),
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");
@@ -478,7 +490,9 @@ export class GameServer {
           zone: zone.config.id,
           tick: zone.tickNumber,
           sim: zone.simParams,
+          pvp: zone.config.pvp,
           players: result.players,
+          npcs: zone.npcSnapshots(),
         },
       }),
     );

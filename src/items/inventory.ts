@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { EQUIP_SLOTS, STARTER_BAG, STARTER_EQUIPPED, getItem, type EquipSlot } from "./catalog.js";
+import { EQUIP_SLOTS, STARTER_BAG, STARTER_EQUIPPED, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
 
 /**
  * Inventário de um personagem: 4 slots vestidos + mochila. Regras puras (sem banco nem rede),
@@ -103,4 +103,12 @@ export function readInventory(raw: unknown): Inventory {
     }
   }
   return { equipped, bag };
+}
+
+
+/** Ataque simples atual: o da arma vestida, ou o soco sem arma. */
+export function basicAttackOf(inventory: Inventory): AbilityDef {
+  const weapon: ItemStack | null = inventory.equipped.hand;
+  const def = weapon === null ? undefined : getItem(weapon.itemId);
+  return def?.basicAttack ?? UNARMED_ATTACK;
 }

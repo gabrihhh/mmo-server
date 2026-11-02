@@ -15,5 +15,13 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     halfSize: ZONE_HALF_SIZE,
     maxPlayers: 50,
     spawnRadius: 5,
+    // PvP ligado: é assim que testamos ([JOGO-02]). Zonas seguras virão com `pvp: false`.
+    pvp: true,
+    // Bonecos de treino perto do spawn ([JOGO-05]).
+    dummies: [
+      { id: "dummy_1", name: "Boneco de treino", x: 6, z: -6 },
+      { id: "dummy_2", name: "Boneco de treino", x: -6, z: -6 },
+      { id: "dummy_3", name: "Boneco de treino", x: 0, z: -10 },
+    ],
   },
 ];

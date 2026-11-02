@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -36,6 +36,8 @@ export const ClientMessageType = {
   Equip: "equip",
   /** Tira o item de um slot para a mochila. Payload: {@link UnequipData}. */
   Unequip: "unequip",
+  /** Fixa (ou limpa, com `null`) o alvo do ataque simples; o servidor ataca sozinho quando em alcance. Payload: {@link AttackData}. */
+  Attack: "attack",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -94,6 +96,8 @@ export const ErrorCode = {
   BagFull: "bag_full",
   /** `unequip` de slot vazio. A conexão continua. */
   SlotEmpty: "slot_empty",
+  /** Alvo inexistente, morto, você mesmo, ou jogador numa zona sem PvP. A conexão continua. */
+  InvalidTarget: "invalid_target",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -169,6 +173,12 @@ export interface UnequipData {
   readonly slot: EquipSlotName;
 }
 
+/** Payload de `attack`. */
+export interface AttackData {
+  /** Id do jogador ou boneco a atacar; `null` para parar de atacar. */
+  readonly targetId: string | null;
+}
+
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Register; readonly data: RegisterData }
@@ -178,9 +188,10 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Join; readonly data: JoinData }
   | { readonly type: typeof ClientMessageType.Input; readonly data: InputData }
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
-  | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData };
+  | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
+  | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData };
 
-/** Posição pública de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
+/** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
   /** Id do jogador (playerId). */
   readonly id: string;
@@ -188,6 +199,32 @@ export interface PlayerSnapshot {
   readonly y: number;
   readonly z: number;
   readonly rotY: number;
+  /** Vida atual e máxima (arredondada a 0,1). */
+  readonly hp: number;
+  readonly maxHp: number;
+  /** Morto (esperando renascer). */
+  readonly dead: boolean;
+}
+
+/** Boneco de treino / monstro: mesmos campos do jogador + nome. Vai em `welcome.npcs` e `snapshot.npcs`. */
+export interface NpcSnapshot extends PlayerSnapshot {
+  readonly name: string;
+}
+
+/** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
+export type CombatEvent =
+  | { readonly type: "damage"; readonly source: string; readonly target: string; readonly amount: number; readonly ability: string }
+  | { readonly type: "death"; readonly id: string; readonly killer: string }
+  | { readonly type: "respawn"; readonly id: string };
+
+/** Só de quem recebe o snapshot (os outros não sabem). */
+export interface OwnStatus {
+  readonly mana: number;
+  readonly maxMana: number;
+  /** Segundos até renascer (0 = vivo). */
+  readonly respawnIn: number;
+  /** Alvo fixo do ataque simples (`null` = nenhum). */
+  readonly target: string | null;
 }
 
 /** Jogador completo, como vai no `welcome` e no `player_joined`: posição + nome exibido. */
@@ -246,6 +283,12 @@ export interface SnapshotData {
   readonly ack: number;
   /** Todos os jogadores da zona (inclusive quem recebe). */
   readonly players: readonly PlayerSnapshot[];
+  /** Bonecos/monstros da zona. */
+  readonly npcs: readonly NpcSnapshot[];
+  /** O que aconteceu neste tick (dano, mortes, renascimentos). */
+  readonly events: readonly CombatEvent[];
+  /** Dados só de quem recebe. */
+  readonly me: OwnStatus;
 }
 
 /** Mensagem servidor → cliente. */
@@ -270,7 +313,11 @@ export type ServerMessage =
         readonly tick: number;
         /** Parâmetros da simulação compartilhada (o cliente usa os do servidor, não os dele). */
         readonly sim: SimParams;
+        /** Jogadores podem ser atacados nesta zona. */
+        readonly pvp: boolean;
         readonly players: readonly PlayerInfo[];
+        /** Bonecos/monstros da zona. */
+        readonly npcs: readonly NpcSnapshot[];
       };
     }
   | { readonly type: typeof ServerMessageType.PlayerJoined; readonly data: { readonly player: PlayerInfo } }
@@ -365,6 +412,15 @@ export function parseUnequipData(data: unknown): UnequipData | null {
   return isSlotName(slot) ? { slot } : null;
 }
 
+/** Valida o payload de `attack`. */
+export function parseAttackData(data: unknown): AttackData | null {
+  if (!isRecord(data)) return null;
+  const { targetId } = data;
+  if (targetId === null || targetId === undefined) return { targetId: null };
+  if (typeof targetId !== "string" || targetId.length === 0 || targetId.length > 64) return null;
+  return { targetId };
+}
+
 /**
  * Decodifica e valida uma mensagem de texto vinda da rede (não confiável).
  * @returns a mensagem tipada, ou `null` se o JSON, o tipo ou o payload forem inválidos.
@@ -409,6 +465,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Unequip: {
       const data = parseUnequipData(raw);
       return data === null ? null : { type: ClientMessageType.Unequip, data };
+    }
+    case ClientMessageType.Attack: {
+      const data = parseAttackData(raw);
+      return data === null ? null : { type: ClientMessageType.Attack, data };
     }
     default:
       return null;

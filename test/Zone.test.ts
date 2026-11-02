@@ -21,8 +21,11 @@ class FakeMember implements ZoneMember {
   }
 }
 
-const newZone = (maxPlayers: number = 50): Zone =>
-  new Zone({ id: "test", halfSize: 150, maxPlayers, spawnRadius: 5 });
+const newZone = (maxPlayers: number = 50, pvp: boolean = true): Zone =>
+  new Zone({ id: "test", halfSize: 150, maxPlayers, spawnRadius: 5, pvp, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });
+
+/** Vida cheia de jogador, como sai no snapshot. */
+const FULL = { hp: 100, maxHp: 100, dead: false };
 
 describe("Zone", () => {
   it("devolve a lista de jogadores a quem entra e avisa player_joined aos outros", () => {
@@ -47,7 +50,7 @@ describe("Zone", () => {
   it("usa o spawn informado, limitado às bordas", () => {
     const zone = newZone();
     zone.join(new FakeMember("a"), { x: 20, y: 1, z: -999, rotY: 2 });
-    assert.deepStrictEqual(zone.getSnapshot("a"), { id: "a", x: 20, y: 1, z: -150, rotY: 2 });
+    assert.deepStrictEqual(zone.getSnapshot("a"), { id: "a", x: 20, y: 1, z: -150, rotY: 2, ...FULL });
   });
 
   it("recusa entrada com a zona lotada", () => {
@@ -78,7 +81,14 @@ describe("Zone", () => {
     zone.tick();
 
     // 5 m/s * 0,05 s = 0,25 m para +X; virado para +X => rotY = atan2(-1, -0) = -PI/2.
-    assert.deepStrictEqual(zone.getSnapshot("a"), { id: "a", x: MOVE_SPEED * TICK_SECONDS, y: 0, z: 0, rotY: Math.atan2(-1, -0) });
+    assert.deepStrictEqual(zone.getSnapshot("a"), {
+      id: "a",
+      x: MOVE_SPEED * TICK_SECONDS,
+      y: 0,
+      z: 0,
+      rotY: Math.atan2(-1, -0),
+      ...FULL,
+    });
     assert.strictEqual(lastSnapshot(a).ack, 1);
     assert.strictEqual(lastSnapshot(b).ack, 0, "b não mandou input");
     assert.strictEqual(lastSnapshot(b).tick, 1);
