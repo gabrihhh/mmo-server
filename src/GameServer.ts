@@ -144,13 +144,13 @@ export class GameServer {
 
   /**
    * `GET /health`: 200 "ok" se o banco responde; 503 "db down" se não.
-   * `GET /updates/<arquivo>`: arquivos do atualizador (ver `src/http/updates.ts`).
+   * `GET /updates/<plataforma>/<arquivo>`: arquivos do atualizador (ver `src/http/updates.ts`).
    */
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url: string = req.url ?? "";
     if (req.method === "GET" && url.startsWith(UPDATES_ROUTE)) {
-      const fileName: string = url.slice(UPDATES_ROUTE.length).split("?")[0] ?? "";
-      await serveUpdateFile(fileName, this.options.updatesDir, res);
+      const relativePath: string = url.slice(UPDATES_ROUTE.length).split("?")[0] ?? "";
+      await serveUpdateFile(relativePath, this.options.updatesDir, res);
       return;
     }
     if (req.method === "GET" && url === "/health") {
