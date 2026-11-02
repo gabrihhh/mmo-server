@@ -1,30 +1,47 @@
 import assert from "assert";
 
 import { GameServer } from "../src/GameServer.js";
+import { InMemoryAccountStore } from "../src/accounts/AccountStore.js";
 import { CloseCode, PROTOCOL_VERSION } from "../src/net/protocol.js";
 import { TestClient, sleep } from "./helpers.js";
 
 const ZONE = "zone_1";
 
+/** Resultado de {@link joined}. */
+interface Joined {
+  readonly client: TestClient;
+  readonly playerId: string;
+  readonly guestToken: string;
+  readonly players: unknown[];
+}
+
 describe("GameServer", () => {
   let server: GameServer;
+  let accounts: InMemoryAccountStore;
   let port: number;
   const clients: TestClient[] = [];
 
-  /** Conecta e já entra na zona, devolvendo o cliente e o `welcome`. */
-  async function joined(): Promise<{ client: TestClient; sessionId: string; playerCount: number }> {
+  /** Conecta e entra na zona (com o token, se houver), devolvendo os dados do `welcome`. */
+  async function joined(guestToken: string | null = null): Promise<Joined> {
     const client: TestClient = await TestClient.connect(port);
     clients.push(client);
-    client.send("join", { zone: ZONE, version: PROTOCOL_VERSION });
+    client.send("join", { zone: ZONE, version: PROTOCOL_VERSION, guestToken });
     const welcome = await client.next("welcome");
-    const sessionId: unknown = welcome.data["sessionId"];
+    const playerId: unknown = welcome.data["playerId"];
+    const token: unknown = welcome.data["guestToken"];
     const players: unknown = welcome.data["players"];
-    assert.ok(typeof sessionId === "string" && Array.isArray(players));
-    return { client, sessionId, playerCount: players.length };
+    assert.ok(typeof playerId === "string" && typeof token === "string" && Array.isArray(players));
+    return { client, playerId, guestToken: token, players };
+  }
+
+  /** Lê o campo `id` de um objeto vindo da rede. */
+  function idOf(value: unknown): unknown {
+    return typeof value === "object" && value !== null && "id" in value ? value.id : undefined;
   }
 
   beforeEach(async () => {
-    server = new GameServer({ tickRateHz: 50, heartbeatIntervalMs: 100, log: false });
+    accounts = new InMemoryAccountStore();
+    server = new GameServer({ accounts, tickRateHz: 50, heartbeatIntervalMs: 100, log: false });
     port = await server.listen(0);
   });
 
@@ -35,18 +52,16 @@ describe("GameServer", () => {
 
   it("entra na zona e avisa os outros (player_joined / player_left)", async () => {
     const a = await joined();
-    assert.strictEqual(a.playerCount, 1);
+    assert.strictEqual(a.players.length, 1);
 
     const b = await joined();
-    assert.strictEqual(b.playerCount, 2);
+    assert.strictEqual(b.players.length, 2);
     const joinedMsg = await a.client.next("player_joined");
-    const player: unknown = joinedMsg.data["player"];
-    assert.ok(typeof player === "object" && player !== null && "id" in player);
-    assert.strictEqual(player.id, b.sessionId);
+    assert.strictEqual(idOf(joinedMsg.data["player"]), b.playerId);
 
     await b.client.close();
     const left = await a.client.next("player_left");
-    assert.strictEqual(left.data["id"], b.sessionId);
+    assert.strictEqual(left.data["id"], b.playerId);
     assert.strictEqual(server.getZone(ZONE)?.size, 1);
   });
 
@@ -56,7 +71,34 @@ describe("GameServer", () => {
 
     a.client.send("move", { x: 10, y: 0, z: -20, rotY: 1.5 });
     const positions = await b.client.next("positions");
-    assert.deepStrictEqual(positions.data["players"], [{ id: a.sessionId, x: 10, y: 0, z: -20, rotY: 1.5 }]);
+    assert.deepStrictEqual(positions.data["players"], [{ id: a.playerId, x: 10, y: 0, z: -20, rotY: 1.5 }]);
+  });
+
+  it("conta de convidado: mesmo token = mesmo jogador, voltando onde parou", async () => {
+    const first = await joined();
+    first.client.send("move", { x: 33, y: 0, z: -12, rotY: 0.7 });
+    await sleep(60); // um tick para o move ser aplicado
+    await first.client.close();
+    await sleep(20); // savePosition é assíncrono
+
+    const again = await joined(first.guestToken);
+    assert.strictEqual(again.playerId, first.playerId);
+    assert.strictEqual(again.guestToken, first.guestToken);
+    const me: unknown = again.players.find((p) => idOf(p) === first.playerId);
+    assert.deepStrictEqual(me, { id: first.playerId, x: 33, y: 0, z: -12, rotY: 0.7 });
+  });
+
+  it("token desconhecido cria conta nova com token novo", async () => {
+    const a = await joined("token-que-nao-existe");
+    assert.notStrictEqual(a.guestToken, "token-que-nao-existe");
+  });
+
+  it("a mesma conta entrando de novo derruba a conexão antiga (4002)", async () => {
+    const first = await joined();
+    const second = await joined(first.guestToken);
+    assert.strictEqual(await first.client.waitClose(), CloseCode.Replaced);
+    assert.strictEqual(second.playerId, first.playerId);
+    assert.strictEqual(server.getZone(ZONE)?.size, 1);
   });
 
   it("responde bad_message a mensagem inválida e mantém a conexão", async () => {
@@ -88,8 +130,14 @@ describe("GameServer", () => {
     b.client.socket.pause();
 
     const left = await a.client.next("player_left", 3000);
-    assert.strictEqual(left.data["id"], b.sessionId);
+    assert.strictEqual(left.data["id"], b.playerId);
     await sleep(10);
     assert.strictEqual(server.getZone(ZONE)?.size, 1);
+  });
+
+  it("GET /health responde ok", async () => {
+    const res: Response = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(await res.text(), "ok");
   });
 });

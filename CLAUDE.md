@@ -7,7 +7,8 @@ Parte do MMO isométrico 3D low poly para **Android/iOS**. Repositórios irmãos
 
 Toda decisão de design/arquitetura vive em `../mmo-docs`. Siga o protocolo de busca de lá:
 leia `../mmo-docs/INDICE.md` e depois `../mmo-docs/tools/secao.sh <ID>`. Não abra os arquivos de `docs/` inteiros.
-Seções-chave deste repo: [INFRA-02] servidor, [INFRA-04] protocolo de rede, [INFRA-05] estrutura do servidor.
+Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] protocolo de rede, [INFRA-05] estrutura do servidor,
+[INFRA-07] contas de convidado.
 
 ## Regras OBRIGATÓRIAS
 
@@ -37,6 +38,7 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-04] protocolo de rede, [I
 ```bash
 nvm use            # Node 22 (.nvmrc)
 npm install
+npm run db:up      # MongoDB local via Docker (o servidor não sobe sem ele) — ver [INFRA-03]
 npm start          # dev com hot reload em ws://localhost:2567 (health em http://localhost:2567/health)
 npm run typecheck
 npm test

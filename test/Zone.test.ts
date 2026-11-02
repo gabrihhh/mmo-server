@@ -21,22 +21,30 @@ const newZone = (maxPlayers: number = 50): Zone =>
   new Zone({ id: "test", halfSize: 150, maxPlayers, spawnRadius: 5 });
 
 describe("Zone", () => {
-  it("envia welcome a quem entra e player_joined aos outros", () => {
+  it("devolve a lista de jogadores a quem entra e avisa player_joined aos outros", () => {
     const zone = newZone();
     const a = new FakeMember("a");
     const b = new FakeMember("b");
-    assert.strictEqual(zone.join(a), "joined");
-    assert.strictEqual(zone.join(b), "joined");
+    const ra = zone.join(a);
+    const rb = zone.join(b);
 
-    assert.deepStrictEqual(a.types(), ["welcome", "player_joined"]);
-    assert.deepStrictEqual(b.types(), ["welcome"]);
+    assert.ok(ra.status === "joined" && rb.status === "joined");
+    assert.deepStrictEqual(rb.players.map((p) => p.id).sort(), ["a", "b"]);
+    assert.deepStrictEqual(a.types(), ["player_joined"]);
+    assert.deepStrictEqual(b.types(), []);
     assert.strictEqual(zone.size, 2);
+  });
+
+  it("usa o spawn informado, limitado às bordas", () => {
+    const zone = newZone();
+    zone.join(new FakeMember("a"), { x: 20, y: 1, z: -999, rotY: 2 });
+    assert.deepStrictEqual(zone.getSnapshot("a"), { id: "a", x: 20, y: 1, z: -150, rotY: 2 });
   });
 
   it("recusa entrada com a zona lotada", () => {
     const zone = newZone(1);
-    assert.strictEqual(zone.join(new FakeMember("a")), "joined");
-    assert.strictEqual(zone.join(new FakeMember("b")), "full");
+    assert.strictEqual(zone.join(new FakeMember("a")).status, "joined");
+    assert.strictEqual(zone.join(new FakeMember("b")).status, "full");
     assert.strictEqual(zone.size, 1);
   });
 

@@ -13,7 +13,9 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "clean": "rimraf build",
     "typecheck": "tsc --noEmit",
-    "test": "mocha -r tsx test/**.test.ts --exit --timeout 15000"
+    "test": "mocha -r tsx test/**.test.ts --exit --timeout 15000",
+    "db:up": "docker compose up -d mongo",
+    "db:down": "docker compose stop mongo"
   },
   "license": "UNLICENSED",
   "devDependencies": {
@@ -26,6 +28,7 @@
     "typescript": "^5.0.4"
   },
   "dependencies": {
+    "mongodb": "^7.8.0",
     "ws": "^8.22.1"
   }
 }

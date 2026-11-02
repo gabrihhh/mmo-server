@@ -1,0 +1,15 @@
+# MongoDB local para desenvolvimento e testes. Ver mmo-docs [INFRA-03].
+# Subir: npm run db:up   |   Parar: npm run db:down   (os dados ficam no volume mongo-data)
+services:
+  mongo:
+    image: mongo:8.0
+    container_name: mmo-mongo
+    restart: unless-stopped
+    # Só na máquina local (127.0.0.1): não expor o banco na rede.
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

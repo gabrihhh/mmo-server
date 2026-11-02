@@ -40,8 +40,16 @@ interface ZonePlayer {
   dirty: boolean;
 }
 
-/** Resultado de {@link Zone.join}. */
-export type JoinResult = "joined" | "full";
+/** Onde e virado para onde o jogador aparece. Metros e radianos. */
+export interface SpawnPoint {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly rotY: number;
+}
+
+/** Resultado de {@link Zone.join}: lotada, ou aceito com a lista de quem está na zona (inclusive ele). */
+export type JoinResult = { readonly status: "full" } | { readonly status: "joined"; readonly players: PlayerSnapshot[] };
 
 /** Limita `value` ao intervalo fechado [min, max]. */
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
@@ -69,31 +77,29 @@ export class Zone {
   }
 
   /**
-   * Coloca o jogador num ponto aleatório perto do centro, envia `welcome` a ele
-   * e `player_joined` aos demais.
+   * Coloca o jogador em `spawn` (limitado às bordas) ou, sem `spawn`, num ponto aleatório perto
+   * do centro, e envia `player_joined` aos demais. O `welcome` fica por conta de quem chamou
+   * (usa a lista de jogadores devolvida), porque ele também leva dados da conta.
+   * Se o id já estiver na zona, a entrada antiga é substituída.
    */
-  join(member: ZoneMember): JoinResult {
-    if (this.players.size >= this.config.maxPlayers) return "full";
+  join(member: ZoneMember, spawn?: SpawnPoint): JoinResult {
+    if (!this.players.has(member.id) && this.players.size >= this.config.maxPlayers) return { status: "full" };
+    this.leave(member.id);
 
-    const angle: number = Math.random() * Math.PI * 2;
+    const start: SpawnPoint = spawn ?? this.randomSpawn();
+    const limit: number = this.config.halfSize;
     const player: ZonePlayer = {
       member,
-      x: Math.cos(angle) * this.config.spawnRadius,
-      y: 0,
-      z: Math.sin(angle) * this.config.spawnRadius,
-      rotY: 0,
+      x: clamp(start.x, -limit, limit),
+      y: start.y,
+      z: clamp(start.z, -limit, limit),
+      rotY: start.rotY,
       dirty: false,
     };
     this.players.set(member.id, player);
 
-    member.send(
-      encodeServerMessage({
-        type: ServerMessageType.Welcome,
-        data: { sessionId: member.id, zone: this.config.id, players: this.snapshotAll() },
-      }),
-    );
     this.broadcast({ type: ServerMessageType.PlayerJoined, data: { player: Zone.snapshot(member.id, player) } }, member.id);
-    return "joined";
+    return { status: "joined", players: this.snapshotAll() };
   }
 
   /** Remove o jogador e avisa os demais com `player_left`. Ignora ids que não estão na zona. */
@@ -141,6 +147,12 @@ export class Zone {
     for (const [id, player] of this.players) {
       if (id !== exceptId) player.member.send(text);
     }
+  }
+
+  private randomSpawn(): SpawnPoint {
+    const angle: number = Math.random() * Math.PI * 2;
+    const radius: number = this.config.spawnRadius;
+    return { x: Math.cos(angle) * radius, y: 0, z: Math.sin(angle) * radius, rotY: 0 };
   }
 
   private snapshotAll(): PlayerSnapshot[] {

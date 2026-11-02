@@ -4,10 +4,14 @@ import { ClientMessageType, parseClientMessage } from "../src/net/protocol.js";
 
 describe("parseClientMessage", () => {
   it("aceita join e move válidos", () => {
-    assert.deepStrictEqual(parseClientMessage('{"type":"join","data":{"zone":"zone_1","version":1}}'), {
+    assert.deepStrictEqual(parseClientMessage('{"type":"join","data":{"zone":"zone_1","version":2}}'), {
       type: ClientMessageType.Join,
-      data: { zone: "zone_1", version: 1 },
+      data: { zone: "zone_1", version: 2, guestToken: null },
     });
+    assert.deepStrictEqual(
+      parseClientMessage('{"type":"join","data":{"zone":"zone_1","version":2,"guestToken":"abc"}}'),
+      { type: ClientMessageType.Join, data: { zone: "zone_1", version: 2, guestToken: "abc" } },
+    );
     assert.deepStrictEqual(parseClientMessage('{"type":"move","data":{"x":1,"y":2,"z":3,"rotY":0.5}}'), {
       type: ClientMessageType.Move,
       data: { x: 1, y: 2, z: 3, rotY: 0.5 },
@@ -25,6 +29,8 @@ describe("parseClientMessage", () => {
       '{"type":"move","data":{"x":1e999,"y":0,"z":0,"rotY":0}}',
       '{"type":"join","data":{"zone":"","version":1}}',
       '{"type":"join","data":{"zone":"zone_1","version":1.5}}',
+      '{"type":"join","data":{"zone":"zone_1","version":2,"guestToken":42}}',
+      '{"type":"join","data":{"zone":"zone_1","version":2,"guestToken":""}}',
     ];
     for (const text of bad) assert.strictEqual(parseClientMessage(text), null, text);
   });

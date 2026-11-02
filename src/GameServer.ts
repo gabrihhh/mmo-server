@@ -13,12 +13,16 @@ import {
   parseClientMessage,
   type ClientMessage,
   type JoinData,
+  type PlayerSnapshot,
 } from "./net/protocol.js";
-import { Zone, type JoinResult, type ZoneConfig } from "./zones/Zone.js";
+import { Zone, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
+import type { AccountStore, GuestLogin, SavedPosition } from "./accounts/AccountStore.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
 export interface GameServerOptions {
+  /** Onde ficam as contas (MongoDB no jogo, memória nos testes). Obrigatório. */
+  readonly accounts: AccountStore;
   /** Zonas criadas ao subir. Padrão: {@link ZONE_CONFIGS}. */
   readonly zones?: readonly ZoneConfig[];
   /** Quantas vezes por segundo cada zona envia o lote `positions`. Padrão: 20 Hz. */
@@ -34,10 +38,15 @@ const MAX_MESSAGE_BYTES = 4096;
 
 /** Uma conexão WebSocket aberta. */
 interface Session {
-  readonly id: string;
+  /** Id da conexão (só para log/diagnóstico; o jogo usa o `playerId`). */
+  readonly connectionId: string;
   readonly socket: WebSocket;
+  /** Id público do jogador; `null` até o `join` ser aceito. */
+  playerId: string | null;
   /** Zona em que entrou; `null` até o `join` ser aceito. */
   zone: Zone | null;
+  /** Um `join` está sendo processado (consulta ao banco em andamento). */
+  joining: boolean;
   /** Respondeu ao último ping do heartbeat. */
   alive: boolean;
 }
@@ -45,21 +54,24 @@ interface Session {
 /**
  * Servidor do jogo: HTTP (`GET /health`) + WebSocket na mesma porta.
  *
- * Cada conexão vira uma {@link Session}. As mensagens são validadas por
- * {@link parseClientMessage} e repassadas à {@link Zone} da sessão.
- * Protocolo: `src/net/protocol.ts` e mmo-docs [INFRA-04].
+ * Cada conexão vira uma {@link Session}. O `join` faz o login de convidado no
+ * {@link AccountStore} e coloca o jogador na {@link Zone} (na última posição salva,
+ * se houver). Ao sair, a posição é salva. Protocolo: `src/net/protocol.ts` e mmo-docs [INFRA-04].
  */
 export class GameServer {
   private readonly http: Server;
   private readonly wss: WebSocketServer;
   private readonly zones: Map<string, Zone> = new Map();
   private readonly sessions: Set<Session> = new Set();
+  /** Sessão ativa de cada jogador em jogo. Garante uma conexão por conta. */
+  private readonly online: Map<string, Session> = new Map();
   private readonly options: Required<GameServerOptions>;
   private tickTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
-  constructor(options: GameServerOptions = {}) {
+  constructor(options: GameServerOptions) {
     this.options = {
+      accounts: options.accounts,
       zones: options.zones ?? ZONE_CONFIGS,
       tickRateHz: options.tickRateHz ?? 20,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 10_000,
@@ -67,7 +79,9 @@ export class GameServer {
     };
     for (const config of this.options.zones) this.zones.set(config.id, new Zone(config));
 
-    this.http = createServer((req: IncomingMessage, res: ServerResponse) => this.handleHttp(req, res));
+    this.http = createServer((req: IncomingMessage, res: ServerResponse) => {
+      void this.handleHttp(req, res);
+    });
     this.wss = new WebSocketServer({ server: this.http, maxPayload: MAX_MESSAGE_BYTES });
     this.wss.on("connection", (socket: WebSocket) => this.handleConnection(socket));
   }
@@ -89,12 +103,13 @@ export class GameServer {
     });
   }
 
-  /** Para os timers, fecha todas as conexões e o servidor HTTP. */
-  close(): Promise<void> {
+  /** Salva a posição de quem está online, fecha as conexões e o servidor HTTP. */
+  async close(): Promise<void> {
     if (this.tickTimer !== null) clearInterval(this.tickTimer);
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
+    await Promise.all(Array.from(this.sessions, (session) => this.leaveZone(session)));
     for (const session of this.sessions) session.socket.terminate();
-    return new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       this.wss.close(() => this.http.close(() => resolve()));
     });
   }
@@ -123,16 +138,25 @@ export class GameServer {
     }, this.options.heartbeatIntervalMs);
   }
 
-  private handleHttp(req: IncomingMessage, res: ServerResponse): void {
+  /** `GET /health`: 200 "ok" se o banco responde; 503 "db down" se não. */
+  private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === "GET" && req.url === "/health") {
-      res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+      const healthy: boolean = await this.options.accounts.isHealthy();
+      res.writeHead(healthy ? 200 : 503, { "content-type": "text/plain" }).end(healthy ? "ok" : "db down");
       return;
     }
     res.writeHead(404).end();
   }
 
   private handleConnection(socket: WebSocket): void {
-    const session: Session = { id: randomBytes(6).toString("base64url"), socket, zone: null, alive: true };
+    const session: Session = {
+      connectionId: randomBytes(4).toString("hex"),
+      socket,
+      playerId: null,
+      zone: null,
+      joining: false,
+      alive: true,
+    };
     this.sessions.add(session);
 
     socket.on("pong", () => {
@@ -148,11 +172,13 @@ export class GameServer {
     });
     socket.on("close", (code: number) => {
       this.sessions.delete(session);
-      if (session.zone !== null) {
-        session.zone.leave(session.id);
-        this.log(`[${session.zone.config.id}] ${session.id} saiu (code ${code}, ${session.zone.size} online)`);
-        session.zone = null;
-      }
+      const zoneId: string | undefined = session.zone?.config.id;
+      const playerId: string | null = session.playerId;
+      void this.leaveZone(session).then(() => {
+        if (zoneId !== undefined && playerId !== null) {
+          this.log(`[${zoneId}] ${playerId} saiu (code ${code}, ${this.zones.get(zoneId)?.size ?? 0} online)`);
+        }
+      });
     });
     socket.on("error", () => {
       // O "close" vem logo depois; registrar o handler evita que o erro derrube o processo.
@@ -162,16 +188,16 @@ export class GameServer {
   private handleMessage(session: Session, message: ClientMessage): void {
     switch (message.type) {
       case ClientMessageType.Join:
-        this.handleJoin(session, message.data);
+        void this.handleJoin(session, message.data);
         return;
       case ClientMessageType.Move:
-        session.zone?.move(session.id, message.data);
+        if (session.zone !== null && session.playerId !== null) session.zone.move(session.playerId, message.data);
         return;
     }
   }
 
-  private handleJoin(session: Session, data: JoinData): void {
-    if (session.zone !== null) {
+  private async handleJoin(session: Session, data: JoinData): Promise<void> {
+    if (session.zone !== null || session.joining) {
       this.sendError(session, ErrorCode.AlreadyJoined, "já está numa zona");
       return;
     }
@@ -184,19 +210,82 @@ export class GameServer {
       this.reject(session, ErrorCode.UnknownZone, `zona "${data.zone}" não existe`);
       return;
     }
+
+    session.joining = true;
+    let login: GuestLogin;
+    try {
+      login = await this.options.accounts.loginGuest(data.guestToken);
+    } catch (error: unknown) {
+      session.joining = false;
+      console.error(`[${session.connectionId}] falha no login de convidado:`, error);
+      this.reject(session, ErrorCode.ServerError, "falha ao acessar as contas");
+      return;
+    }
+    session.joining = false;
+    // A conexão pode ter caído enquanto o banco respondia.
+    if (session.socket.readyState !== WebSocket.OPEN) return;
+
+    const playerId: string = login.account.playerId;
+    const previous: Session | undefined = this.online.get(playerId);
+    if (previous !== undefined) {
+      // Mesma conta em outra conexão: a antiga sai (salvando a posição) antes de a nova entrar.
+      await this.leaveZone(previous);
+      previous.socket.close(CloseCode.Replaced, "entrou em outra conexão");
+    }
+
     const socket: WebSocket = session.socket;
-    const result: JoinResult = zone.join({
-      id: session.id,
-      send: (text: string): void => {
-        if (socket.readyState === WebSocket.OPEN) socket.send(text);
+    const result: JoinResult = zone.join(
+      {
+        id: playerId,
+        send: (text: string): void => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(text);
+        },
       },
-    });
-    if (result === "full") {
+      GameServer.spawnFrom(login.account.lastPosition, zone),
+    );
+    if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");
       return;
     }
+
+    session.playerId = playerId;
     session.zone = zone;
-    this.log(`[${zone.config.id}] ${session.id} entrou (${zone.size} online)`);
+    this.online.set(playerId, session);
+    const players: PlayerSnapshot[] = result.players;
+    socket.send(
+      encodeServerMessage({
+        type: ServerMessageType.Welcome,
+        data: { playerId, guestToken: login.guestToken, zone: zone.config.id, players },
+      }),
+    );
+    this.log(`[${zone.config.id}] ${playerId} entrou${login.created ? " (conta nova)" : ""} (${zone.size} online)`);
+  }
+
+  /** Tira a sessão da zona e salva a posição. Pode ser chamada mais de uma vez. */
+  private async leaveZone(session: Session): Promise<void> {
+    const zone: Zone | null = session.zone;
+    const playerId: string | null = session.playerId;
+    session.zone = null;
+    session.playerId = null;
+    if (zone === null || playerId === null) return;
+
+    const snapshot: PlayerSnapshot | undefined = zone.getSnapshot(playerId);
+    zone.leave(playerId);
+    if (this.online.get(playerId) === session) this.online.delete(playerId);
+    if (snapshot === undefined) return;
+
+    const position: SavedPosition = { zone: zone.config.id, x: snapshot.x, y: snapshot.y, z: snapshot.z, rotY: snapshot.rotY };
+    try {
+      await this.options.accounts.savePosition(playerId, position);
+    } catch (error: unknown) {
+      console.error(`[${zone.config.id}] falha ao salvar posição de ${playerId}:`, error);
+    }
+  }
+
+  /** Volta à última posição se ela for desta zona; senão, spawn padrão (aleatório perto do centro). */
+  private static spawnFrom(last: SavedPosition | null, zone: Zone): SpawnPoint | undefined {
+    if (last === null || last.zone !== zone.config.id) return undefined;
+    return { x: last.x, y: last.y, z: last.z, rotY: last.rotY };
   }
 
   private sendError(session: Session, code: ErrorCode, message: string): void {

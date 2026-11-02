@@ -10,7 +10,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele no `join`; se for diferente, a entrada é recusada. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -22,7 +22,7 @@ export const ClientMessageType = {
 
 /** Tipos de mensagem servidor → cliente. */
 export const ServerMessageType = {
-  /** Entrada aceita: id da sessão e todos os jogadores da zona (inclusive o próprio). */
+  /** Entrada aceita: id do jogador, token de convidado e todos os jogadores da zona (inclusive o próprio). */
   Welcome: "welcome",
   /** Outro jogador entrou na zona. */
   PlayerJoined: "player_joined",
@@ -46,6 +46,8 @@ export const ErrorCode = {
   ZoneFull: "zone_full",
   /** `join` repetido na mesma conexão. A conexão continua. */
   AlreadyJoined: "already_joined",
+  /** Falha interna (ex.: banco fora do ar) ao processar o `join`. A conexão é fechada. */
+  ServerError: "server_error",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
@@ -57,6 +59,8 @@ export const CloseCode = {
   Rejected: 4000,
   /** Conexão sem resposta ao ping (heartbeat). */
   Timeout: 4001,
+  /** A mesma conta entrou por outra conexão (outro aparelho/janela); esta foi derrubada. */
+  Replaced: 4002,
 } as const;
 
 /** Payload de `join`. */
@@ -65,6 +69,11 @@ export interface JoinData {
   readonly zone: string;
   /** {@link PROTOCOL_VERSION} do cliente. */
   readonly version: number;
+  /**
+   * Token de convidado guardado no aparelho, ou `null` no primeiro acesso (o servidor cria a conta
+   * e devolve um token novo no `welcome`). Ver mmo-docs [INFRA-07].
+   */
+  readonly guestToken: string | null;
 }
 
 /** Payload de `move`. Metros e radianos. */
@@ -82,7 +91,7 @@ export type ClientMessage =
 
 /** Estado público de um jogador, como enviado aos clientes. */
 export interface PlayerSnapshot {
-  /** Id da sessão do jogador. */
+  /** Id público do jogador (estável entre sessões). */
   readonly id: string;
   readonly x: number;
   readonly y: number;
@@ -94,7 +103,14 @@ export interface PlayerSnapshot {
 export type ServerMessage =
   | {
       readonly type: typeof ServerMessageType.Welcome;
-      readonly data: { readonly sessionId: string; readonly zone: string; readonly players: readonly PlayerSnapshot[] };
+      readonly data: {
+        /** Id público do jogador desta conexão. */
+        readonly playerId: string;
+        /** Token a guardar no aparelho e mandar no próximo `join`. */
+        readonly guestToken: string;
+        readonly zone: string;
+        readonly players: readonly PlayerSnapshot[];
+      };
     }
   | { readonly type: typeof ServerMessageType.PlayerJoined; readonly data: { readonly player: PlayerSnapshot } }
   | { readonly type: typeof ServerMessageType.PlayerLeft; readonly data: { readonly id: string } }
@@ -117,10 +133,13 @@ const isFiniteNumber = (value: unknown): value is number =>
 /** Valida o payload de `join`. */
 export function parseJoinData(data: unknown): JoinData | null {
   if (!isRecord(data)) return null;
-  const { zone, version } = data;
+  const { zone, version, guestToken } = data;
   if (typeof zone !== "string" || zone.length === 0 || zone.length > 64) return null;
   if (!isFiniteNumber(version) || !Number.isInteger(version)) return null;
-  return { zone, version };
+  // Ausente ou null = primeiro acesso. Se vier, é string de tamanho razoável.
+  if (guestToken === undefined || guestToken === null) return { zone, version, guestToken: null };
+  if (typeof guestToken !== "string" || guestToken.length === 0 || guestToken.length > 128) return null;
+  return { zone, version, guestToken };
 }
 
 /** Valida o payload de `move`. */
