@@ -13,12 +13,16 @@ import {
   parseClientMessage,
   type ClientMessage,
   type JoinData,
+  type LoginData,
   type PlayerSnapshot,
+  type RegisterData,
+  type ResumeData,
 } from "./net/protocol.js";
 import { Zone, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
-import type { AccountStore, GuestLogin, SavedPosition } from "./accounts/AccountStore.js";
+import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
+import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
@@ -38,34 +42,56 @@ export interface GameServerOptions {
 /** Tamanho máximo de uma mensagem do cliente, em bytes. Maior que isso, o `ws` fecha a conexão (1009). */
 const MAX_MESSAGE_BYTES = 4096;
 
+/** Falhas de login/sessão aceitas por conexão antes de fechá-la (freio contra adivinhar senha). */
+export const MAX_AUTH_FAILURES = 5;
+
 /** Uma conexão WebSocket aberta. */
 interface Session {
   /** Id da conexão (só para log/diagnóstico; o jogo usa o `playerId`). */
   readonly connectionId: string;
   readonly socket: WebSocket;
-  /** Id público do jogador; `null` até o `join` ser aceito. */
-  playerId: string | null;
+  /** Conta autenticada nesta conexão; `null` até `register`/`login`/`resume` darem certo. */
+  account: Account | null;
+  /** Token de sessão desta conexão (para o `logout` encerrá-lo); `null` sem autenticação. */
+  sessionToken: string | null;
+  /** Autenticação em andamento (consulta ao banco/hash de senha). */
+  authenticating: boolean;
+  /** Quantas autenticações falharam nesta conexão. */
+  authFailures: number;
   /** Zona em que entrou; `null` até o `join` ser aceito. */
   zone: Zone | null;
-  /** Um `join` está sendo processado (consulta ao banco em andamento). */
-  joining: boolean;
   /** Respondeu ao último ping do heartbeat. */
   alive: boolean;
 }
 
+/** Como a autenticação aconteceu (só para o log). */
+type AuthKind = "cadastro" | "login" | "sessão";
+
+/** Mensagens em português para cada erro de autenticação (o cliente mostra direto). */
+const AUTH_MESSAGES = {
+  [ErrorCode.InvalidUsername]: "Username deve ter de 3 a 16 caracteres: letras, números ou _.",
+  [ErrorCode.InvalidEmail]: "E-mail inválido.",
+  [ErrorCode.InvalidPassword]: "A senha deve ter de 8 a 72 caracteres.",
+  [ErrorCode.UsernameTaken]: "Esse username já está em uso.",
+  [ErrorCode.EmailTaken]: "Esse e-mail já está cadastrado.",
+  [ErrorCode.InvalidCredentials]: "Usuário/e-mail ou senha incorretos.",
+  [ErrorCode.InvalidSession]: "Sua sessão expirou. Entre novamente.",
+} as const;
+
 /**
  * Servidor do jogo: HTTP (`GET /health`, `GET /updates/*`) + WebSocket na mesma porta.
  *
- * Cada conexão vira uma {@link Session}. O `join` faz o login de convidado no
- * {@link AccountStore} e coloca o jogador na {@link Zone} (na última posição salva,
- * se houver). Ao sair, a posição é salva. Protocolo: `src/net/protocol.ts` e mmo-docs [INFRA-04].
+ * Cada conexão vira uma {@link Session}: primeiro autentica (`register`, `login` ou `resume`,
+ * mmo-docs [INFRA-07]), depois entra numa {@link Zone} com `join` (na última posição salva, se houver).
+ * Ao sair, a posição é salva. Uma conta tem no máximo uma conexão: entrar de novo derruba a antiga.
+ * Protocolo: `src/net/protocol.ts` e mmo-docs [INFRA-04].
  */
 export class GameServer {
   private readonly http: Server;
   private readonly wss: WebSocketServer;
   private readonly zones: Map<string, Zone> = new Map();
   private readonly sessions: Set<Session> = new Set();
-  /** Sessão ativa de cada jogador em jogo. Garante uma conexão por conta. */
+  /** Sessão autenticada de cada jogador. Garante uma conexão por conta. */
   private readonly online: Map<string, Session> = new Map();
   private readonly options: Required<GameServerOptions>;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -163,9 +189,11 @@ export class GameServer {
     const session: Session = {
       connectionId: randomBytes(4).toString("hex"),
       socket,
-      playerId: null,
+      account: null,
+      sessionToken: null,
+      authenticating: false,
+      authFailures: 0,
       zone: null,
-      joining: false,
       alive: true,
     };
     this.sessions.add(session);
@@ -183,11 +211,12 @@ export class GameServer {
     });
     socket.on("close", (code: number) => {
       this.sessions.delete(session);
+      const account: Account | null = session.account;
+      if (account !== null && this.online.get(account.playerId) === session) this.online.delete(account.playerId);
       const zoneId: string | undefined = session.zone?.config.id;
-      const playerId: string | null = session.playerId;
       void this.leaveZone(session).then(() => {
-        if (zoneId !== undefined && playerId !== null) {
-          this.log(`[${zoneId}] ${playerId} saiu (code ${code}, ${this.zones.get(zoneId)?.size ?? 0} online)`);
+        if (zoneId !== undefined && account !== null) {
+          this.log(`[${zoneId}] ${account.username} saiu (code ${code}, ${this.zones.get(zoneId)?.size ?? 0} online)`);
         }
       });
     });
@@ -198,22 +227,160 @@ export class GameServer {
 
   private handleMessage(session: Session, message: ClientMessage): void {
     switch (message.type) {
+      case ClientMessageType.Register:
+        void this.handleRegister(session, message.data);
+        return;
+      case ClientMessageType.Login:
+        void this.handleLogin(session, message.data);
+        return;
+      case ClientMessageType.Resume:
+        void this.handleResume(session, message.data);
+        return;
+      case ClientMessageType.Logout:
+        void this.handleLogout(session);
+        return;
       case ClientMessageType.Join:
         void this.handleJoin(session, message.data);
         return;
       case ClientMessageType.Input:
-        if (session.zone !== null && session.playerId !== null) session.zone.queueInput(session.playerId, message.data);
+        if (session.zone !== null && session.account !== null) session.zone.queueInput(session.account.playerId, message.data);
         return;
     }
   }
 
+  /**
+   * Checagens comuns antes de autenticar. Devolve `false` (e já respondeu) se não pode seguir.
+   * Versão errada fecha a conexão: um cliente desatualizado não deve nem tentar.
+   */
+  private canAuthenticate(session: Session, version: number): boolean {
+    if (session.account !== null) {
+      this.sendError(session, ErrorCode.AlreadyAuthenticated, "já autenticado");
+      return false;
+    }
+    if (session.authenticating) {
+      this.sendError(session, ErrorCode.BadMessage, "autenticação em andamento");
+      return false;
+    }
+    if (version !== PROTOCOL_VERSION) {
+      this.reject(session, ErrorCode.VersionMismatch, `protocolo ${version}, servidor usa ${PROTOCOL_VERSION}`);
+      return false;
+    }
+    return true;
+  }
+
+  private async handleRegister(session: Session, data: RegisterData): Promise<void> {
+    if (!this.canAuthenticate(session, data.version)) return;
+    const username: string = data.username.trim();
+    const email: string = data.email.trim();
+    if (!isValidUsername(username)) return this.authError(session, ErrorCode.InvalidUsername, false);
+    if (!isValidEmail(email)) return this.authError(session, ErrorCode.InvalidEmail, false);
+    if (!isValidPassword(data.password)) return this.authError(session, ErrorCode.InvalidPassword, false);
+
+    const result: RegisterResult | undefined = await this.runAuth(session, () =>
+      this.options.accounts.register(username, email, data.password),
+    );
+    if (result === undefined) return;
+    if (!result.ok) {
+      const code: keyof typeof AUTH_MESSAGES = result.reason === "username_taken" ? ErrorCode.UsernameTaken : ErrorCode.EmailTaken;
+      return this.authError(session, code, false);
+    }
+    this.authenticated(session, result.account, result.sessionToken, "cadastro");
+  }
+
+  private async handleLogin(session: Session, data: LoginData): Promise<void> {
+    if (!this.canAuthenticate(session, data.version)) return;
+    const result: AuthSuccess | null | undefined = await this.runAuth(session, () =>
+      this.options.accounts.login(data.login, data.password),
+    );
+    if (result === undefined) return;
+    if (result === null) return this.authError(session, ErrorCode.InvalidCredentials, true);
+    this.authenticated(session, result.account, result.sessionToken, "login");
+  }
+
+  private async handleResume(session: Session, data: ResumeData): Promise<void> {
+    if (!this.canAuthenticate(session, data.version)) return;
+    const account: Account | null | undefined = await this.runAuth(session, () =>
+      this.options.accounts.resume(data.sessionToken),
+    );
+    if (account === undefined) return;
+    if (account === null) return this.authError(session, ErrorCode.InvalidSession, true);
+    this.authenticated(session, account, data.sessionToken, "sessão");
+  }
+
+  /**
+   * Roda uma operação de conta marcando a sessão como "autenticando". Erro do banco → `server_error`
+   * e fecha. Devolve `undefined` se não deve seguir (erro, ou a conexão caiu enquanto esperava).
+   */
+  private async runAuth<T>(session: Session, operation: () => Promise<T>): Promise<T | undefined> {
+    session.authenticating = true;
+    try {
+      const result: T = await operation();
+      return session.socket.readyState === WebSocket.OPEN ? result : undefined;
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao acessar as contas:`, error);
+      this.reject(session, ErrorCode.ServerError, "falha ao acessar as contas");
+      return undefined;
+    } finally {
+      session.authenticating = false;
+    }
+  }
+
+  /**
+   * Responde um erro de autenticação. Se `countsAsFailure` (senha/sessão errada), soma uma falha e,
+   * passando de {@link MAX_AUTH_FAILURES}, fecha a conexão com `too_many_attempts`.
+   */
+  private authError(session: Session, code: keyof typeof AUTH_MESSAGES, countsAsFailure: boolean): void {
+    if (countsAsFailure) {
+      session.authFailures++;
+      if (session.authFailures >= MAX_AUTH_FAILURES) {
+        this.reject(session, ErrorCode.TooManyAttempts, "Tentativas demais. Tente novamente mais tarde.");
+        return;
+      }
+    }
+    this.sendError(session, code, AUTH_MESSAGES[code]);
+  }
+
+  /** Autenticação aceita: derruba outra conexão da mesma conta e responde `auth_ok`. */
+  private authenticated(session: Session, account: Account, sessionToken: string, kind: AuthKind): void {
+    const previous: Session | undefined = this.online.get(account.playerId);
+    if (previous !== undefined && previous !== session) {
+      // A antiga sai da zona (salvando a posição) e é fechada; a nova assume.
+      void this.leaveZone(previous);
+      previous.socket.close(CloseCode.Replaced, "entrou em outra conexão");
+    }
+    session.account = account;
+    session.sessionToken = sessionToken;
+    this.online.set(account.playerId, session);
+    session.socket.send(
+      encodeServerMessage({
+        type: ServerMessageType.AuthOk,
+        data: { playerId: account.playerId, username: account.username, sessionToken },
+      }),
+    );
+    this.log(`[auth] ${account.username} autenticou (${kind})`);
+  }
+
+  /** Encerra a sessão deste aparelho (o token deixa de valer) e fecha a conexão normalmente. */
+  private async handleLogout(session: Session): Promise<void> {
+    const token: string | null = session.sessionToken;
+    if (token !== null) {
+      try {
+        await this.options.accounts.logout(token);
+      } catch (error: unknown) {
+        console.error(`[${session.connectionId}] falha no logout:`, error);
+      }
+    }
+    session.socket.close(CloseCode.Normal, "logout");
+  }
+
   private async handleJoin(session: Session, data: JoinData): Promise<void> {
-    if (session.zone !== null || session.joining) {
-      this.sendError(session, ErrorCode.AlreadyJoined, "já está numa zona");
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
       return;
     }
-    if (data.version !== PROTOCOL_VERSION) {
-      this.reject(session, ErrorCode.VersionMismatch, `protocolo ${data.version}, servidor usa ${PROTOCOL_VERSION}`);
+    if (session.zone !== null) {
+      this.sendError(session, ErrorCode.AlreadyJoined, "já está numa zona");
       return;
     }
     const zone: Zone | undefined = this.zones.get(data.zone);
@@ -222,81 +389,57 @@ export class GameServer {
       return;
     }
 
-    session.joining = true;
-    let login: GuestLogin;
-    try {
-      login = await this.options.accounts.loginGuest(data.guestToken);
-    } catch (error: unknown) {
-      session.joining = false;
-      console.error(`[${session.connectionId}] falha no login de convidado:`, error);
-      this.reject(session, ErrorCode.ServerError, "falha ao acessar as contas");
-      return;
-    }
-    session.joining = false;
-    // A conexão pode ter caído enquanto o banco respondia.
-    if (session.socket.readyState !== WebSocket.OPEN) return;
-
-    const playerId: string = login.account.playerId;
-    const previous: Session | undefined = this.online.get(playerId);
-    if (previous !== undefined) {
-      // Mesma conta em outra conexão: a antiga sai (salvando a posição) antes de a nova entrar.
-      await this.leaveZone(previous);
-      previous.socket.close(CloseCode.Replaced, "entrou em outra conexão");
-    }
-
     const socket: WebSocket = session.socket;
     const result: JoinResult = zone.join(
       {
-        id: playerId,
+        id: account.playerId,
+        name: account.username,
         send: (text: string): void => {
           if (socket.readyState === WebSocket.OPEN) socket.send(text);
         },
       },
-      GameServer.spawnFrom(login.account.lastPosition, zone),
+      GameServer.spawnFrom(account.lastPosition, zone),
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");
       return;
     }
 
-    session.playerId = playerId;
     session.zone = zone;
-    this.online.set(playerId, session);
-    const players: PlayerSnapshot[] = result.players;
     socket.send(
       encodeServerMessage({
         type: ServerMessageType.Welcome,
         data: {
-          playerId,
-          guestToken: login.guestToken,
+          playerId: account.playerId,
           zone: zone.config.id,
           tick: zone.tickNumber,
           sim: zone.simParams,
-          players,
+          players: result.players,
         },
       }),
     );
-    this.log(`[${zone.config.id}] ${playerId} entrou${login.created ? " (conta nova)" : ""} (${zone.size} online)`);
+    this.log(`[${zone.config.id}] ${account.username} entrou (${zone.size} online)`);
   }
 
   /** Tira a sessão da zona e salva a posição. Pode ser chamada mais de uma vez. */
   private async leaveZone(session: Session): Promise<void> {
     const zone: Zone | null = session.zone;
-    const playerId: string | null = session.playerId;
+    const account: Account | null = session.account;
     session.zone = null;
-    session.playerId = null;
-    if (zone === null || playerId === null) return;
+    if (zone === null || account === null) return;
 
+    const playerId: string = account.playerId;
     const snapshot: PlayerSnapshot | undefined = zone.getSnapshot(playerId);
     zone.leave(playerId);
-    if (this.online.get(playerId) === session) this.online.delete(playerId);
     if (snapshot === undefined) return;
 
     const position: SavedPosition = { zone: zone.config.id, x: snapshot.x, y: snapshot.y, z: snapshot.z, rotY: snapshot.rotY };
+    // A conta em memória da sessão também é atualizada: um `join` na mesma conexão volta aqui.
+    session.account = { ...account, lastPosition: position };
     try {
       await this.options.accounts.savePosition(playerId, position);
     } catch (error: unknown) {
-      console.error(`[${zone.config.id}] falha ao salvar posição de ${playerId}:`, error);
+      console.error(`[${zone.config.id}] falha ao salvar posição de ${account.username}:`, error);
     }
   }
 

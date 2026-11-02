@@ -1,48 +1,72 @@
 import assert from "assert";
 
-import { GameServer } from "../src/GameServer.js";
+import { GameServer, MAX_AUTH_FAILURES } from "../src/GameServer.js";
 import { InMemoryAccountStore } from "../src/accounts/AccountStore.js";
 import { CloseCode, PROTOCOL_VERSION } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
-import { TestClient, sleep } from "./helpers.js";
+import { TestClient, sleep, type ReceivedMessage } from "./helpers.js";
 
 const ZONE = "zone_1";
+const PASSWORD = "senha-forte-123";
 
-/** Resultado de {@link joined}. */
-interface Joined {
+/** Jogador conectado e autenticado (e, se pedido, dentro da zona). */
+interface Player {
   readonly client: TestClient;
   readonly playerId: string;
-  readonly guestToken: string;
-  readonly players: unknown[];
+  readonly username: string;
+  readonly sessionToken: string;
+}
+
+/** Lê os campos de um `auth_ok`. */
+function authData(message: ReceivedMessage): { playerId: string; username: string; sessionToken: string } {
+  const { playerId, username, sessionToken } = message.data;
+  assert.ok(typeof playerId === "string" && typeof username === "string" && typeof sessionToken === "string");
+  return { playerId, username, sessionToken };
+}
+
+/** Entrada de `id` numa lista `players` vinda da rede (cópia simples dos campos). */
+function entryOf(players: unknown, id: string): Record<string, unknown> | undefined {
+  if (!Array.isArray(players)) return undefined;
+  for (const p of players) {
+    if (typeof p === "object" && p !== null && "id" in p && p.id === id) {
+      const entry: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(p)) entry[k] = v;
+      return entry;
+    }
+  }
+  return undefined;
 }
 
 describe("GameServer", () => {
   let server: GameServer;
-  let accounts: InMemoryAccountStore;
   let port: number;
   const clients: TestClient[] = [];
+  let counter = 0;
 
-  /** Conecta e entra na zona (com o token, se houver), devolvendo os dados do `welcome`. */
-  async function joined(guestToken: string | null = null): Promise<Joined> {
+  async function connect(): Promise<TestClient> {
     const client: TestClient = await TestClient.connect(port);
     clients.push(client);
-    client.send("join", { zone: ZONE, version: PROTOCOL_VERSION, guestToken });
-    const welcome = await client.next("welcome");
-    const playerId: unknown = welcome.data["playerId"];
-    const token: unknown = welcome.data["guestToken"];
-    const players: unknown = welcome.data["players"];
-    assert.ok(typeof playerId === "string" && typeof token === "string" && Array.isArray(players));
-    return { client, playerId, guestToken: token, players };
+    return client;
   }
 
-  /** Lê o campo `id` de um objeto vindo da rede. */
-  function idOf(value: unknown): unknown {
-    return typeof value === "object" && value !== null && "id" in value ? value.id : undefined;
+  /** Cria uma conta nova (username único por teste) e devolve o jogador autenticado. */
+  async function registered(username: string = `Jogador_${++counter}`): Promise<Player> {
+    const client: TestClient = await connect();
+    client.send("register", { version: PROTOCOL_VERSION, username, email: `${username}@teste.com`, password: PASSWORD });
+    return { client, ...authData(await client.next("auth_ok")) };
+  }
+
+  /** Manda `join` e devolve a lista `players` do `welcome`. */
+  async function join(player: Player): Promise<unknown[]> {
+    player.client.send("join", { zone: ZONE });
+    const welcome: ReceivedMessage = await player.client.next("welcome");
+    const players: unknown = welcome.data["players"];
+    assert.ok(Array.isArray(players));
+    return players;
   }
 
   beforeEach(async () => {
-    accounts = new InMemoryAccountStore();
-    server = new GameServer({ accounts, heartbeatIntervalMs: 100, log: false });
+    server = new GameServer({ accounts: new InMemoryAccountStore(), heartbeatIntervalMs: 100, log: false });
     port = await server.listen(0);
   });
 
@@ -51,116 +75,174 @@ describe("GameServer", () => {
     await server.close();
   });
 
-  it("entra na zona e avisa os outros (player_joined / player_left)", async () => {
-    const a = await joined();
-    assert.strictEqual(a.players.length, 1);
+  describe("cadastro e login", () => {
+    it("cadastro devolve auth_ok com o username como foi digitado", async () => {
+      const p: Player = await registered("GaBrIeL_01");
+      assert.strictEqual(p.username, "GaBrIeL_01");
+      assert.ok(p.sessionToken.length > 20);
+    });
 
-    const b = await joined();
-    assert.strictEqual(b.players.length, 2);
-    const joinedMsg = await a.client.next("player_joined");
-    assert.strictEqual(idOf(joinedMsg.data["player"]), b.playerId);
+    it("username é único sem diferenciar maiúsculas; e-mail também", async () => {
+      await registered("Gabriel");
+      const c: TestClient = await connect();
+      c.send("register", { version: PROTOCOL_VERSION, username: "gabriel", email: "outro@x.com", password: PASSWORD });
+      assert.strictEqual((await c.next("error")).data["code"], "username_taken");
+      c.send("register", { version: PROTOCOL_VERSION, username: "Outro", email: "GABRIEL@teste.com", password: PASSWORD });
+      assert.strictEqual((await c.next("error")).data["code"], "email_taken");
+      assert.strictEqual(c.closeCode, null, "erro de cadastro não derruba a conexão");
+    });
 
-    await b.client.close();
-    const left = await a.client.next("player_left");
-    assert.strictEqual(left.data["id"], b.playerId);
-    assert.strictEqual(server.getZone(ZONE)?.size, 1);
-  });
-
-  /** Entrada de `id` na lista `players` de um snapshot/welcome. */
-  function entryOf(players: unknown, id: string): Record<string, unknown> | undefined {
-    if (!Array.isArray(players)) return undefined;
-    for (const p of players) {
-      if (typeof p === "object" && p !== null && "id" in p && p.id === id) {
-        const entry: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(p)) entry[k] = v;
-        return entry;
+    it("recusa username, e-mail e senha fora das regras", async () => {
+      const c: TestClient = await connect();
+      const cases: Array<[Record<string, string>, string]> = [
+        [{ username: "ab", email: "a@b.com", password: PASSWORD }, "invalid_username"],
+        [{ username: "com espaço", email: "a@b.com", password: PASSWORD }, "invalid_username"],
+        [{ username: "Valido", email: "sem-arroba", password: PASSWORD }, "invalid_email"],
+        [{ username: "Valido", email: "a@b.com", password: "curta" }, "invalid_password"],
+      ];
+      for (const [data, code] of cases) {
+        c.send("register", { version: PROTOCOL_VERSION, ...data });
+        assert.strictEqual((await c.next("error")).data["code"], code, JSON.stringify(data));
       }
-    }
-    return undefined;
-  }
+    });
 
-  it("servidor simula o input: confirma no ack e replica para os outros", async () => {
-    const a = await joined();
-    const b = await joined();
-    const startX: unknown = entryOf(a.players, a.playerId)?.["x"];
-    assert.ok(typeof startX === "number");
+    it("login por username ou e-mail, sem diferenciar maiúsculas; nome exibido continua o original", async () => {
+      const created: Player = await registered("Maria_Silva");
+      for (const login of ["maria_silva", "MARIA_SILVA@TESTE.COM"]) {
+        const c: TestClient = await connect();
+        c.send("login", { version: PROTOCOL_VERSION, login, password: PASSWORD });
+        const ok = authData(await c.next("auth_ok"));
+        assert.strictEqual(ok.playerId, created.playerId);
+        assert.strictEqual(ok.username, "Maria_Silva");
+      }
+    });
 
-    a.client.send("input", { seq: 1, x: 1, z: 0 });
-    const acked = await a.client.nextMatching("snapshot", (m) => m.data["ack"] === 1);
-    const meAfter = entryOf(acked.data["players"], a.playerId);
-    assert.ok(meAfter && typeof meAfter["x"] === "number");
-    assert.ok(Math.abs(meAfter["x"] - (startX + MOVE_SPEED * TICK_SECONDS)) < 1e-9, "andou exatamente um tick");
+    it("senha errada: invalid_credentials; depois de várias, fecha a conexão", async () => {
+      await registered("Alvo");
+      const c: TestClient = await connect();
+      for (let i = 1; i < MAX_AUTH_FAILURES; i++) {
+        c.send("login", { version: PROTOCOL_VERSION, login: "Alvo", password: "errada-123" });
+        assert.strictEqual((await c.next("error")).data["code"], "invalid_credentials");
+      }
+      c.send("login", { version: PROTOCOL_VERSION, login: "Alvo", password: "errada-123" });
+      assert.strictEqual((await c.next("error")).data["code"], "too_many_attempts");
+      assert.strictEqual(await c.waitClose(), CloseCode.Rejected);
+    });
 
-    const seen = await b.client.nextMatching("snapshot", (m) => entryOf(m.data["players"], a.playerId)?.["x"] === meAfter["x"]);
-    assert.strictEqual(seen.data["ack"], 0, "o ack de b é o de b, não o de a");
+    it("resume entra com o token salvo; logout invalida o token", async () => {
+      const p: Player = await registered();
+      const c: TestClient = await connect();
+      c.send("resume", { version: PROTOCOL_VERSION, sessionToken: p.sessionToken });
+      assert.strictEqual(authData(await c.next("auth_ok")).playerId, p.playerId);
+      assert.strictEqual(await p.client.waitClose(), CloseCode.Replaced, "a conexão antiga da mesma conta cai");
+
+      c.send("logout", {});
+      assert.strictEqual(await c.waitClose(), CloseCode.Normal);
+      const d: TestClient = await connect();
+      d.send("resume", { version: PROTOCOL_VERSION, sessionToken: p.sessionToken });
+      assert.strictEqual((await d.next("error")).data["code"], "invalid_session");
+    });
+
+    it("versão de protocolo diferente fecha com 4000", async () => {
+      const c: TestClient = await connect();
+      c.send("login", { version: PROTOCOL_VERSION + 1, login: "x", password: "y" });
+      assert.strictEqual((await c.next("error")).data["code"], "version_mismatch");
+      assert.strictEqual(await c.waitClose(), CloseCode.Rejected);
+    });
+
+    it("join antes de autenticar é recusado", async () => {
+      const c: TestClient = await connect();
+      c.send("join", { zone: ZONE });
+      assert.strictEqual((await c.next("error")).data["code"], "not_authenticated");
+    });
   });
 
-  it("ignora o antigo `move` com posição (o cliente não diz onde está)", async () => {
-    const a = await joined();
-    a.client.send("move", { x: 100, y: 0, z: 100, rotY: 0 });
-    const error = await a.client.next("error");
-    assert.strictEqual(error.data["code"], "bad_message");
-  });
+  describe("zona", () => {
+    it("entra na zona e avisa os outros, com o nome de cada um", async () => {
+      const a: Player = await registered("Alice");
+      assert.strictEqual(entryOf(await join(a), a.playerId)?.["name"], "Alice");
 
-  it("conta de convidado: mesmo token = mesmo jogador, voltando onde parou", async () => {
-    const first = await joined();
-    for (let seq = 1; seq <= 4; seq++) first.client.send("input", { seq, x: 0, z: 1 });
-    const last = await first.client.nextMatching("snapshot", (m) => m.data["ack"] === 4);
-    const where = entryOf(last.data["players"], first.playerId);
-    await first.client.close();
-    await sleep(20); // savePosition é assíncrono
+      const b: Player = await registered("Bob_2");
+      const players: unknown[] = await join(b);
+      assert.strictEqual(players.length, 2);
+      assert.strictEqual(entryOf(players, a.playerId)?.["name"], "Alice");
+      const joinedMsg: ReceivedMessage = await a.client.next("player_joined");
+      assert.strictEqual(entryOf([joinedMsg.data["player"]], b.playerId)?.["name"], "Bob_2");
 
-    const again = await joined(first.guestToken);
-    assert.strictEqual(again.playerId, first.playerId);
-    assert.strictEqual(again.guestToken, first.guestToken);
-    assert.deepStrictEqual(entryOf(again.players, first.playerId), where);
-  });
+      await b.client.close();
+      assert.strictEqual((await a.client.next("player_left")).data["id"], b.playerId);
+      assert.strictEqual(server.getZone(ZONE)?.size, 1);
+    });
 
-  it("token desconhecido cria conta nova com token novo", async () => {
-    const a = await joined("token-que-nao-existe");
-    assert.notStrictEqual(a.guestToken, "token-que-nao-existe");
-  });
+    it("servidor simula o input: confirma no ack e replica para os outros", async () => {
+      const a: Player = await registered();
+      const b: Player = await registered();
+      const startX: unknown = entryOf(await join(a), a.playerId)?.["x"];
+      await join(b);
+      assert.ok(typeof startX === "number");
 
-  it("a mesma conta entrando de novo derruba a conexão antiga (4002)", async () => {
-    const first = await joined();
-    const second = await joined(first.guestToken);
-    assert.strictEqual(await first.client.waitClose(), CloseCode.Replaced);
-    assert.strictEqual(second.playerId, first.playerId);
-    assert.strictEqual(server.getZone(ZONE)?.size, 1);
+      a.client.send("input", { seq: 1, x: 1, z: 0 });
+      const acked: ReceivedMessage = await a.client.nextMatching("snapshot", (m) => m.data["ack"] === 1);
+      const after: unknown = entryOf(acked.data["players"], a.playerId)?.["x"];
+      assert.ok(typeof after === "number" && Math.abs(after - (startX + MOVE_SPEED * TICK_SECONDS)) < 1e-9);
+
+      const seen: ReceivedMessage = await b.client.nextMatching(
+        "snapshot",
+        (m) => entryOf(m.data["players"], a.playerId)?.["x"] === after,
+      );
+      assert.strictEqual(seen.data["ack"], 0, "o ack de b é o de b, não o de a");
+    });
+
+    it("volta onde parou ao entrar de novo pela sessão salva", async () => {
+      const first: Player = await registered();
+      await join(first);
+      for (let seq = 1; seq <= 4; seq++) first.client.send("input", { seq, x: 0, z: 1 });
+      const last: ReceivedMessage = await first.client.nextMatching("snapshot", (m) => m.data["ack"] === 4);
+      const where = entryOf(last.data["players"], first.playerId);
+      await first.client.close();
+      await sleep(20); // savePosition é assíncrono
+
+      const c: TestClient = await connect();
+      c.send("resume", { version: PROTOCOL_VERSION, sessionToken: first.sessionToken });
+      await c.next("auth_ok");
+      c.send("join", { zone: ZONE });
+      const players: unknown = (await c.next("welcome")).data["players"];
+      const me = entryOf(players, first.playerId);
+      assert.deepStrictEqual({ ...me, name: undefined }, { ...where, name: undefined });
+    });
+
+    it("ignora o antigo `move` com posição (o cliente não diz onde está)", async () => {
+      const a: Player = await registered();
+      await join(a);
+      a.client.send("move", { x: 100, y: 0, z: 100, rotY: 0 });
+      assert.strictEqual((await a.client.next("error")).data["code"], "bad_message");
+    });
+
+    it("zona inexistente fecha com 4000", async () => {
+      const a: Player = await registered();
+      a.client.send("join", { zone: "zona_que_nao_existe" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "unknown_zone");
+      assert.strictEqual(await a.client.waitClose(), CloseCode.Rejected);
+    });
+
+    it("desconecta quem não responde ao heartbeat e tira da zona", async () => {
+      const a: Player = await registered();
+      const b: Player = await registered();
+      await join(a);
+      await join(b);
+      // Simula celular sem rede: com a leitura pausada, o cliente não responde aos pings.
+      b.client.socket.pause();
+      assert.strictEqual((await a.client.next("player_left", 3000)).data["id"], b.playerId);
+      await sleep(10);
+      assert.strictEqual(server.getZone(ZONE)?.size, 1);
+    });
   });
 
   it("responde bad_message a mensagem inválida e mantém a conexão", async () => {
-    const a = await joined();
-    a.client.socket.send("lixo");
-    const error = await a.client.next("error");
-    assert.strictEqual(error.data["code"], "bad_message");
-    assert.strictEqual(a.client.closeCode, null);
-  });
-
-  it("recusa versão de protocolo diferente e zona inexistente, fechando com 4000", async () => {
-    for (const data of [
-      { zone: ZONE, version: PROTOCOL_VERSION + 1 },
-      { zone: "zona_que_nao_existe", version: PROTOCOL_VERSION },
-    ]) {
-      const client: TestClient = await TestClient.connect(port);
-      clients.push(client);
-      client.send("join", data);
-      const error = await client.next("error");
-      assert.ok(error.data["code"] === "version_mismatch" || error.data["code"] === "unknown_zone");
-      assert.strictEqual(await client.waitClose(), CloseCode.Rejected);
-    }
-  });
-
-  it("desconecta quem não responde ao heartbeat e tira da zona", async () => {
-    const a = await joined();
-    const b = await joined();
-    // Simula celular sem rede: com a leitura pausada, o cliente não responde aos pings.
-    b.client.socket.pause();
-
-    const left = await a.client.next("player_left", 3000);
-    assert.strictEqual(left.data["id"], b.playerId);
-    await sleep(10);
-    assert.strictEqual(server.getZone(ZONE)?.size, 1);
+    const c: TestClient = await connect();
+    c.socket.send("lixo");
+    assert.strictEqual((await c.next("error")).data["code"], "bad_message");
+    assert.strictEqual(c.closeCode, null);
   });
 
   it("GET /health responde ok", async () => {

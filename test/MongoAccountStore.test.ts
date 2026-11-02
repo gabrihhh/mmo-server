@@ -27,22 +27,32 @@ describe("MongoAccountStore (MongoDB real)", function () {
     await store?.close();
   });
 
-  it("cria conta de convidado, reencontra pelo token e salva a posição", async () => {
+  it("cadastra, recusa repetidos sem diferenciar maiúsculas e guarda o nome como digitado", async () => {
     assert.ok(store);
-    const created = await store.loginGuest(null);
-    assert.strictEqual(created.created, true);
-    assert.strictEqual(created.account.lastPosition, null);
+    const created = await store.register("Joao_Pe", "Joao@Mail.com", "senha-1234");
+    assert.ok(created.ok);
+    assert.strictEqual(created.account.username, "Joao_Pe");
 
-    await store.savePosition(created.account.playerId, { zone: "zone_1", x: 1, y: 0, z: 2, rotY: 3 });
+    assert.deepStrictEqual(await store.register("JOAO_PE", "outro@mail.com", "senha-1234"), { ok: false, reason: "username_taken" });
+    assert.deepStrictEqual(await store.register("Outro", "joao@mail.com", "senha-1234"), { ok: false, reason: "email_taken" });
+  });
 
-    const again = await store.loginGuest(created.guestToken);
-    assert.strictEqual(again.created, false);
-    assert.strictEqual(again.account.playerId, created.account.playerId);
-    assert.deepStrictEqual(again.account.lastPosition, { zone: "zone_1", x: 1, y: 0, z: 2, rotY: 3 });
+  it("login por username/e-mail, sessão, logout e posição", async () => {
+    assert.ok(store);
+    assert.strictEqual(await store.login("joao_pe", "errada-000"), null);
+    const byName = await store.login("joao_pe", "senha-1234");
+    const byEmail = await store.login("JOAO@MAIL.COM", "senha-1234");
+    assert.ok(byName && byEmail);
+    assert.strictEqual(byName.account.username, "Joao_Pe");
+    assert.strictEqual(byEmail.account.playerId, byName.account.playerId);
 
-    const other = await store.loginGuest("token-desconhecido");
-    assert.strictEqual(other.created, true);
-    assert.notStrictEqual(other.account.playerId, created.account.playerId);
+    await store.savePosition(byName.account.playerId, { zone: "zone_1", x: 1, y: 0, z: 2, rotY: 3 });
+    const resumed = await store.resume(byName.sessionToken);
+    assert.deepStrictEqual(resumed?.lastPosition, { zone: "zone_1", x: 1, y: 0, z: 2, rotY: 3 });
+
+    await store.logout(byName.sessionToken);
+    assert.strictEqual(await store.resume(byName.sessionToken), null);
+    assert.ok(await store.resume(byEmail.sessionToken), "outra sessão continua valendo");
     assert.strictEqual(await store.isHealthy(), true);
   });
 });

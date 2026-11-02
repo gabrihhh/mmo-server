@@ -2,6 +2,7 @@ import {
   ServerMessageType,
   encodeServerMessage,
   type InputData,
+  type PlayerInfo,
   type PlayerSnapshot,
   type ServerMessage,
   type SimParams,
@@ -15,6 +16,8 @@ import { MOVE_SPEED, TICK_RATE_HZ, TICK_SECONDS, stepMovement, type MoveParams, 
 export interface ZoneMember {
   /** Id do jogador. */
   readonly id: string;
+  /** Nome exibido (username como foi cadastrado). */
+  readonly name: string;
   /** Envia uma mensagem já serializada (JSON). */
   send(text: string): void;
 }
@@ -40,7 +43,7 @@ export interface SpawnPoint {
 }
 
 /** Resultado de {@link Zone.join}: lotada, ou aceito com a lista de quem está na zona (inclusive ele). */
-export type JoinResult = { readonly status: "full" } | { readonly status: "joined"; readonly players: PlayerSnapshot[] };
+export type JoinResult = { readonly status: "full" } | { readonly status: "joined"; readonly players: PlayerInfo[] };
 
 /**
  * Quantos inputs de um jogador a zona aplica por tick, no máximo. O cliente manda 1 por tick;
@@ -121,8 +124,8 @@ export class Zone {
     };
     this.players.set(member.id, player);
 
-    this.broadcast({ type: ServerMessageType.PlayerJoined, data: { player: Zone.snapshot(member.id, player) } }, member.id);
-    return { status: "joined", players: this.snapshotAll() };
+    this.broadcast({ type: ServerMessageType.PlayerJoined, data: { player: Zone.info(member.id, player) } }, member.id);
+    return { status: "joined", players: Array.from(this.players, ([id, p]) => Zone.info(id, p)) };
   }
 
   /** Remove o jogador e avisa os demais com `player_left`. Ignora ids que não estão na zona. */
@@ -195,5 +198,10 @@ export class Zone {
 
   private static snapshot(id: string, player: ZonePlayer): PlayerSnapshot {
     return { id, x: player.state.x, y: player.state.y, z: player.state.z, rotY: player.state.rotY };
+  }
+
+  /** Snapshot + nome: para quem está conhecendo o jogador agora (`welcome`, `player_joined`). */
+  private static info(id: string, player: ZonePlayer): PlayerInfo {
+    return { ...Zone.snapshot(id, player), name: player.member.name };
   }
 }

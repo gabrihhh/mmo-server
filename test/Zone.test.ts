@@ -6,7 +6,10 @@ import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 /** Membro falso que guarda as mensagens recebidas, já decodificadas. */
 class FakeMember implements ZoneMember {
   readonly received: Array<{ type: string; data: unknown }> = [];
-  constructor(readonly id: string) {}
+  readonly name: string;
+  constructor(readonly id: string) {
+    this.name = `Nome_${id}`;
+  }
   send(text: string): void {
     const decoded: unknown = JSON.parse(text);
     if (typeof decoded === "object" && decoded !== null && "type" in decoded && "data" in decoded) {
@@ -31,7 +34,12 @@ describe("Zone", () => {
 
     assert.ok(ra.status === "joined" && rb.status === "joined");
     assert.deepStrictEqual(rb.players.map((p) => p.id).sort(), ["a", "b"]);
+    assert.deepStrictEqual(rb.players.map((p) => p.name).sort(), ["Nome_a", "Nome_b"], "welcome leva o nome");
     assert.deepStrictEqual(a.types(), ["player_joined"]);
+    const joined: unknown = a.received[0]?.data;
+    assert.ok(typeof joined === "object" && joined !== null && "player" in joined);
+    const player: unknown = joined.player;
+    assert.ok(typeof player === "object" && player !== null && "name" in player && player.name === "Nome_b");
     assert.deepStrictEqual(b.types(), []);
     assert.strictEqual(zone.size, 2);
   });

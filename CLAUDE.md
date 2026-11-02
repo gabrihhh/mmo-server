@@ -8,7 +8,7 @@ Parte do MMO isométrico 3D low poly para **Android/iOS**. Repositórios irmãos
 Toda decisão de design/arquitetura vive em `../mmo-docs`. Siga o protocolo de busca de lá:
 leia `../mmo-docs/INDICE.md` e depois `../mmo-docs/tools/secao.sh <ID>`. Não abra os arquivos de `docs/` inteiros.
 Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] protocolo de rede, [INFRA-05] estrutura do servidor,
-[INFRA-07] contas de convidado, [INFRA-09] modelo autoritativo (predição/reconciliação).
+[INFRA-07] contas (username/e-mail/senha), [INFRA-09] modelo autoritativo (predição/reconciliação).
 
 ## Regras OBRIGATÓRIAS
 
