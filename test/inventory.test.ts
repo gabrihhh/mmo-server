@@ -63,5 +63,6 @@ describe("catálogo e inventário", () => {
     assert.strictEqual(view.equipped.hand?.basicAttack?.range, 2.5);
     assert.strictEqual(view.equipped.feet?.abilities[0]?.id, "sprint");
     assert.strictEqual(view.unarmedAttack.id, "punch");
+    assert.strictEqual(view.equipped.feet?.abilities[0]?.cooldown, 12, "recarga vai para o cliente");
   });
 });

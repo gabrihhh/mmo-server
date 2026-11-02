@@ -214,6 +214,8 @@ export interface AbilityView {
   readonly aim: string;
   readonly range: number;
   readonly radius: number;
+  /** Tempo de recarga em segundos (o cliente mostra o "relógio" na carta; o servidor é quem recusa antes da hora). */
+  readonly cooldown: number;
 }
 
 /** Item como o cliente vê. */
