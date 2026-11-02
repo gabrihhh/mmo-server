@@ -70,6 +70,24 @@ export class TestClient {
     });
   }
 
+  /**
+   * Próxima mensagem do tipo `type` que satisfaz `predicate` (descarta as que não satisfazem).
+   * Útil para `snapshot`, que chega a cada tick.
+   */
+  async nextMatching(
+    type: string,
+    predicate: (message: ReceivedMessage) => boolean,
+    timeoutMs: number = 2000,
+  ): Promise<ReceivedMessage> {
+    const deadline: number = Date.now() + timeoutMs;
+    for (;;) {
+      const remaining: number = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`timeout esperando "${type}" que satisfaça a condição`);
+      const message: ReceivedMessage = await this.next(type, remaining);
+      if (predicate(message)) return message;
+    }
+  }
+
   /** `true` se já chegou alguma mensagem do tipo `type` ainda não consumida. */
   hasPending(type: string): boolean {
     return this.inbox.some((m) => m.type === type);

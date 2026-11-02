@@ -1,17 +1,19 @@
 import {
   ServerMessageType,
   encodeServerMessage,
-  type MoveData,
+  type InputData,
   type PlayerSnapshot,
   type ServerMessage,
+  type SimParams,
 } from "../net/protocol.js";
+import { MOVE_SPEED, TICK_RATE_HZ, TICK_SECONDS, stepMovement, type MoveParams, type MoveState } from "../sim/movement.js";
 
 /**
  * Quem está numa zona, do ponto de vista dela: um id e um jeito de receber mensagens.
  * A zona não conhece WebSocket, o que permite testá-la sem rede.
  */
 export interface ZoneMember {
-  /** Id da sessão. */
+  /** Id do jogador. */
   readonly id: string;
   /** Envia uma mensagem já serializada (JSON). */
   send(text: string): void;
@@ -29,17 +31,6 @@ export interface ZoneConfig {
   readonly spawnRadius: number;
 }
 
-/** Jogador dentro da zona (estado interno; o que vai para a rede é {@link PlayerSnapshot}). */
-interface ZonePlayer {
-  readonly member: ZoneMember;
-  x: number;
-  y: number;
-  z: number;
-  rotY: number;
-  /** Mudou desde o último {@link Zone.tick}. */
-  dirty: boolean;
-}
-
 /** Onde e virado para onde o jogador aparece. Metros e radianos. */
 export interface SpawnPoint {
   readonly x: number;
@@ -51,18 +42,41 @@ export interface SpawnPoint {
 /** Resultado de {@link Zone.join}: lotada, ou aceito com a lista de quem está na zona (inclusive ele). */
 export type JoinResult = { readonly status: "full" } | { readonly status: "joined"; readonly players: PlayerSnapshot[] };
 
+/**
+ * Quantos inputs de um jogador a zona aplica por tick, no máximo. O cliente manda 1 por tick;
+ * aceitar 2 absorve a variação da rede (dois chegam juntos) sem deixar ninguém andar mais rápido.
+ */
+export const MAX_INPUTS_PER_TICK = 2;
+
+/** Tamanho máximo da fila de inputs por jogador. Excesso descarta os mais antigos (anti-speedhack/flood). */
+export const MAX_INPUT_QUEUE = 4;
+
+/** Jogador dentro da zona (estado interno; o que vai para a rede é {@link PlayerSnapshot}). */
+interface ZonePlayer {
+  readonly member: ZoneMember;
+  state: MoveState;
+  /** Inputs recebidos e ainda não simulados, em ordem de seq. */
+  readonly inputs: InputData[];
+  /** Maior seq já recebido (para rejeitar repetidos/fora de ordem). */
+  lastReceivedSeq: number;
+  /** Último seq aplicado na simulação; vai como `ack` no snapshot dele. */
+  lastAppliedSeq: number;
+}
+
 /** Limita `value` ao intervalo fechado [min, max]. */
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
 /**
- * Uma zona do mundo: jogadores presentes e a replicação das posições entre eles.
+ * Uma zona do mundo: jogadores presentes e a simulação autoritativa deles. Ver mmo-docs [INFRA-09].
  *
- * MVP: o cliente é autoritativo sobre a própria posição. Ele envia `move`, a zona
- * limita às bordas do mapa e, a cada {@link tick}, envia a todos um lote `positions`
- * só com quem se moveu. Validação de velocidade e anti-cheat ficam para depois (mmo-docs [INFRA-02]).
+ * O cliente NÃO diz onde está: manda `input` (direção desejada, numerada). A cada {@link tick}
+ * (20 Hz) a zona aplica até {@link MAX_INPUTS_PER_TICK} inputs de cada jogador com a simulação
+ * compartilhada (`src/sim/movement.ts`) e envia a todos um `snapshot` com a posição de todo mundo
+ * e, para cada destinatário, o último input dele que foi aplicado (`ack`).
  */
 export class Zone {
   private readonly players: Map<string, ZonePlayer> = new Map();
+  private currentTick = 0;
 
   constructor(readonly config: ZoneConfig) {}
 
@@ -71,7 +85,17 @@ export class Zone {
     return this.players.size;
   }
 
-  /** `true` se a sessão `id` está nesta zona. */
+  /** Tick atual da simulação (cresce 1 a cada {@link tick}). */
+  get tickNumber(): number {
+    return this.currentTick;
+  }
+
+  /** Parâmetros da simulação desta zona (vão no `welcome`). */
+  get simParams(): SimParams {
+    return { tickRate: TICK_RATE_HZ, moveSpeed: MOVE_SPEED, zoneHalfSize: this.config.halfSize };
+  }
+
+  /** `true` se o jogador `id` está nesta zona. */
   has(id: string): boolean {
     return this.players.has(id);
   }
@@ -90,11 +114,10 @@ export class Zone {
     const limit: number = this.config.halfSize;
     const player: ZonePlayer = {
       member,
-      x: clamp(start.x, -limit, limit),
-      y: start.y,
-      z: clamp(start.z, -limit, limit),
-      rotY: start.rotY,
-      dirty: false,
+      state: { x: clamp(start.x, -limit, limit), y: start.y, z: clamp(start.z, -limit, limit), rotY: start.rotY },
+      inputs: [],
+      lastReceivedSeq: 0,
+      lastAppliedSeq: 0,
     };
     this.players.set(member.id, player);
 
@@ -108,37 +131,48 @@ export class Zone {
     this.broadcast({ type: ServerMessageType.PlayerLeft, data: { id } });
   }
 
-  /** Aplica o `move` do jogador (posição limitada às bordas). Vai para os outros no próximo {@link tick}. */
-  move(id: string, move: MoveData): void {
+  /**
+   * Enfileira um input para o próximo {@link tick}. Ignora seq repetido ou fora de ordem; se a fila
+   * passar de {@link MAX_INPUT_QUEUE}, descarta os mais antigos (o cliente se corrige pelo snapshot).
+   */
+  queueInput(id: string, input: InputData): void {
     const player: ZonePlayer | undefined = this.players.get(id);
-    if (player === undefined) return;
-    const limit: number = this.config.halfSize;
-    player.x = clamp(move.x, -limit, limit);
-    player.y = move.y;
-    player.z = clamp(move.z, -limit, limit);
-    player.rotY = move.rotY;
-    player.dirty = true;
+    if (player === undefined || input.seq <= player.lastReceivedSeq) return;
+    player.lastReceivedSeq = input.seq;
+    player.inputs.push(input);
+    while (player.inputs.length > MAX_INPUT_QUEUE) player.inputs.shift();
   }
 
-  /** Posição atual de um jogador, ou `undefined` se não estiver na zona. */
+  /** Estado atual de um jogador, ou `undefined` se não estiver na zona. */
   getSnapshot(id: string): PlayerSnapshot | undefined {
     const player: ZonePlayer | undefined = this.players.get(id);
     return player === undefined ? undefined : Zone.snapshot(id, player);
   }
 
   /**
-   * Envia a todos um `positions` com os jogadores que mudaram desde o último tick.
-   * Não envia nada se ninguém se moveu. O próprio jogador também recebe a sua entrada
-   * (o cliente ignora o próprio id); assim a mensagem é serializada uma vez só.
+   * Um passo da simulação: aplica os inputs da fila de cada jogador (até {@link MAX_INPUTS_PER_TICK})
+   * e envia a cada um o `snapshot` da zona com o `ack` dele. Sem input na fila, o jogador fica parado.
    */
   tick(): void {
-    const changed: PlayerSnapshot[] = [];
-    for (const [id, player] of this.players) {
-      if (!player.dirty) continue;
-      player.dirty = false;
-      changed.push(Zone.snapshot(id, player));
+    this.currentTick++;
+    const params: MoveParams = { speed: MOVE_SPEED, halfSize: this.config.halfSize };
+    for (const player of this.players.values()) {
+      for (let i = 0; i < MAX_INPUTS_PER_TICK; i++) {
+        const input: InputData | undefined = player.inputs.shift();
+        if (input === undefined) break;
+        player.state = stepMovement(player.state, input, TICK_SECONDS, params);
+        player.lastAppliedSeq = input.seq;
+      }
     }
-    if (changed.length > 0) this.broadcast({ type: ServerMessageType.Positions, data: { players: changed } });
+    if (this.players.size === 0) return;
+
+    // A lista de jogadores é igual para todos: serializa uma vez e só o `ack` muda por destinatário.
+    const playersJson: string = JSON.stringify(this.snapshotAll());
+    for (const player of this.players.values()) {
+      player.member.send(
+        `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},"players":${playersJson}}}`,
+      );
+    }
   }
 
   /** Serializa uma vez e envia para todos da zona, exceto `exceptId`. */
@@ -160,6 +194,6 @@ export class Zone {
   }
 
   private static snapshot(id: string, player: ZonePlayer): PlayerSnapshot {
-    return { id, x: player.x, y: player.y, z: player.z, rotY: player.rotY };
+    return { id, x: player.state.x, y: player.state.y, z: player.state.z, rotY: player.state.rotY };
   }
 }

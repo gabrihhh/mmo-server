@@ -10,14 +10,17 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele no `join`; se for diferente, a entrada é recusada. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
   /** Pede para entrar numa zona. Payload: {@link JoinData}. */
   Join: "join",
-  /** Informa a própria posição/rotação. Payload: {@link MoveData}. */
-  Move: "move",
+  /**
+   * Intenção de movimento de UM tick (não a posição: o servidor é a autoridade e simula).
+   * Payload: {@link InputData}. Ver mmo-docs [INFRA-09].
+   */
+  Input: "input",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -28,8 +31,8 @@ export const ServerMessageType = {
   PlayerJoined: "player_joined",
   /** Um jogador saiu da zona. */
   PlayerLeft: "player_left",
-  /** Lote periódico (tick) com os jogadores que se moveram desde o último envio. */
-  Positions: "positions",
+  /** Estado da zona a cada tick de simulação, com o último input processado de quem recebe. */
+  Snapshot: "snapshot",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
 } as const;
@@ -76,18 +79,22 @@ export interface JoinData {
   readonly guestToken: string | null;
 }
 
-/** Payload de `move`. Metros e radianos. */
-export interface MoveData {
+/** Maior número de sequência aceito (cabe com folga num int de 32 bits). */
+export const MAX_INPUT_SEQ = 2_000_000_000;
+
+/** Payload de `input`: direção desejada no mundo para um tick. */
+export interface InputData {
+  /** Número do input, crescente a partir de 1. O servidor devolve o último processado em `snapshot.ack`. */
+  readonly seq: number;
+  /** Direção no plano XZ do mundo; comprimento até 1 (maior é normalizado pelo servidor). */
   readonly x: number;
-  readonly y: number;
   readonly z: number;
-  readonly rotY: number;
 }
 
 /** Mensagem cliente → servidor já validada. */
 export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Join; readonly data: JoinData }
-  | { readonly type: typeof ClientMessageType.Move; readonly data: MoveData };
+  | { readonly type: typeof ClientMessageType.Input; readonly data: InputData };
 
 /** Estado público de um jogador, como enviado aos clientes. */
 export interface PlayerSnapshot {
@@ -97,6 +104,26 @@ export interface PlayerSnapshot {
   readonly y: number;
   readonly z: number;
   readonly rotY: number;
+}
+
+/** Parâmetros da simulação enviados no `welcome`. */
+export interface SimParams {
+  /** Ticks por segundo. */
+  readonly tickRate: number;
+  /** Velocidade de caminhada, m/s. */
+  readonly moveSpeed: number;
+  /** Metade do lado da zona, em metros. */
+  readonly zoneHalfSize: number;
+}
+
+/** Payload de `snapshot`. */
+export interface SnapshotData {
+  /** Número do tick do servidor que gerou este estado. */
+  readonly tick: number;
+  /** Último `input.seq` de QUEM RECEBE que já foi aplicado (0 = nenhum). Base da reconciliação. */
+  readonly ack: number;
+  /** Todos os jogadores da zona (inclusive quem recebe). */
+  readonly players: readonly PlayerSnapshot[];
 }
 
 /** Mensagem servidor → cliente. */
@@ -109,12 +136,16 @@ export type ServerMessage =
         /** Token a guardar no aparelho e mandar no próximo `join`. */
         readonly guestToken: string;
         readonly zone: string;
+        /** Tick atual do servidor (o cliente sincroniza o relógio da interpolação por ele). */
+        readonly tick: number;
+        /** Parâmetros da simulação compartilhada (o cliente usa os do servidor, não os dele). */
+        readonly sim: SimParams;
         readonly players: readonly PlayerSnapshot[];
       };
     }
   | { readonly type: typeof ServerMessageType.PlayerJoined; readonly data: { readonly player: PlayerSnapshot } }
   | { readonly type: typeof ServerMessageType.PlayerLeft; readonly data: { readonly id: string } }
-  | { readonly type: typeof ServerMessageType.Positions; readonly data: { readonly players: readonly PlayerSnapshot[] } }
+  | { readonly type: typeof ServerMessageType.Snapshot; readonly data: SnapshotData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
 /** Serializa uma mensagem para enviar pelo WebSocket. */
@@ -142,12 +173,13 @@ export function parseJoinData(data: unknown): JoinData | null {
   return { zone, version, guestToken };
 }
 
-/** Valida o payload de `move`. */
-export function parseMoveData(data: unknown): MoveData | null {
+/** Valida o payload de `input`. A direção pode ter qualquer comprimento: a simulação normaliza. */
+export function parseInputData(data: unknown): InputData | null {
   if (!isRecord(data)) return null;
-  const { x, y, z, rotY } = data;
-  if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isFiniteNumber(z) || !isFiniteNumber(rotY)) return null;
-  return { x, y, z, rotY };
+  const { seq, x, z } = data;
+  if (!isFiniteNumber(seq) || !Number.isInteger(seq) || seq < 1 || seq > MAX_INPUT_SEQ) return null;
+  if (!isFiniteNumber(x) || !isFiniteNumber(z)) return null;
+  return { seq, x, z };
 }
 
 /**
@@ -168,9 +200,9 @@ export function parseClientMessage(text: string): ClientMessage | null {
       const data = parseJoinData(decoded["data"]);
       return data === null ? null : { type: ClientMessageType.Join, data };
     }
-    case ClientMessageType.Move: {
-      const data = parseMoveData(decoded["data"]);
-      return data === null ? null : { type: ClientMessageType.Move, data };
+    case ClientMessageType.Input: {
+      const data = parseInputData(decoded["data"]);
+      return data === null ? null : { type: ClientMessageType.Input, data };
     }
     default:
       return null;

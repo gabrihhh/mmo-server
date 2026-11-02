@@ -1,6 +1,7 @@
 import assert from "assert";
 
-import { Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 
 /** Membro falso que guarda as mensagens recebidas, já decodificadas. */
 class FakeMember implements ZoneMember {
@@ -48,30 +49,67 @@ describe("Zone", () => {
     assert.strictEqual(zone.size, 1);
   });
 
-  it("limita o move às bordas e só envia positions no tick, para quem mudou", () => {
+  /** Último snapshot recebido por um membro (falha se não houver). */
+  function lastSnapshot(member: FakeMember): { tick: number; ack: number; players: Array<Record<string, number | string>> } {
+    const msg = member.received.filter((m) => m.type === "snapshot").at(-1);
+    assert.ok(msg, "deveria ter recebido snapshot");
+    const data: unknown = msg.data;
+    assert.ok(typeof data === "object" && data !== null && "tick" in data && "ack" in data && "players" in data);
+    assert.ok(typeof data.tick === "number" && typeof data.ack === "number" && Array.isArray(data.players));
+    return { tick: data.tick, ack: data.ack, players: data.players };
+  }
+
+  it("cada tick aplica o input com a velocidade do servidor e manda snapshot com ack", () => {
     const zone = newZone();
     const a = new FakeMember("a");
     const b = new FakeMember("b");
-    zone.join(a);
-    zone.join(b);
-    a.received.length = 0;
-    b.received.length = 0;
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 });
+    zone.join(b, { x: 10, y: 0, z: 10, rotY: 0 });
+
+    zone.queueInput("a", { seq: 1, x: 1, z: 0 });
+    zone.tick();
+
+    // 5 m/s * 0,05 s = 0,25 m para +X; virado para +X => rotY = atan2(-1, -0) = -PI/2.
+    assert.deepStrictEqual(zone.getSnapshot("a"), { id: "a", x: MOVE_SPEED * TICK_SECONDS, y: 0, z: 0, rotY: Math.atan2(-1, -0) });
+    assert.strictEqual(lastSnapshot(a).ack, 1);
+    assert.strictEqual(lastSnapshot(b).ack, 0, "b não mandou input");
+    assert.strictEqual(lastSnapshot(b).tick, 1);
+    assert.strictEqual(lastSnapshot(b).players.length, 2);
 
     zone.tick();
-    assert.strictEqual(b.received.length, 0, "sem movimento, sem mensagem");
-
-    zone.move("a", { x: 9999, y: 1, z: -9999, rotY: 0.5 });
-    assert.deepStrictEqual(zone.getSnapshot("a"), { id: "a", x: 150, y: 1, z: -150, rotY: 0.5 });
-    zone.tick();
-    assert.deepStrictEqual(b.received, [
-      { type: "positions", data: { players: [{ id: "a", x: 150, y: 1, z: -150, rotY: 0.5 }] } },
-    ]);
-
-    zone.tick();
-    assert.strictEqual(b.received.length, 1, "dirty é limpo após o tick");
+    assert.strictEqual(zone.getSnapshot("a")?.x, MOVE_SPEED * TICK_SECONDS, "sem input, fica parado");
   });
 
-  it("avisa player_left ao sair e ignora saída/move de quem não está", () => {
+  it("anti-speedhack: normaliza direção > 1, limita inputs por tick e o tamanho da fila", () => {
+    const zone = newZone();
+    zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
+
+    zone.queueInput("a", { seq: 1, x: 1000, z: 0 });
+    zone.tick();
+    assert.strictEqual(zone.getSnapshot("a")?.x, MOVE_SPEED * TICK_SECONDS, "comprimento normalizado para 1");
+
+    for (let seq = 2; seq <= 11; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
+    zone.tick();
+    const afterBurst: number = zone.getSnapshot("a")?.x ?? NaN;
+    assert.ok(Math.abs(afterBurst - 3 * MOVE_SPEED * TICK_SECONDS) < 1e-9, `no máximo ${MAX_INPUTS_PER_TICK} por tick`);
+    zone.tick();
+    zone.tick();
+    const total: number = zone.getSnapshot("a")?.x ?? NaN;
+    assert.ok(Math.abs(total - (1 + MAX_INPUT_QUEUE) * MOVE_SPEED * TICK_SECONDS) < 1e-9, "fila limitada");
+  });
+
+  it("ignora seq repetido ou antigo e limita às bordas", () => {
+    const zone = newZone();
+    zone.join(new FakeMember("a"), { x: 149.9, y: 0, z: 0, rotY: 0 });
+    zone.queueInput("a", { seq: 5, x: 1, z: 0 });
+    zone.queueInput("a", { seq: 5, x: 1, z: 0 });
+    zone.queueInput("a", { seq: 3, x: 1, z: 0 });
+    zone.tick();
+    zone.tick();
+    assert.strictEqual(zone.getSnapshot("a")?.x, 150);
+  });
+
+  it("avisa player_left ao sair e ignora saída/input de quem não está", () => {
     const zone = newZone();
     const a = new FakeMember("a");
     const b = new FakeMember("b");
@@ -79,7 +117,7 @@ describe("Zone", () => {
     zone.join(b);
     zone.leave("b");
     zone.leave("b");
-    zone.move("b", { x: 1, y: 0, z: 1, rotY: 0 });
+    zone.queueInput("b", { seq: 1, x: 1, z: 1 });
 
     assert.deepStrictEqual(a.received.at(-1), { type: "player_left", data: { id: "b" } });
     assert.deepStrictEqual(a.types().filter((t) => t === "player_left"), ["player_left"]);

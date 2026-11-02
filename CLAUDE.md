@@ -8,7 +8,7 @@ Parte do MMO isométrico 3D low poly para **Android/iOS**. Repositórios irmãos
 Toda decisão de design/arquitetura vive em `../mmo-docs`. Siga o protocolo de busca de lá:
 leia `../mmo-docs/INDICE.md` e depois `../mmo-docs/tools/secao.sh <ID>`. Não abra os arquivos de `docs/` inteiros.
 Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] protocolo de rede, [INFRA-05] estrutura do servidor,
-[INFRA-07] contas de convidado.
+[INFRA-07] contas de convidado, [INFRA-09] modelo autoritativo (predição/reconciliação).
 
 ## Regras OBRIGATÓRIAS
 
@@ -29,6 +29,11 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] pro
 - Removeu algo → remova/atualize a doc no código e no `mmo-docs` no mesmo passo. Documentação desatualizada é bug.
 - Mudou o protocolo (`src/net/protocol.ts`) ou as zonas (`src/zones/zones.ts`) → atualize também
   `mmo-client/scripts/network/protocol.gd` / `network.gd` / `network_config.gd` e [INFRA-04].
+- Mudou a simulação (`src/sim/movement.ts`) → mude `mmo-client/scripts/sim/movement.gd` com a MESMA conta e ordem,
+  ajuste `test/movement.test.ts` e [INFRA-09].
+
+### 5. Servidor é a autoridade ([INFRA-09])
+- O cliente manda intenção (`input`), nunca resultado (posição, dano, item). Toda regra de jogo roda aqui.
 
 ### 4. Verificação antes de concluir
 `npm run typecheck && npm test` precisam passar. Código novo de zona/mensagem vem com teste em `test/`.

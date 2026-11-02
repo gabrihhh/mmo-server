@@ -17,6 +17,7 @@ import {
 } from "./net/protocol.js";
 import { Zone, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
+import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { AccountStore, GuestLogin, SavedPosition } from "./accounts/AccountStore.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 
@@ -26,8 +27,6 @@ export interface GameServerOptions {
   readonly accounts: AccountStore;
   /** Zonas criadas ao subir. Padrão: {@link ZONE_CONFIGS}. */
   readonly zones?: readonly ZoneConfig[];
-  /** Quantas vezes por segundo cada zona envia o lote `positions`. Padrão: 20 Hz. */
-  readonly tickRateHz?: number;
   /** Intervalo do ping de heartbeat, em ms. Quem não responder até o próximo é desconectado. Padrão: 10 000 ms. */
   readonly heartbeatIntervalMs?: number;
   /** Escreve as entradas/saídas no console. Padrão: `true`. */
@@ -76,7 +75,6 @@ export class GameServer {
     this.options = {
       accounts: options.accounts,
       zones: options.zones ?? ZONE_CONFIGS,
-      tickRateHz: options.tickRateHz ?? 20,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 10_000,
       log: options.log ?? true,
       updatesDir: options.updatesDir ?? DEFAULT_UPDATES_DIR,
@@ -126,7 +124,7 @@ export class GameServer {
   private startTimers(): void {
     this.tickTimer = setInterval(() => {
       for (const zone of this.zones.values()) zone.tick();
-    }, 1000 / this.options.tickRateHz);
+    }, 1000 / TICK_RATE_HZ);
 
     // Celular perde rede sem fechar o socket: sem heartbeat, o jogador ficaria "fantasma" na zona.
     this.heartbeatTimer = setInterval(() => {
@@ -203,8 +201,8 @@ export class GameServer {
       case ClientMessageType.Join:
         void this.handleJoin(session, message.data);
         return;
-      case ClientMessageType.Move:
-        if (session.zone !== null && session.playerId !== null) session.zone.move(session.playerId, message.data);
+      case ClientMessageType.Input:
+        if (session.zone !== null && session.playerId !== null) session.zone.queueInput(session.playerId, message.data);
         return;
     }
   }
@@ -268,7 +266,14 @@ export class GameServer {
     socket.send(
       encodeServerMessage({
         type: ServerMessageType.Welcome,
-        data: { playerId, guestToken: login.guestToken, zone: zone.config.id, players },
+        data: {
+          playerId,
+          guestToken: login.guestToken,
+          zone: zone.config.id,
+          tick: zone.tickNumber,
+          sim: zone.simParams,
+          players,
+        },
       }),
     );
     this.log(`[${zone.config.id}] ${playerId} entrou${login.created ? " (conta nova)" : ""} (${zone.size} online)`);

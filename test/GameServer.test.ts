@@ -3,6 +3,7 @@ import assert from "assert";
 import { GameServer } from "../src/GameServer.js";
 import { InMemoryAccountStore } from "../src/accounts/AccountStore.js";
 import { CloseCode, PROTOCOL_VERSION } from "../src/net/protocol.js";
+import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 import { TestClient, sleep } from "./helpers.js";
 
 const ZONE = "zone_1";
@@ -41,7 +42,7 @@ describe("GameServer", () => {
 
   beforeEach(async () => {
     accounts = new InMemoryAccountStore();
-    server = new GameServer({ accounts, tickRateHz: 50, heartbeatIntervalMs: 100, log: false });
+    server = new GameServer({ accounts, heartbeatIntervalMs: 100, log: false });
     port = await server.listen(0);
   });
 
@@ -65,27 +66,54 @@ describe("GameServer", () => {
     assert.strictEqual(server.getZone(ZONE)?.size, 1);
   });
 
-  it("replica o move para os outros no próximo tick", async () => {
+  /** Entrada de `id` na lista `players` de um snapshot/welcome. */
+  function entryOf(players: unknown, id: string): Record<string, unknown> | undefined {
+    if (!Array.isArray(players)) return undefined;
+    for (const p of players) {
+      if (typeof p === "object" && p !== null && "id" in p && p.id === id) {
+        const entry: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(p)) entry[k] = v;
+        return entry;
+      }
+    }
+    return undefined;
+  }
+
+  it("servidor simula o input: confirma no ack e replica para os outros", async () => {
     const a = await joined();
     const b = await joined();
+    const startX: unknown = entryOf(a.players, a.playerId)?.["x"];
+    assert.ok(typeof startX === "number");
 
-    a.client.send("move", { x: 10, y: 0, z: -20, rotY: 1.5 });
-    const positions = await b.client.next("positions");
-    assert.deepStrictEqual(positions.data["players"], [{ id: a.playerId, x: 10, y: 0, z: -20, rotY: 1.5 }]);
+    a.client.send("input", { seq: 1, x: 1, z: 0 });
+    const acked = await a.client.nextMatching("snapshot", (m) => m.data["ack"] === 1);
+    const meAfter = entryOf(acked.data["players"], a.playerId);
+    assert.ok(meAfter && typeof meAfter["x"] === "number");
+    assert.ok(Math.abs(meAfter["x"] - (startX + MOVE_SPEED * TICK_SECONDS)) < 1e-9, "andou exatamente um tick");
+
+    const seen = await b.client.nextMatching("snapshot", (m) => entryOf(m.data["players"], a.playerId)?.["x"] === meAfter["x"]);
+    assert.strictEqual(seen.data["ack"], 0, "o ack de b é o de b, não o de a");
+  });
+
+  it("ignora o antigo `move` com posição (o cliente não diz onde está)", async () => {
+    const a = await joined();
+    a.client.send("move", { x: 100, y: 0, z: 100, rotY: 0 });
+    const error = await a.client.next("error");
+    assert.strictEqual(error.data["code"], "bad_message");
   });
 
   it("conta de convidado: mesmo token = mesmo jogador, voltando onde parou", async () => {
     const first = await joined();
-    first.client.send("move", { x: 33, y: 0, z: -12, rotY: 0.7 });
-    await sleep(60); // um tick para o move ser aplicado
+    for (let seq = 1; seq <= 4; seq++) first.client.send("input", { seq, x: 0, z: 1 });
+    const last = await first.client.nextMatching("snapshot", (m) => m.data["ack"] === 4);
+    const where = entryOf(last.data["players"], first.playerId);
     await first.client.close();
     await sleep(20); // savePosition é assíncrono
 
     const again = await joined(first.guestToken);
     assert.strictEqual(again.playerId, first.playerId);
     assert.strictEqual(again.guestToken, first.guestToken);
-    const me: unknown = again.players.find((p) => idOf(p) === first.playerId);
-    assert.deepStrictEqual(me, { id: first.playerId, x: 33, y: 0, z: -12, rotY: 0.7 });
+    assert.deepStrictEqual(entryOf(again.players, first.playerId), where);
   });
 
   it("token desconhecido cria conta nova com token novo", async () => {
