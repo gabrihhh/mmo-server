@@ -3,6 +3,10 @@
 Servidor multiplayer do MMO (Node.js 22 + TypeScript + `ws`, servidor próprio).
 Documentação completa em `../mmo-docs` (comece pelo `INDICE.md`).
 
+Jeito fácil: `./run.sh` (Node 22, dependências, MongoDB no Docker e o servidor, tudo de uma vez).
+
+Passo a passo:
+
 ```bash
 nvm use        # Node 22
 npm install
