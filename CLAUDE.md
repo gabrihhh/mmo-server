@@ -1,4 +1,4 @@
-# mmo-server — Servidor multiplayer (Node.js + TypeScript + Colyseus 0.18)
+# mmo-server — Servidor multiplayer (Node.js + TypeScript + ws, servidor próprio)
 
 Parte do MMO isométrico 3D low poly para **Android/iOS**. Repositórios irmãos em `../`:
 `mmo-client` (Godot), `mmo-docs` (documentação central).
@@ -14,7 +14,7 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-04] protocolo de rede, [I
 ### 1. Tipagem forte
 - `tsconfig.json` é estrito (`strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, etc.). **Nunca afrouxar flags.**
 - Proibido `any`, `@ts-ignore`, `@ts-expect-error` e `as` para silenciar o compilador.
-- Dado vindo da rede é `unknown` e passa por um parser/validador tipado (ver `src/rooms/messages.ts`).
+- Dado vindo da rede é `unknown` e passa por um parser/validador tipado (ver `parseClientMessage` em `src/net/protocol.ts`).
 - Todo export tem tipo explícito de retorno e de parâmetros.
 
 ### 2. Documentação no código
@@ -26,18 +26,18 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-04] protocolo de rede, [I
 - Mudou comportamento → atualize o TSDoc **e** a seção correspondente no `mmo-docs`.
 - Não existe seção → crie uma (seguindo `../mmo-docs/CLAUDE.md`) e registre no `INDICE.md`.
 - Removeu algo → remova/atualize a doc no código e no `mmo-docs` no mesmo passo. Documentação desatualizada é bug.
-- Mudou schema (`src/rooms/schema/`) ou mensagem (`src/rooms/messages.ts`) → atualize também
-  `mmo-client/scripts/network/zone_schema.gd` / `network.gd` e [INFRA-04].
+- Mudou o protocolo (`src/net/protocol.ts`) ou as zonas (`src/zones/zones.ts`) → atualize também
+  `mmo-client/scripts/network/protocol.gd` / `network.gd` / `network_config.gd` e [INFRA-04].
 
 ### 4. Verificação antes de concluir
-`npm run typecheck && npm test` precisam passar. Código novo de room/mensagem vem com teste em `test/`.
+`npm run typecheck && npm test` precisam passar. Código novo de zona/mensagem vem com teste em `test/`.
 
 ## Comandos
 
 ```bash
-nvm use            # Node 22 (.nvmrc) — Colyseus 0.18 exige Node >= 22
+nvm use            # Node 22 (.nvmrc)
 npm install
-npm start          # dev com hot reload em ws://localhost:2567 (playground em http://localhost:2567)
+npm start          # dev com hot reload em ws://localhost:2567 (health em http://localhost:2567/health)
 npm run typecheck
 npm test
 ```
