@@ -50,6 +50,12 @@ describe("MongoAccountStore (MongoDB real)", function () {
     const resumed = await store.resume(byName.sessionToken);
     assert.deepStrictEqual(resumed?.lastPosition, { zone: "zone_1", x: 1, y: 0, z: 2, rotY: 3 });
 
+    const resumedInventory = resumed?.inventory;
+    assert.strictEqual(resumedInventory?.equipped.hand?.itemId, "training_sword", "conta nova tem o kit");
+    assert.ok(resumedInventory);
+    await store.saveInventory(byName.account.playerId, { ...resumedInventory, equipped: { ...resumedInventory.equipped, hand: null } });
+    assert.strictEqual((await store.resume(byName.sessionToken))?.inventory.equipped.hand, null, "inventário salvo");
+
     await store.logout(byName.sessionToken);
     assert.strictEqual(await store.resume(byName.sessionToken), null);
     assert.ok(await store.resume(byEmail.sessionToken), "outra sessão continua valendo");

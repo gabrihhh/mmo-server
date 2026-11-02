@@ -1,6 +1,7 @@
 import { MongoClient, MongoServerError, type Collection, type Db } from "mongodb";
 
 import { normalizeKey } from "./credentials.js";
+import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
@@ -34,6 +35,8 @@ interface AccountDocument {
   createdAt: Date;
   lastLoginAt: Date;
   lastPosition: SavedPosition | null;
+  /** Vestido + mochila. Pode faltar em conta antiga (vira o inicial ao ler). Lido sempre por readInventory. */
+  inventory?: Inventory;
 }
 
 /** Código de erro do MongoDB para violação de índice único. */
@@ -84,6 +87,7 @@ export class MongoAccountStore implements AccountStore {
         createdAt: now,
         lastLoginAt: now,
         lastPosition: null,
+        inventory: starterInventory(),
       };
       try {
         await this.accounts.insertOne(doc);
@@ -134,6 +138,10 @@ export class MongoAccountStore implements AccountStore {
     await this.accounts.updateOne({ playerId }, { $set: { lastPosition: position } });
   }
 
+  async saveInventory(playerId: string, inventory: Inventory): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { inventory } });
+  }
+
   async isHealthy(): Promise<boolean> {
     try {
       await this.db.command({ ping: 1 });
@@ -149,6 +157,11 @@ export class MongoAccountStore implements AccountStore {
   }
 
   private static toAccount(doc: AccountDocument): Account {
-    return { playerId: doc.playerId, username: doc.username, lastPosition: doc.lastPosition };
+    return {
+      playerId: doc.playerId,
+      username: doc.username,
+      lastPosition: doc.lastPosition,
+      inventory: readInventory(doc.inventory),
+    };
   }
 }

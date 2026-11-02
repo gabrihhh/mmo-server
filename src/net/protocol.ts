@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -32,6 +32,10 @@ export const ClientMessageType = {
    * Payload: {@link InputData}. Ver mmo-docs [INFRA-09].
    */
   Input: "input",
+  /** Veste um item da mochila (o do slot volta para a mochila). Payload: {@link EquipData}. */
+  Equip: "equip",
+  /** Tira o item de um slot para a mochila. Payload: {@link UnequipData}. */
+  Unequip: "unequip",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -46,6 +50,8 @@ export const ServerMessageType = {
   PlayerLeft: "player_left",
   /** Estado da zona a cada tick de simulação, com o último input processado de quem recebe. */
   Snapshot: "snapshot",
+  /** Inventário completo (vestido + mochila) com o que cada item faz. Vem após o `auth_ok` e a cada troca. */
+  Inventory: "inventory",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
 } as const;
@@ -82,6 +88,12 @@ export const ErrorCode = {
   ZoneFull: "zone_full",
   /** `join` repetido na mesma conexão. A conexão continua. */
   AlreadyJoined: "already_joined",
+  /** `equip` de item que não está na mochila. A conexão continua. */
+  ItemNotFound: "item_not_found",
+  /** Mochila cheia (não dá para tirar o item do slot). A conexão continua. */
+  BagFull: "bag_full",
+  /** `unequip` de slot vazio. A conexão continua. */
+  SlotEmpty: "slot_empty",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -142,6 +154,21 @@ export interface InputData {
   readonly z: number;
 }
 
+/** Slots vestidos (mesma ordem da HUD). ATENÇÃO: igual a EQUIP_SLOTS em src/items/catalog.ts. */
+export const EQUIP_SLOT_NAMES = ["hand", "head", "chest", "feet"] as const;
+export type EquipSlotName = (typeof EQUIP_SLOT_NAMES)[number];
+
+/** Payload de `equip`. */
+export interface EquipData {
+  /** `uid` do item na mochila. */
+  readonly uid: string;
+}
+
+/** Payload de `unequip`. */
+export interface UnequipData {
+  readonly slot: EquipSlotName;
+}
+
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Register; readonly data: RegisterData }
@@ -149,7 +176,9 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Resume; readonly data: ResumeData }
   | { readonly type: typeof ClientMessageType.Logout; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.Join; readonly data: JoinData }
-  | { readonly type: typeof ClientMessageType.Input; readonly data: InputData };
+  | { readonly type: typeof ClientMessageType.Input; readonly data: InputData }
+  | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
+  | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData };
 
 /** Posição pública de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -175,6 +204,36 @@ export interface SimParams {
   readonly moveSpeed: number;
   /** Metade do lado da zona, em metros. */
   readonly zoneHalfSize: number;
+}
+
+/** Habilidade como o cliente vê: nome e mira (efeitos ficam no servidor). Metros. */
+export interface AbilityView {
+  readonly id: string;
+  readonly title: string;
+  /** "target" | "direction" | "area" | "area_self" | "self". */
+  readonly aim: string;
+  readonly range: number;
+  readonly radius: number;
+}
+
+/** Item como o cliente vê. */
+export interface ItemView {
+  readonly uid: string;
+  readonly itemId: string;
+  readonly name: string;
+  readonly slot: EquipSlotName;
+  /** Ataque simples (só armas). */
+  readonly basicAttack: AbilityView | null;
+  readonly abilities: readonly AbilityView[];
+}
+
+/** Payload de `inventory`. */
+export interface InventoryView {
+  readonly equipped: Readonly<Record<EquipSlotName, ItemView | null>>;
+  readonly bag: readonly ItemView[];
+  readonly bagCapacity: number;
+  /** Ataque simples quando não há arma na mão. */
+  readonly unarmedAttack: AbilityView;
 }
 
 /** Payload de `snapshot`. */
@@ -215,6 +274,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.PlayerJoined; readonly data: { readonly player: PlayerInfo } }
   | { readonly type: typeof ServerMessageType.PlayerLeft; readonly data: { readonly id: string } }
   | { readonly type: typeof ServerMessageType.Snapshot; readonly data: SnapshotData }
+  | { readonly type: typeof ServerMessageType.Inventory; readonly data: InventoryView }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
 /** Serializa uma mensagem para enviar pelo WebSocket. */
@@ -284,6 +344,25 @@ export function parseInputData(data: unknown): InputData | null {
   return { seq, x, z };
 }
 
+/** Valida o payload de `equip`. */
+export function parseEquipData(data: unknown): EquipData | null {
+  if (!isRecord(data)) return null;
+  const { uid } = data;
+  if (typeof uid !== "string" || uid.length === 0 || uid.length > 64) return null;
+  return { uid };
+}
+
+/** `true` se `value` é um nome de slot vestido. */
+const isSlotName = (value: unknown): value is EquipSlotName =>
+  typeof value === "string" && EQUIP_SLOT_NAMES.some((slot) => slot === value);
+
+/** Valida o payload de `unequip`. */
+export function parseUnequipData(data: unknown): UnequipData | null {
+  if (!isRecord(data)) return null;
+  const { slot } = data;
+  return isSlotName(slot) ? { slot } : null;
+}
+
 /**
  * Decodifica e valida uma mensagem de texto vinda da rede (não confiável).
  * @returns a mensagem tipada, ou `null` se o JSON, o tipo ou o payload forem inválidos.
@@ -320,6 +399,14 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Input: {
       const data = parseInputData(raw);
       return data === null ? null : { type: ClientMessageType.Input, data };
+    }
+    case ClientMessageType.Equip: {
+      const data = parseEquipData(raw);
+      return data === null ? null : { type: ClientMessageType.Equip, data };
+    }
+    case ClientMessageType.Unequip: {
+      const data = parseUnequipData(raw);
+      return data === null ? null : { type: ClientMessageType.Unequip, data };
     }
     default:
       return null;

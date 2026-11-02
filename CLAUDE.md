@@ -31,6 +31,8 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] pro
   `mmo-client/scripts/network/protocol.gd` / `network.gd` / `network_config.gd` e [INFRA-04].
 - Mudou a simulação (`src/sim/movement.ts`) → mude `mmo-client/scripts/sim/movement.gd` com a MESMA conta e ordem,
   ajuste `test/movement.test.ts` e [INFRA-09].
+- Itens/habilidades vivem em `src/items/catalog.ts` (fonte da verdade, [JOGO-03]). Slot ou tipo de mira novo →
+  espelhe em `mmo-client/scripts/items/inventory_state.gd` / `scripts/combat/ability_view.gd` e [JOGO-04].
 
 ### 4. Servidor é a autoridade ([INFRA-09])
 - O cliente manda intenção (`input`), nunca resultado (posição, dano, item). Toda regra de jogo roda aqui.

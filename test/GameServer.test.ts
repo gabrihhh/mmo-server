@@ -157,6 +157,56 @@ describe("GameServer", () => {
     });
   });
 
+  describe("inventário", () => {
+    /** Lê o `uid` e o `itemId` de um ItemView vindo da rede. */
+    function itemOf(value: unknown): { uid: string; itemId: string } | null {
+      if (typeof value !== "object" || value === null || !("uid" in value) || !("itemId" in value)) return null;
+      return typeof value.uid === "string" && typeof value.itemId === "string" ? { uid: value.uid, itemId: value.itemId } : null;
+    }
+
+    it("chega logo após o auth_ok; equip troca a arma; fica salvo para a próxima sessão", async () => {
+      const p: Player = await registered();
+      const first: ReceivedMessage = await p.client.next("inventory");
+      const equipped: unknown = first.data["equipped"];
+      assert.ok(typeof equipped === "object" && equipped !== null && "hand" in equipped);
+      assert.strictEqual(itemOf(equipped.hand)?.itemId, "training_sword");
+      const bag: unknown = first.data["bag"];
+      assert.ok(Array.isArray(bag));
+      const staff = itemOf(bag[0]);
+      assert.ok(staff && staff.itemId === "training_staff");
+
+      p.client.send("equip", { uid: staff.uid });
+      const after: ReceivedMessage = await p.client.next("inventory");
+      const afterEquipped: unknown = after.data["equipped"];
+      assert.ok(typeof afterEquipped === "object" && afterEquipped !== null && "hand" in afterEquipped);
+      assert.strictEqual(itemOf(afterEquipped.hand)?.uid, staff.uid);
+
+      const c: TestClient = await connect();
+      c.send("resume", { version: PROTOCOL_VERSION, sessionToken: p.sessionToken });
+      await c.next("auth_ok");
+      const resumed: unknown = (await c.next("inventory")).data["equipped"];
+      assert.ok(typeof resumed === "object" && resumed !== null && "hand" in resumed);
+      assert.strictEqual(itemOf(resumed.hand)?.itemId, "training_staff");
+    });
+
+    it("recusas viram erro e não mudam nada", async () => {
+      const p: Player = await registered();
+      await p.client.next("inventory");
+      p.client.send("equip", { uid: "nao-existe" });
+      assert.strictEqual((await p.client.next("error")).data["code"], "item_not_found");
+      p.client.send("unequip", { slot: "head" });
+      await p.client.next("inventory");
+      p.client.send("unequip", { slot: "head" });
+      assert.strictEqual((await p.client.next("error")).data["code"], "slot_empty");
+    });
+
+    it("equip sem autenticar é recusado", async () => {
+      const c: TestClient = await connect();
+      c.send("equip", { uid: "x" });
+      assert.strictEqual((await c.next("error")).data["code"], "not_authenticated");
+    });
+  });
+
   describe("zona", () => {
     it("entra na zona e avisa os outros, com o nome de cada um", async () => {
       const a: Player = await registered("Alice");

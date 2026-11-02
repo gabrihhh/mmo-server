@@ -21,6 +21,11 @@ describe("parseClientMessage", () => {
       data: { version: 4, sessionToken: "tok" },
     });
     assert.deepStrictEqual(parseClientMessage('{"type":"logout","data":{}}'), { type: ClientMessageType.Logout, data: {} });
+    assert.deepStrictEqual(parseClientMessage('{"type":"equip","data":{"uid":"abc"}}'), { type: ClientMessageType.Equip, data: { uid: "abc" } });
+    assert.deepStrictEqual(parseClientMessage('{"type":"unequip","data":{"slot":"feet"}}'), {
+      type: ClientMessageType.Unequip,
+      data: { slot: "feet" },
+    });
     assert.deepStrictEqual(parseClientMessage('{"type":"input","data":{"seq":7,"x":0.5,"z":-1}}'), {
       type: ClientMessageType.Input,
       data: { seq: 7, x: 0.5, z: -1 },
@@ -44,6 +49,8 @@ describe("parseClientMessage", () => {
       '{"type":"register","data":{"version":4.5,"username":"a","email":"b","password":"c"}}',
       '{"type":"login","data":{"version":4,"login":42,"password":"x"}}',
       '{"type":"resume","data":{"version":4,"sessionToken":""}}',
+      '{"type":"equip","data":{"uid":""}}',
+      '{"type":"unequip","data":{"slot":"mochila"}}',
     ];
     for (const text of bad) assert.strictEqual(parseClientMessage(text), null, text);
   });

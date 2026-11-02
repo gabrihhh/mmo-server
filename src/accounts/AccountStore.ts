@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { normalizeKey } from "./credentials.js";
+import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
 /**
@@ -30,6 +31,8 @@ export interface Account {
   readonly username: string;
   /** Onde o jogador estava ao sair pela última vez; `null` em conta nova. */
   readonly lastPosition: SavedPosition | null;
+  /** Itens vestidos e mochila ([JOGO-04]). Conta nova começa com o kit de treino. */
+  readonly inventory: Inventory;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
@@ -61,6 +64,8 @@ export interface AccountStore {
   logout(sessionToken: string): Promise<void>;
   /** Salva a posição do jogador (chamado ao sair da zona). */
   savePosition(playerId: string, position: SavedPosition): Promise<void>;
+  /** Salva o inventário (chamado a cada troca aceita). */
+  saveInventory(playerId: string, inventory: Inventory): Promise<void>;
   /** `true` se o armazenamento está acessível (usado pelo `/health`). */
   isHealthy(): Promise<boolean>;
 }
@@ -92,6 +97,7 @@ interface MemoryRecord {
   passwordHash: string;
   sessionHashes: string[];
   lastPosition: SavedPosition | null;
+  inventory: Inventory;
 }
 
 /** Implementação em memória, para testes (não precisa de MongoDB). Mesmas regras da versão Mongo. */
@@ -111,6 +117,7 @@ export class InMemoryAccountStore implements AccountStore {
       passwordHash: await hashPassword(password),
       sessionHashes: [],
       lastPosition: null,
+      inventory: starterInventory(),
     };
     this.records.push(record);
     return this.openSession(record);
@@ -139,6 +146,11 @@ export class InMemoryAccountStore implements AccountStore {
     if (record !== undefined) record.lastPosition = position;
   }
 
+  async saveInventory(playerId: string, inventory: Inventory): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.inventory = inventory;
+  }
+
   async isHealthy(): Promise<boolean> {
     return true;
   }
@@ -150,6 +162,11 @@ export class InMemoryAccountStore implements AccountStore {
   }
 
   private static toAccount(record: MemoryRecord): Account {
-    return { playerId: record.playerId, username: record.username, lastPosition: record.lastPosition };
+    return {
+      playerId: record.playerId,
+      username: record.username,
+      lastPosition: record.lastPosition,
+      inventory: readInventory(record.inventory),
+    };
   }
 }

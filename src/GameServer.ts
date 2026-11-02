@@ -17,13 +17,17 @@ import {
   type PlayerSnapshot,
   type RegisterData,
   type ResumeData,
+  type EquipSlotName,
 } from "./net/protocol.js";
 import { Zone, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
+import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
+import { equip, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
+import { inventoryView } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
 export interface GameServerOptions {
@@ -245,6 +249,12 @@ export class GameServer {
       case ClientMessageType.Input:
         if (session.zone !== null && session.account !== null) session.zone.queueInput(session.account.playerId, message.data);
         return;
+      case ClientMessageType.Equip:
+        void this.changeInventory(session, (inventory) => equip(inventory, message.data.uid));
+        return;
+      case ClientMessageType.Unequip:
+        void this.changeInventory(session, (inventory) => unequip(inventory, GameServer.slotOf(message.data.slot)));
+        return;
     }
   }
 
@@ -357,7 +367,61 @@ export class GameServer {
         data: { playerId: account.playerId, username: account.username, sessionToken },
       }),
     );
+    this.sendInventory(session);
     this.log(`[auth] ${account.username} autenticou (${kind})`);
+  }
+
+  /** Manda o inventário da conta desta sessão (vestido + mochila + o que cada item faz). */
+  private sendInventory(session: Session): void {
+    if (session.account === null || session.socket.readyState !== WebSocket.OPEN) return;
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.Inventory, data: inventoryView(session.account.inventory) }));
+  }
+
+  /**
+   * Aplica uma troca no inventário (regras em `src/items/inventory.ts`): se aceita, salva no banco e
+   * manda o inventário novo; se recusada, manda o erro e nada muda. Ver mmo-docs [JOGO-04].
+   */
+  private async changeInventory(session: Session, change: (inventory: Account["inventory"]) => InventoryResult): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    const result: InventoryResult = change(account.inventory);
+    if (!result.ok) {
+      this.sendError(session, GameServer.inventoryError(result.reason), GameServer.INVENTORY_MESSAGES[result.reason]);
+      return;
+    }
+    session.account = { ...account, inventory: result.inventory };
+    try {
+      await this.options.accounts.saveInventory(account.playerId, result.inventory);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar inventário de ${account.username}:`, error);
+    }
+    this.sendInventory(session);
+  }
+
+  /** Mensagens (em português) das recusas de inventário. */
+  private static readonly INVENTORY_MESSAGES: Readonly<Record<InventoryFailure, string>> = {
+    item_not_found: "Esse item não está na mochila.",
+    bag_full: "Mochila cheia.",
+    slot_empty: "Não há nada nesse slot.",
+  };
+
+  private static inventoryError(reason: InventoryFailure): ErrorCode {
+    switch (reason) {
+      case "item_not_found":
+        return ErrorCode.ItemNotFound;
+      case "bag_full":
+        return ErrorCode.BagFull;
+      case "slot_empty":
+        return ErrorCode.SlotEmpty;
+    }
+  }
+
+  /** O nome de slot do protocolo é o mesmo do catálogo (checado em compilação por esta função). */
+  private static slotOf(slot: EquipSlotName): EquipSlot {
+    return slot;
   }
 
   /** Encerra a sessão deste aparelho (o token deixa de valer) e fecha a conexão normalmente. */
