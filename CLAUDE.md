@@ -32,10 +32,10 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] pro
 - Mudou a simulação (`src/sim/movement.ts`) → mude `mmo-client/scripts/sim/movement.gd` com a MESMA conta e ordem,
   ajuste `test/movement.test.ts` e [INFRA-09].
 
-### 5. Servidor é a autoridade ([INFRA-09])
+### 4. Servidor é a autoridade ([INFRA-09])
 - O cliente manda intenção (`input`), nunca resultado (posição, dano, item). Toda regra de jogo roda aqui.
 
-### 4. Verificação antes de concluir
+### 5. Verificação antes de concluir
 `npm run typecheck && npm test` precisam passar. Código novo de zona/mensagem vem com teste em `test/`.
 
 ## Comandos
