@@ -1,0 +1,5 @@
+node_modules
+build
+.env
+.colyseus-cloud.json
+.devmode.json

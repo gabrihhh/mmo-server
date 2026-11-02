@@ -1,0 +1,35 @@
+{
+  "private": true,
+  "name": "mmo-server",
+  "version": "0.1.0",
+  "description": "Servidor multiplayer do MMO (Colyseus)",
+  "type": "module",
+  "main": "build/index.js",
+  "engines": {
+    "node": ">= 22.0.0"
+  },
+  "scripts": {
+    "start": "tsx watch src/index.ts",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "clean": "rimraf build",
+    "typecheck": "tsc --noEmit",
+    "test": "mocha -r tsx test/**.test.ts --exit --timeout 15000"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@colyseus/sdk": "^0.18.1",
+    "@colyseus/testing": "^0.18.5",
+    "@types/express": "^5.0.6",
+    "@types/mocha": "^10.0.1",
+    "mocha": "^11.7.5",
+    "rimraf": "^5.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.4"
+  },
+  "dependencies": {
+    "@colyseus/schema": "^5.0.14",
+    "@colyseus/tools": "^0.18.1",
+    "colyseus": "^0.18.2",
+    "express": "^5.2.1"
+  }
+}
