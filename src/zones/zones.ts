@@ -14,14 +14,15 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     id: "zone_1",
     halfSize: ZONE_HALF_SIZE,
     maxPlayers: 50,
-    spawnRadius: 5,
+    // Nasce dentro do círculo de pedra do centro da praça (raio 4,5 m no cliente: ZoneTerrain.SPAWN_CIRCLE_RADIUS).
+    spawnRadius: 3.5,
     // PvP ligado: é assim que testamos ([JOGO-02]). Zonas seguras virão com `pvp: false`.
     pvp: true,
-    // Bonecos de treino perto do spawn ([JOGO-05]).
+    // Bonecos de treino no campo, logo depois da escada do lado −Z da praça ([JOGO-05], [MUN-03]).
     dummies: [
-      { id: "dummy_1", name: "Boneco de treino", x: 6, z: -6 },
-      { id: "dummy_2", name: "Boneco de treino", x: -6, z: -6 },
-      { id: "dummy_3", name: "Boneco de treino", x: 0, z: -10 },
+      { id: "dummy_1", name: "Boneco de treino", x: 0, z: -18 },
+      { id: "dummy_2", name: "Boneco de treino", x: -6, z: -21 },
+      { id: "dummy_3", name: "Boneco de treino", x: 6, z: -21 },
     ],
   },
 ];
