@@ -271,6 +271,12 @@ export interface PlayerSnapshot {
   readonly shield: number;
   /** Disparada ativa (multiplicador de velocidade; 1 = normal). */
   readonly speed: number;
+  /**
+   * Mana atual e máxima (arredondada a 0,1). Só jogadores (bonecos/NPCs não têm): o cliente mostra a barra de
+   * mana embaixo da de vida, acima da cabeça ([CLI-04]). Campo opcional: cliente antigo ignora.
+   */
+  readonly mana?: number;
+  readonly maxMana?: number;
 }
 
 /** Boneco de treino / monstro: mesmos campos do jogador + nome. Vai em `welcome.npcs` e `snapshot.npcs`. */

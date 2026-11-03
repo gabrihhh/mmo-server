@@ -1003,6 +1003,8 @@ export class Zone {
       dead: entity.dead,
       shield: round1(entity.shield),
       speed: entity.kind === "player" && entity.boost !== null ? entity.boost.multiplier : 1,
+      // Mana é pública (barra acima da cabeça, [CLI-04]); bonecos não têm.
+      ...(entity.kind === "player" ? { mana: round1(entity.mana), maxMana: entity.maxMana } : {}),
     };
   }
 

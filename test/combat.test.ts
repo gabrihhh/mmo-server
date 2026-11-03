@@ -2,7 +2,7 @@ import assert from "assert";
 
 import { Zone, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
-import { DUMMY_MAX_HP, DUMMY_RESPAWN_SECONDS, PLAYER_MAX_HP, PLAYER_RESPAWN_SECONDS } from "../src/combat/stats.js";
+import { DUMMY_MAX_HP, DUMMY_RESPAWN_SECONDS, PLAYER_MAX_HP, PLAYER_MAX_MANA, PLAYER_RESPAWN_SECONDS } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 
 /** Membro falso que guarda o último snapshot (decodificado). */
@@ -44,6 +44,22 @@ function hpOf(member: Member, id: string): number {
 }
 
 describe("combate (ataque simples)", () => {
+  it("snapshot leva a mana dos jogadores (barra acima da cabeça); bonecos não têm mana", () => {
+    const z = zone();
+    const a = new Member("a");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    z.tick();
+    const players: unknown = a.last["players"];
+    const npcs: unknown = a.last["npcs"];
+    assert.ok(Array.isArray(players) && Array.isArray(npcs));
+    const me: unknown = players[0];
+    const dummy: unknown = npcs[0];
+    assert.ok(typeof me === "object" && me !== null && "mana" in me && "maxMana" in me);
+    assert.strictEqual(me.mana, PLAYER_MAX_MANA);
+    assert.strictEqual(me.maxMana, PLAYER_MAX_MANA);
+    assert.ok(typeof dummy === "object" && dummy !== null && !("mana" in dummy) && !("maxMana" in dummy));
+  });
+
   it("golpe tem tempo de lançamento: dano só no fim, 1 golpe por lançamento", () => {
     const z = zone();
     const a = new Member("a");
