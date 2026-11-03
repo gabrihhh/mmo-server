@@ -2,6 +2,7 @@ import { MongoClient, MongoServerError, type Collection, type Db } from "mongodb
 
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
+import { isBodyType, type BodyType } from "../net/protocol.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
@@ -37,6 +38,8 @@ interface AccountDocument {
   lastPosition: SavedPosition | null;
   /** Vestido + mochila. Pode faltar em conta antiga (vira o inicial ao ler). Lido sempre por readInventory. */
   inventory?: Inventory;
+  /** Corpo do personagem ("male" | "female"). Falta/null = ainda não escolheu (conta antiga também). */
+  body?: string | null;
 }
 
 /** Código de erro do MongoDB para violação de índice único. */
@@ -88,6 +91,7 @@ export class MongoAccountStore implements AccountStore {
         lastLoginAt: now,
         lastPosition: null,
         inventory: starterInventory(),
+        body: null,
       };
       try {
         await this.accounts.insertOne(doc);
@@ -142,6 +146,15 @@ export class MongoAccountStore implements AccountStore {
     await this.accounts.updateOne({ playerId }, { $set: { inventory } });
   }
 
+  async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
+    // Só grava se ainda não houver corpo: a escolha é para sempre (e duas conexões não brigam).
+    const result = await this.accounts.updateOne(
+      { playerId, $or: [{ body: null }, { body: { $exists: false } }] },
+      { $set: { body } },
+    );
+    return result.modifiedCount === 1;
+  }
+
   async isHealthy(): Promise<boolean> {
     try {
       await this.db.command({ ping: 1 });
@@ -162,6 +175,7 @@ export class MongoAccountStore implements AccountStore {
       username: doc.username,
       lastPosition: doc.lastPosition,
       inventory: readInventory(doc.inventory),
+      body: isBodyType(doc.body) ? doc.body : null,
     };
   }
 }

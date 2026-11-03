@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -25,7 +25,12 @@ export const ClientMessageType = {
   Resume: "resume",
   /** Encerra a sessão deste aparelho (o token deixa de valer) e fecha a conexão. Payload: `{}`. */
   Logout: "logout",
-  /** Pede para entrar numa zona (exige estar autenticado). Payload: {@link JoinData}. */
+  /**
+   * Escolhe o corpo do personagem (uma vez só, na primeira entrada; vale para sempre). Payload: {@link ChooseBodyData}.
+   * Ver mmo-docs [INFRA-07].
+   */
+  ChooseBody: "choose_body",
+  /** Pede para entrar numa zona (exige estar autenticado e ter escolhido o corpo). Payload: {@link JoinData}. */
   Join: "join",
   /**
    * Intenção de movimento de UM tick (não a posição: o servidor é a autoridade e simula).
@@ -46,6 +51,8 @@ export const ClientMessageType = {
 export const ServerMessageType = {
   /** Autenticação aceita: quem é o jogador e o token de sessão a guardar. */
   AuthOk: "auth_ok",
+  /** Corpo escolhido e salvo (resposta ao `choose_body`); o cliente já pode mandar `join`. */
+  BodyChosen: "body_chosen",
   /** Entrada na zona aceita: tick, parâmetros da simulação e todos os jogadores (inclusive o próprio). */
   Welcome: "welcome",
   /** Outro jogador entrou na zona. */
@@ -112,6 +119,10 @@ export const ErrorCode = {
   AbilityUnavailable: "ability_unavailable",
   /** Não pode agir agora (morto, ou já lançando outra habilidade). A conexão continua. */
   Busy: "busy",
+  /** `join` antes de escolher o corpo do personagem. A conexão continua. */
+  BodyNotChosen: "body_not_chosen",
+  /** `choose_body` numa conta que já escolheu (a escolha é para sempre). A conexão continua. */
+  BodyAlreadyChosen: "body_already_chosen",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -152,6 +163,18 @@ export interface ResumeData {
   readonly version: number;
   /** Token recebido no último `auth_ok`. */
   readonly sessionToken: string;
+}
+
+/**
+ * Corpos de personagem que existem. ATENÇÃO: espelho em mmo-client/scripts/network/protocol.gd (BODY_*) e nos modelos
+ * de mmo-client/scripts/player/character_bodies.gd.
+ */
+export const BODY_TYPES = ["male", "female"] as const;
+export type BodyType = (typeof BODY_TYPES)[number];
+
+/** Payload de `choose_body`. */
+export interface ChooseBodyData {
+  readonly body: BodyType;
 }
 
 /** Payload de `join`. */
@@ -223,6 +246,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Login; readonly data: LoginData }
   | { readonly type: typeof ClientMessageType.Resume; readonly data: ResumeData }
   | { readonly type: typeof ClientMessageType.Logout; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ChooseBody; readonly data: ChooseBodyData }
   | { readonly type: typeof ClientMessageType.Join; readonly data: JoinData }
   | { readonly type: typeof ClientMessageType.Input; readonly data: InputData }
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
@@ -328,6 +352,8 @@ export interface PlayerInfo extends PlayerSnapshot {
   readonly name: string;
   /** O que está vestindo (muda depois pelo evento `look`). */
   readonly look: Look;
+  /** Corpo do personagem (qual modelo desenhar). */
+  readonly body: BodyType;
 }
 
 /** Parâmetros da simulação enviados no `welcome`. */
@@ -409,8 +435,11 @@ export type ServerMessage =
         readonly username: string;
         /** Token a guardar no aparelho e mandar no próximo `resume`. */
         readonly sessionToken: string;
+        /** Corpo escolhido; `null` = ainda não escolheu (o cliente mostra a tela de escolha antes do `join`). */
+        readonly body: BodyType | null;
       };
     }
+  | { readonly type: typeof ServerMessageType.BodyChosen; readonly data: { readonly body: BodyType } }
   | {
       readonly type: typeof ServerMessageType.Welcome;
       readonly data: {
@@ -513,6 +542,17 @@ const isSlotName = (value: unknown): value is EquipSlotName =>
   typeof value === "string" && EQUIP_SLOT_NAMES.some((slot) => slot === value);
 
 /** Valida o payload de `unequip`. */
+/** `true` se `value` é um dos {@link BODY_TYPES}. */
+export function isBodyType(value: unknown): value is BodyType {
+  return typeof value === "string" && (BODY_TYPES as readonly string[]).includes(value);
+}
+
+export function parseChooseBodyData(data: unknown): ChooseBodyData | null {
+  if (!isRecord(data)) return null;
+  const { body } = data;
+  return isBodyType(body) ? { body } : null;
+}
+
 export function parseUnequipData(data: unknown): UnequipData | null {
   if (!isRecord(data)) return null;
   const { slot } = data;
@@ -581,6 +621,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     }
     case ClientMessageType.Logout:
       return { type: ClientMessageType.Logout, data: {} };
+    case ClientMessageType.ChooseBody: {
+      const data = parseChooseBodyData(raw);
+      return data === null ? null : { type: ClientMessageType.ChooseBody, data };
+    }
     case ClientMessageType.Join: {
       const data = parseJoinData(raw);
       return data === null ? null : { type: ClientMessageType.Join, data };

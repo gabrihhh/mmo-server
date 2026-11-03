@@ -11,6 +11,7 @@ import {
   ServerMessageType,
   encodeServerMessage,
   parseClientMessage,
+  type BodyType,
   type ClientMessage,
   type JoinData,
   type LoginData,
@@ -243,6 +244,9 @@ export class GameServer {
       case ClientMessageType.Logout:
         void this.handleLogout(session);
         return;
+      case ClientMessageType.ChooseBody:
+        void this.handleChooseBody(session, message.data.body);
+        return;
       case ClientMessageType.Join:
         void this.handleJoin(session, message.data);
         return;
@@ -382,7 +386,7 @@ export class GameServer {
     session.socket.send(
       encodeServerMessage({
         type: ServerMessageType.AuthOk,
-        data: { playerId: account.playerId, username: account.username, sessionToken },
+        data: { playerId: account.playerId, username: account.username, sessionToken, body: account.body },
       }),
     );
     this.sendInventory(session);
@@ -473,12 +477,50 @@ export class GameServer {
     session.socket.close(CloseCode.Normal, "logout");
   }
 
+  /**
+   * Escolha do corpo do personagem (uma vez só, antes do primeiro `join`). Salva no banco e responde `body_chosen`;
+   * conta que já escolheu recebe `body_already_chosen`. Ver mmo-docs [INFRA-07].
+   */
+  private async handleChooseBody(session: Session, body: BodyType): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    if (account.body !== null) {
+      this.sendError(session, ErrorCode.BodyAlreadyChosen, "O personagem já foi escolhido.");
+      return;
+    }
+    let saved: boolean;
+    try {
+      saved = await this.options.accounts.chooseBody(account.playerId, body);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar o corpo de ${account.username}:`, error);
+      this.reject(session, ErrorCode.ServerError, "erro no servidor");
+      return;
+    }
+    if (!saved) {
+      this.sendError(session, ErrorCode.BodyAlreadyChosen, "O personagem já foi escolhido.");
+      return;
+    }
+    session.account = { ...account, body };
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(encodeServerMessage({ type: ServerMessageType.BodyChosen, data: { body } }));
+    }
+    this.log(`[auth] ${account.username} escolheu o corpo ${body}`);
+  }
+
   private async handleJoin(session: Session, data: JoinData): Promise<void> {
     const account: Account | null = session.account;
     if (account === null) {
       this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
       return;
     }
+    if (account.body === null) {
+      this.sendError(session, ErrorCode.BodyNotChosen, "Escolha seu personagem antes de entrar.");
+      return;
+    }
+    const body: BodyType = account.body;
     if (session.zone !== null) {
       this.sendError(session, ErrorCode.AlreadyJoined, "já está numa zona");
       return;
@@ -494,6 +536,7 @@ export class GameServer {
       {
         id: account.playerId,
         name: account.username,
+        body,
         send: (text: string): void => {
           if (socket.readyState === WebSocket.OPEN) socket.send(text);
         },

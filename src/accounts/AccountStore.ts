@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import type { BodyType } from "../net/protocol.js";
 
 /**
  * Contas de jogador: cadastro com username + e-mail + senha, login por username OU e-mail,
@@ -33,6 +34,8 @@ export interface Account {
   readonly lastPosition: SavedPosition | null;
   /** Itens vestidos e mochila ([JOGO-04]). Conta nova começa com o kit de treino. */
   readonly inventory: Inventory;
+  /** Corpo do personagem, escolhido uma vez na primeira entrada; `null` = ainda não escolheu. */
+  readonly body: BodyType | null;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
@@ -66,6 +69,11 @@ export interface AccountStore {
   savePosition(playerId: string, position: SavedPosition): Promise<void>;
   /** Salva o inventário (chamado a cada troca aceita). */
   saveInventory(playerId: string, inventory: Inventory): Promise<void>;
+  /**
+   * Grava o corpo do personagem SE ainda não houver um (a escolha é para sempre). `true` = gravou; `false` = já tinha
+   * (ou conta inexistente).
+   */
+  chooseBody(playerId: string, body: BodyType): Promise<boolean>;
   /** `true` se o armazenamento está acessível (usado pelo `/health`). */
   isHealthy(): Promise<boolean>;
 }
@@ -98,6 +106,7 @@ interface MemoryRecord {
   sessionHashes: string[];
   lastPosition: SavedPosition | null;
   inventory: Inventory;
+  body: BodyType | null;
 }
 
 /** Implementação em memória, para testes (não precisa de MongoDB). Mesmas regras da versão Mongo. */
@@ -118,6 +127,7 @@ export class InMemoryAccountStore implements AccountStore {
       sessionHashes: [],
       lastPosition: null,
       inventory: starterInventory(),
+      body: null,
     };
     this.records.push(record);
     return this.openSession(record);
@@ -151,6 +161,13 @@ export class InMemoryAccountStore implements AccountStore {
     if (record !== undefined) record.inventory = inventory;
   }
 
+  async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record === undefined || record.body !== null) return false;
+    record.body = body;
+    return true;
+  }
+
   async isHealthy(): Promise<boolean> {
     return true;
   }
@@ -167,6 +184,7 @@ export class InMemoryAccountStore implements AccountStore {
       username: record.username,
       lastPosition: record.lastPosition,
       inventory: readInventory(record.inventory),
+      body: record.body,
     };
   }
 }

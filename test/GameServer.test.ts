@@ -49,11 +49,19 @@ describe("GameServer", () => {
     return client;
   }
 
-  /** Cria uma conta nova (username único por teste) e devolve o jogador autenticado. */
-  async function registered(username: string = `Jogador_${++counter}`): Promise<Player> {
+  /**
+   * Cria uma conta nova (username único por teste) e devolve o jogador autenticado, já com o corpo escolhido
+   * (`body`; `null` = não escolhe, para testar a escolha).
+   */
+  async function registered(username: string = `Jogador_${++counter}`, body: string | null = "male"): Promise<Player> {
     const client: TestClient = await connect();
     client.send("register", { version: PROTOCOL_VERSION, username, email: `${username}@teste.com`, password: PASSWORD });
-    return { client, ...authData(await client.next("auth_ok")) };
+    const player: Player = { client, ...authData(await client.next("auth_ok")) };
+    if (body !== null) {
+      client.send("choose_body", { body });
+      await client.next("body_chosen");
+    }
+    return player;
   }
 
   /** Manda `join` e devolve a lista `players` do `welcome`. */
@@ -154,6 +162,35 @@ describe("GameServer", () => {
       const c: TestClient = await connect();
       c.send("join", { zone: ZONE });
       assert.strictEqual((await c.next("error")).data["code"], "not_authenticated");
+    });
+  });
+
+  describe("corpo do personagem (escolha na primeira entrada)", () => {
+    it("conta nova vem sem corpo; join antes de escolher é recusado; escolhe uma vez e vale para sempre", async () => {
+      const c: TestClient = await connect();
+      c.send("register", { version: PROTOCOL_VERSION, username: "Escolhe", email: "escolhe@teste.com", password: PASSWORD });
+      const ok: ReceivedMessage = await c.next("auth_ok");
+      assert.strictEqual(ok.data["body"], null, "ainda não escolheu");
+      c.send("join", { zone: ZONE });
+      assert.strictEqual((await c.next("error")).data["code"], "body_not_chosen");
+
+      c.send("choose_body", { body: "alien" });
+      assert.strictEqual((await c.next("error")).data["code"], "bad_message", "corpo inexistente");
+      c.send("choose_body", { body: "female" });
+      assert.strictEqual((await c.next("body_chosen")).data["body"], "female");
+      c.send("choose_body", { body: "male" });
+      assert.strictEqual((await c.next("error")).data["code"], "body_already_chosen");
+
+      c.send("join", { zone: ZONE });
+      const players: unknown = (await c.next("welcome")).data["players"];
+      const me = entryOf(players, authData(ok).playerId);
+      assert.strictEqual(me?.["body"], "female", "os outros desenham o corpo escolhido");
+
+      await c.close();
+      await sleep(20);
+      const again: TestClient = await connect();
+      again.send("resume", { version: PROTOCOL_VERSION, sessionToken: authData(ok).sessionToken });
+      assert.strictEqual((await again.next("auth_ok")).data["body"], "female", "lembra a escolha");
     });
   });
 
@@ -258,7 +295,7 @@ describe("GameServer", () => {
       c.send("join", { zone: ZONE });
       const players: unknown = (await c.next("welcome")).data["players"];
       const me = entryOf(players, first.playerId);
-      assert.deepStrictEqual({ ...me, name: undefined, look: undefined }, { ...where, name: undefined, look: undefined });
+      assert.deepStrictEqual({ ...me, name: undefined, look: undefined, body: undefined }, { ...where, name: undefined, look: undefined, body: undefined });
       assert.deepStrictEqual(
         me?.["look"],
         { hand: "training_sword", head: "training_hood", chest: "training_vest", feet: "training_boots" },

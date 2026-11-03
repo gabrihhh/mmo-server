@@ -6,6 +6,7 @@ import {
   type InputData,
   type NpcSnapshot,
   type OwnStatus,
+  type BodyType,
   type Look,
   type PlayerInfo,
   type PlayerSnapshot,
@@ -43,6 +44,8 @@ export interface ZoneMember {
   readonly id: string;
   /** Nome exibido (username como foi cadastrado). */
   readonly name: string;
+  /** Corpo do personagem (qual modelo os outros desenham). Ausente = "male" (testes). */
+  readonly body?: BodyType;
   /** Envia uma mensagem já serializada (JSON). */
   send(text: string): void;
 }
@@ -1005,7 +1008,7 @@ export class Zone {
 
   /** Snapshot + nome + aparência: para quem está conhecendo o jogador agora (`welcome`, `player_joined`). */
   private static info(player: ZonePlayer): PlayerInfo {
-    return { ...Zone.snapshot(player), name: player.name, look: player.look };
+    return { ...Zone.snapshot(player), name: player.name, look: player.look, body: player.member.body ?? "male" };
   }
 
   /** `true` se as duas aparências vestem o mesmo item em todos os slots. */
