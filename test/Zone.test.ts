@@ -25,7 +25,7 @@ const newZone = (maxPlayers: number = 50, pvp: boolean = true): Zone =>
   new Zone({ id: "test", halfSize: 150, maxPlayers, spawnRadius: 5, pvp, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });
 
 /** Vida cheia de jogador, como sai no snapshot. */
-const FULL = { hp: 100, maxHp: 100, dead: false };
+const FULL = { hp: 100, maxHp: 100, dead: false, shield: 0 };
 
 describe("Zone", () => {
   it("devolve a lista de jogadores a quem entra e avisa player_joined aos outros", () => {

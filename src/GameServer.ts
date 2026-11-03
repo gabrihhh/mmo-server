@@ -19,14 +19,14 @@ import {
   type ResumeData,
   type EquipSlotName,
 } from "./net/protocol.js";
-import { Zone, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
+import { Zone, type CastFailure, type CastResult, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
 import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
-import { basicAttackOf, equip, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
+import { basicAttackOf, equip, equippedAbilities, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
 import { inventoryView } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
@@ -264,6 +264,15 @@ export class GameServer {
           this.sendError(session, ErrorCode.InvalidTarget, "Esse alvo não pode ser atacado.");
         }
         return;
+      case ClientMessageType.Cast: {
+        if (session.zone === null || session.account === null) {
+          this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+          return;
+        }
+        const result: CastResult = session.zone.castAbility(session.account.playerId, message.data);
+        if (!result.ok) this.sendError(session, GameServer.CAST_ERRORS[result.reason], result.message);
+        return;
+      }
     }
   }
 
@@ -402,8 +411,8 @@ export class GameServer {
       return;
     }
     session.account = { ...account, inventory: result.inventory };
-    // A arma pode ter mudado: o ataque simples na zona acompanha.
-    session.zone?.setBasicAttack(account.playerId, basicAttackOf(result.inventory));
+    // A arma e as cartas podem ter mudado: a zona acompanha.
+    session.zone?.setLoadout(account.playerId, basicAttackOf(result.inventory), equippedAbilities(result.inventory));
     try {
       await this.options.accounts.saveInventory(account.playerId, result.inventory);
     } catch (error: unknown) {
@@ -411,6 +420,17 @@ export class GameServer {
     }
     this.sendInventory(session);
   }
+
+  /** Código do protocolo para cada recusa de `cast` (mesmos nomes). */
+  private static readonly CAST_ERRORS: Readonly<Record<CastFailure, ErrorCode>> = {
+    busy: ErrorCode.Busy,
+    ability_not_equipped: ErrorCode.AbilityNotEquipped,
+    ability_unavailable: ErrorCode.AbilityUnavailable,
+    on_cooldown: ErrorCode.OnCooldown,
+    not_enough_mana: ErrorCode.NotEnoughMana,
+    invalid_target: ErrorCode.InvalidTarget,
+    out_of_range: ErrorCode.OutOfRange,
+  };
 
   /** Mensagens (em português) das recusas de inventário. */
   private static readonly INVENTORY_MESSAGES: Readonly<Record<InventoryFailure, string>> = {
@@ -475,6 +495,7 @@ export class GameServer {
       },
       GameServer.spawnFrom(account.lastPosition, zone),
       basicAttackOf(account.inventory),
+      equippedAbilities(account.inventory),
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");

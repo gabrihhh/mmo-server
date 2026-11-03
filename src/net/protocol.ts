@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -38,6 +38,8 @@ export const ClientMessageType = {
   Unequip: "unequip",
   /** Fixa (ou limpa, com `null`) o alvo do ataque simples; o servidor ataca sozinho quando em alcance. Payload: {@link AttackData}. */
   Attack: "attack",
+  /** Lança uma habilidade (carta) vestida. Payload: {@link CastData}. Ver mmo-docs [JOGO-06]. */
+  Cast: "cast",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -98,6 +100,18 @@ export const ErrorCode = {
   SlotEmpty: "slot_empty",
   /** Alvo inexistente, morto, você mesmo, ou jogador numa zona sem PvP. A conexão continua. */
   InvalidTarget: "invalid_target",
+  /** `cast` de habilidade que não está vestida. A conexão continua. */
+  AbilityNotEquipped: "ability_not_equipped",
+  /** Habilidade ainda recarregando. A conexão continua. */
+  OnCooldown: "on_cooldown",
+  /** Mana insuficiente. A conexão continua. */
+  NotEnoughMana: "not_enough_mana",
+  /** Alvo fora do alcance ao começar. A conexão continua. */
+  OutOfRange: "out_of_range",
+  /** Habilidade ainda não implementada no servidor (Investida/Disparada até o passo 3c). A conexão continua. */
+  AbilityUnavailable: "ability_unavailable",
+  /** Não pode agir agora (morto, ou já lançando outra habilidade). A conexão continua. */
+  Busy: "busy",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -173,6 +187,19 @@ export interface UnequipData {
   readonly slot: EquipSlotName;
 }
 
+/** Payload de `cast`. O que vai depende do tipo de mira da habilidade ([JOGO-06]). */
+export interface CastData {
+  readonly abilityId: string;
+  /** Mira "target": id do alvo. */
+  readonly targetId: string | null;
+  /**
+   * Mira "direction": direção no plano XZ (não precisa estar normalizada).
+   * Mira "area": ponto no chão (limitado ao alcance pelo servidor). Outras miras: ignorado.
+   */
+  readonly x: number | null;
+  readonly z: number | null;
+}
+
 /** Payload de `attack`. */
 export interface AttackData {
   /** Id do jogador ou boneco a atacar; `null` para parar de atacar. */
@@ -189,7 +216,8 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Input; readonly data: InputData }
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
-  | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData };
+  | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
+  | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -204,6 +232,8 @@ export interface PlayerSnapshot {
   readonly maxHp: number;
   /** Morto (esperando renascer). */
   readonly dead: boolean;
+  /** Escudo ativo (dano que ainda absorve; 0 = sem escudo). */
+  readonly shield: number;
 }
 
 /** Boneco de treino / monstro: mesmos campos do jogador + nome. Vai em `welcome.npcs` e `snapshot.npcs`. */
@@ -213,8 +243,29 @@ export interface NpcSnapshot extends PlayerSnapshot {
 
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
 export type CombatEvent =
-  | { readonly type: "damage"; readonly source: string; readonly target: string; readonly amount: number; readonly ability: string }
-  | { readonly type: "cast_start"; readonly source: string; readonly ability: string; readonly target: string; readonly duration: number }
+  | {
+      readonly type: "damage";
+      readonly source: string;
+      readonly target: string;
+      /** Dano na vida. */
+      readonly amount: number;
+      /** Dano absorvido pelo escudo (0 sem escudo). */
+      readonly absorbed: number;
+      readonly ability: string;
+    }
+  | {
+      readonly type: "cast_start";
+      readonly source: string;
+      readonly ability: string;
+      /** Alvo (mira "target" e ataque simples); "" nas outras miras. */
+      readonly target: string;
+      readonly duration: number;
+      /** Ponto mirado (área) ou um ponto na direção (linha); para efeitos visuais. Ausente nas outras miras. */
+      readonly x?: number;
+      readonly z?: number;
+    }
+  | { readonly type: "heal"; readonly source: string; readonly target: string; readonly amount: number; readonly ability: string }
+  | { readonly type: "impact"; readonly source: string; readonly ability: string; readonly x: number; readonly z: number; readonly radius: number }
   | { readonly type: "miss"; readonly source: string; readonly target: string; readonly ability: string }
   | { readonly type: "death"; readonly id: string; readonly killer: string }
   | { readonly type: "respawn"; readonly id: string };
@@ -418,6 +469,28 @@ export function parseUnequipData(data: unknown): UnequipData | null {
   return isSlotName(slot) ? { slot } : null;
 }
 
+/** Número finito ou ausente/null (→ null). `undefined` no retorno = inválido. */
+function optionalNumber(value: unknown): number | null | undefined {
+  if (value === undefined || value === null) return null;
+  return isFiniteNumber(value) ? value : undefined;
+}
+
+/** Valida o payload de `cast`. */
+export function parseCastData(data: unknown): CastData | null {
+  if (!isRecord(data)) return null;
+  const { abilityId, targetId } = data;
+  if (typeof abilityId !== "string" || abilityId.length === 0 || abilityId.length > 64) return null;
+  let target: string | null = null;
+  if (targetId !== undefined && targetId !== null) {
+    if (typeof targetId !== "string" || targetId.length === 0 || targetId.length > 64) return null;
+    target = targetId;
+  }
+  const x: number | null | undefined = optionalNumber(data["x"]);
+  const z: number | null | undefined = optionalNumber(data["z"]);
+  if (x === undefined || z === undefined) return null;
+  return { abilityId, targetId: target, x, z };
+}
+
 /** Valida o payload de `attack`. */
 export function parseAttackData(data: unknown): AttackData | null {
   if (!isRecord(data)) return null;
@@ -475,6 +548,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Attack: {
       const data = parseAttackData(raw);
       return data === null ? null : { type: ClientMessageType.Attack, data };
+    }
+    case ClientMessageType.Cast: {
+      const data = parseCastData(raw);
+      return data === null ? null : { type: ClientMessageType.Cast, data };
     }
     default:
       return null;

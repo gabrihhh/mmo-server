@@ -112,3 +112,14 @@ export function basicAttackOf(inventory: Inventory): AbilityDef {
   const def = weapon === null ? undefined : getItem(weapon.itemId);
   return def?.basicAttack ?? UNARMED_ATTACK;
 }
+
+/** Habilidades (cartas) de tudo que está vestido, por id. Só elas podem ser lançadas ([JOGO-06]). */
+export function equippedAbilities(inventory: Inventory): Map<string, AbilityDef> {
+  const result: Map<string, AbilityDef> = new Map();
+  for (const slot of EQUIP_SLOTS) {
+    const stack: ItemStack | null = inventory.equipped[slot];
+    const def = stack === null ? undefined : getItem(stack.itemId);
+    for (const ability of def?.abilities ?? []) result.set(ability.id, ability);
+  }
+  return result;
+}

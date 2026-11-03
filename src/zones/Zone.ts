@@ -1,6 +1,7 @@
 import {
   ServerMessageType,
   encodeServerMessage,
+  type CastData,
   type CombatEvent,
   type InputData,
   type NpcSnapshot,
@@ -93,6 +94,9 @@ interface Combatant {
   dead: boolean;
   /** Tick em que renasce (só vale com `dead`). */
   respawnTick: number;
+  /** Escudo: dano que ainda absorve e o tick em que acaba (0 = sem escudo). */
+  shield: number;
+  shieldUntilTick: number;
 }
 
 /** Jogador dentro da zona (estado interno; o que vai para a rede é {@link PlayerSnapshot}). */
@@ -109,19 +113,44 @@ interface ZonePlayer extends Combatant {
   lastAppliedSeq: number;
   /** Ataque simples da arma vestida (muda com o inventário). */
   basicAttack: AbilityDef;
+  /** Habilidades (cartas) vestidas, por id ([JOGO-06]). */
+  abilities: ReadonlyMap<string, AbilityDef>;
+  /** Tick em que cada habilidade fica pronta de novo (recarga), por id. */
+  readonly readyTick: Map<string, number>;
   /** Alvo fixo do ataque simples (`null` = nenhum). */
   attackTarget: string | null;
   /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
   cast: Cast | null;
 }
 
-/** Um lançamento em andamento ([JOGO-05]). */
+/** Um lançamento em andamento ([JOGO-05], [JOGO-06]): golpe do ataque simples ou habilidade. */
 interface Cast {
+  readonly kind: "attack" | "ability";
   readonly ability: AbilityDef;
-  readonly targetId: string;
+  /** Alvo (mira "target" e ataque simples); `null` nas outras miras. */
+  readonly targetId: string | null;
+  /** Mira "direction": vetor unitário. Mira "area": ponto no chão. Outras: posição de quem lança. */
+  readonly aimX: number;
+  readonly aimZ: number;
   /** Tick em que o efeito acontece. */
   readonly endTick: number;
 }
+
+/** Motivo de recusa de um `cast` (mesmos nomes dos códigos de erro do protocolo). */
+export type CastFailure =
+  | "busy"
+  | "ability_not_equipped"
+  | "ability_unavailable"
+  | "on_cooldown"
+  | "not_enough_mana"
+  | "invalid_target"
+  | "out_of_range";
+
+/** Resultado de {@link Zone.castAbility}. */
+export type CastResult = { readonly ok: true } | { readonly ok: false; readonly reason: CastFailure; readonly message: string };
+
+/** "Raio do corpo" (m) somado às áreas e à largura da linha: acerta quem encosta na borda. */
+const BODY_RADIUS = 0.4;
 
 /** Boneco de treino: parado, sem regeneração, reaparece no mesmo lugar. */
 interface ZoneDummy extends Combatant {
@@ -168,6 +197,8 @@ export class Zone {
         maxHp: DUMMY_MAX_HP,
         dead: false,
         respawnTick: 0,
+        shield: 0,
+        shieldUntilTick: 0,
       });
     }
   }
@@ -203,7 +234,12 @@ export class Zone {
    * (usa a lista de jogadores devolvida), porque ele também leva dados da conta.
    * Se o id já estiver na zona, a entrada antiga é substituída.
    */
-  join(member: ZoneMember, spawn?: SpawnPoint, basicAttack: AbilityDef = UNARMED_ATTACK): JoinResult {
+  join(
+    member: ZoneMember,
+    spawn?: SpawnPoint,
+    basicAttack: AbilityDef = UNARMED_ATTACK,
+    abilities: ReadonlyMap<string, AbilityDef> = new Map(),
+  ): JoinResult {
     if (!this.players.has(member.id) && this.players.size >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
 
@@ -221,10 +257,14 @@ export class Zone {
       maxMana: PLAYER_MAX_MANA,
       dead: false,
       respawnTick: 0,
+      shield: 0,
+      shieldUntilTick: 0,
       inputs: [],
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
       basicAttack,
+      abilities,
+      readyTick: new Map(),
       attackTarget: null,
       cast: null,
     };
@@ -253,10 +293,90 @@ export class Zone {
     while (player.inputs.length > MAX_INPUT_QUEUE) player.inputs.shift();
   }
 
-  /** Troca o ataque simples (o inventário mudou). */
-  setBasicAttack(id: string, basicAttack: AbilityDef): void {
+  /** Troca o ataque simples e as cartas (o inventário mudou). A recarga de cada habilidade é mantida. */
+  setLoadout(id: string, basicAttack: AbilityDef, abilities: ReadonlyMap<string, AbilityDef>): void {
     const player: ZonePlayer | undefined = this.players.get(id);
-    if (player !== undefined) player.basicAttack = basicAttack;
+    if (player === undefined) return;
+    player.basicAttack = basicAttack;
+    player.abilities = abilities;
+  }
+
+  /**
+   * Começa a lançar uma habilidade vestida ([JOGO-06]). Confere: vivo e sem outra habilidade em andamento,
+   * vestida, disponível, recarga, mana e — mira "target" — alvo válido no alcance. Aceita: gasta a mana,
+   * começa a recarga, interrompe o golpe do ataque simples (o alvo fixo continua) e manda `cast_start`.
+   * O efeito sai no fim do lançamento ({@link tick}), se ainda couber no alcance.
+   */
+  castAbility(id: string, request: CastData): CastResult {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined || player.dead) return Zone.refuse("busy", "Você não pode agir agora.");
+    if (player.cast !== null && player.cast.kind === "ability") return Zone.refuse("busy", "Já está lançando uma habilidade.");
+    const ability: AbilityDef | undefined = player.abilities.get(request.abilityId);
+    if (ability === undefined) return Zone.refuse("ability_not_equipped", "Essa habilidade não está vestida.");
+    if (!ability.available) return Zone.refuse("ability_unavailable", `${ability.title}: disponível em breve.`);
+    const readyTick: number = player.readyTick.get(ability.id) ?? 0;
+    if (this.currentTick < readyTick) {
+      const seconds: number = (readyTick - this.currentTick) * TICK_SECONDS;
+      return Zone.refuse("on_cooldown", `${ability.title} recarrega em ${seconds.toFixed(1)} s.`);
+    }
+    if (player.mana < ability.manaCost) return Zone.refuse("not_enough_mana", "Mana insuficiente.");
+
+    let targetId: string | null = null;
+    let aimX: number = player.state.x;
+    let aimZ: number = player.state.z;
+    switch (ability.aim) {
+      case "target": {
+        const target: Entity | undefined = request.targetId === null ? undefined : this.entity(request.targetId);
+        if (target === undefined || !this.isEnemy(player, target)) return Zone.refuse("invalid_target", "Escolha um alvo.");
+        if (!Zone.inRange(player, target, ability.range)) return Zone.refuse("out_of_range", "Fora de alcance.");
+        targetId = target.id;
+        break;
+      }
+      case "direction": {
+        const length: number = Math.sqrt((request.x ?? 0) ** 2 + (request.z ?? 0) ** 2);
+        // Sem direção válida: para onde o personagem está virado.
+        aimX = length > 1e-6 ? (request.x ?? 0) / length : -Math.sin(player.state.rotY);
+        aimZ = length > 1e-6 ? (request.z ?? 0) / length : -Math.cos(player.state.rotY);
+        break;
+      }
+      case "area": {
+        // Ponto pedido, limitado ao alcance; sem ponto: na frente, no alcance máximo.
+        let dx: number = request.x === null ? -Math.sin(player.state.rotY) * ability.range : request.x - player.state.x;
+        let dz: number = request.z === null ? -Math.cos(player.state.rotY) * ability.range : request.z - player.state.z;
+        const distance: number = Math.sqrt(dx * dx + dz * dz);
+        if (distance > ability.range && distance > 0) {
+          dx *= ability.range / distance;
+          dz *= ability.range / distance;
+        }
+        aimX = player.state.x + dx;
+        aimZ = player.state.z + dz;
+        break;
+      }
+      case "area_self":
+      case "self":
+        break;
+    }
+
+    player.mana -= ability.manaCost;
+    player.readyTick.set(ability.id, this.currentTick + secondsToTicks(ability.cooldown));
+    const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
+    player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick: this.currentTick + castTicks };
+    this.faceCast(player, player.cast);
+    const visual: { x?: number; z?: number } =
+      ability.aim === "area"
+        ? { x: aimX, z: aimZ }
+        : ability.aim === "direction"
+          ? { x: player.state.x + aimX * ability.range, z: player.state.z + aimZ * ability.range }
+          : {};
+    this.events.push({
+      type: "cast_start",
+      source: player.id,
+      ability: ability.id,
+      target: targetId ?? "",
+      duration: castTicks * TICK_SECONDS,
+      ...visual,
+    });
+    return { ok: true };
   }
 
   /**
@@ -268,14 +388,13 @@ export class Zone {
     if (player === undefined) return "invalid_target";
     if (targetId === null) {
       player.attackTarget = null;
-      player.cast = null;
+      if (player.cast?.kind === "attack") player.cast = null;
       return "ok";
     }
     const target: Entity | undefined = this.entity(targetId);
-    if (target === undefined || target.dead || targetId === id || player.dead) return "invalid_target";
-    if (target.kind === "player" && !this.config.pvp) return "invalid_target";
-    // Trocar de alvo cancela o golpe em andamento.
-    if (player.cast !== null && player.cast.targetId !== targetId) player.cast = null;
+    if (target === undefined || player.dead || !this.isEnemy(player, target)) return "invalid_target";
+    // Trocar de alvo cancela o golpe do ataque simples em andamento (habilidade não).
+    if (player.cast !== null && player.cast.kind === "attack" && player.cast.targetId !== targetId) player.cast = null;
     player.attackTarget = targetId;
     return "ok";
   }
@@ -287,15 +406,16 @@ export class Zone {
   }
 
   /**
-   * Um passo da simulação, nesta ordem: renascimentos → movimento → ataques → regeneração → snapshot.
-   * Os ataques vêm depois do movimento: quem está lançando termina o tick virado para o alvo.
+   * Um passo da simulação, nesta ordem: renascimentos → movimento → lançamentos (habilidades e ataque
+   * simples) → regeneração/escudos → snapshot. Os lançamentos vêm depois do movimento: quem está lançando
+   * termina o tick virado para o alvo/ponto.
    * Morto não anda (os inputs são consumidos e confirmados sem mover, para o cliente não acumular).
    */
   tick(): void {
     this.currentTick++;
     this.respawnDue();
     this.applyMovement();
-    this.applyAttacks();
+    this.applyCasts();
     this.regenerate();
     this.sendSnapshots();
     this.events = [];
@@ -306,6 +426,7 @@ export class Zone {
       if (!entity.dead || this.currentTick < entity.respawnTick) continue;
       entity.dead = false;
       entity.hp = entity.maxHp;
+      entity.shield = 0;
       if (entity.kind === "player") {
         const spawn: SpawnPoint = this.randomSpawn();
         entity.state = { x: spawn.x, y: spawn.y, z: spawn.z, rotY: spawn.rotY };
@@ -330,36 +451,158 @@ export class Zone {
   }
 
   /**
-   * Ataque simples com tempo de lançamento ([JOGO-05]):
-   * - sem golpe em andamento e com o alvo no alcance (+ folga) → começa um golpe (`cast_start`);
-   * - durante o golpe, o personagem fica virado para o alvo (mesmo andando);
-   * - no fim do golpe, acerta se o alvo ainda estiver vivo e no alcance; senão erra (`miss`).
-   * O golpe seguinte pode começar no mesmo tick: com lançamento de 1 s, bate 1 vez por segundo.
+   * Lançamentos, por jogador:
+   * - habilidade em andamento: fica virado; no fim, resolve o efeito ({@link resolveAbility});
+   * - ataque simples ([JOGO-05]): sem lançamento em andamento e com o alvo fixo no alcance (+ folga),
+   *   começa um golpe (`cast_start`); no fim acerta se o alvo ainda estiver vivo e no alcance, senão erra.
+   *   O golpe seguinte pode começar no mesmo tick: com lançamento de 1 s, bate 1 vez por segundo.
    */
-  private applyAttacks(): void {
+  private applyCasts(): void {
     for (const player of this.players.values()) {
-      if (player.dead || player.attackTarget === null) continue;
-      const target: Entity | undefined = this.entity(player.attackTarget);
-      if (target === undefined || target.dead) {
-        player.attackTarget = null;
+      if (player.dead) continue;
+      const cast: Cast | null = player.cast;
+      if (cast !== null && cast.kind === "ability") {
+        this.faceCast(player, cast);
+        if (this.currentTick < cast.endTick) continue;
         player.cast = null;
-        continue;
+        this.resolveAbility(player, cast);
       }
-      if (player.cast !== null) {
-        Zone.face(player, target);
-        if (this.currentTick < player.cast.endTick) continue;
-        const ability: AbilityDef = player.cast.ability;
-        player.cast = null;
-        if (Zone.inRange(player, target, ability.range)) this.damage(player, target, ability.damage, ability.id);
-        else this.events.push({ type: "miss", source: player.id, target: target.id, ability: ability.id });
-      }
-      const attack: AbilityDef = player.basicAttack;
-      if (!Zone.inRange(player, target, attack.range)) continue;
-      const duration: number = secondsToTicks(attack.castTime);
-      player.cast = { ability: attack, targetId: target.id, endTick: this.currentTick + duration };
-      Zone.face(player, target);
-      this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS });
+      this.applyAttack(player);
     }
+  }
+
+  private applyAttack(player: ZonePlayer): void {
+    if (player.dead || player.attackTarget === null) return;
+    const target: Entity | undefined = this.entity(player.attackTarget);
+    if (target === undefined || target.dead) {
+      player.attackTarget = null;
+      if (player.cast?.kind === "attack") player.cast = null;
+      return;
+    }
+    const cast: Cast | null = player.cast;
+    if (cast !== null && cast.kind === "attack") {
+      Zone.face(player, target);
+      if (this.currentTick < cast.endTick) return;
+      player.cast = null;
+      if (Zone.inRange(player, target, cast.ability.range)) this.damage(player, target, cast.ability.damage, cast.ability.id);
+      else this.events.push({ type: "miss", source: player.id, target: target.id, ability: cast.ability.id });
+    }
+    if (player.cast !== null) return;
+    const attack: AbilityDef = player.basicAttack;
+    if (!Zone.inRange(player, target, attack.range)) return;
+    const duration: number = secondsToTicks(attack.castTime);
+    player.cast = { kind: "attack", ability: attack, targetId: target.id, aimX: 0, aimZ: 0, endTick: this.currentTick + duration };
+    Zone.face(player, target);
+    this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS });
+  }
+
+  /**
+   * Efeito de uma habilidade no fim do lançamento ([JOGO-06]), com a posição de quem lançou AGORA:
+   * - target: dano se o alvo ainda estiver vivo e no alcance; senão erra;
+   * - direction: dano no PRIMEIRO inimigo na linha (alcance × largura); ninguém = erra;
+   * - area: dano em todos no círculo do ponto; ponto fora do alcance (você se afastou) = erra;
+   * - area_self: dano em todos ao redor;
+   * - self: cura e/ou escudo em quem lançou.
+   */
+  private resolveAbility(player: ZonePlayer, cast: Cast): void {
+    const ability: AbilityDef = cast.ability;
+    switch (ability.aim) {
+      case "target": {
+        const target: Entity | undefined = cast.targetId === null ? undefined : this.entity(cast.targetId);
+        if (target !== undefined && !target.dead && Zone.inRange(player, target, ability.range)) {
+          this.damage(player, target, ability.damage, ability.id);
+        } else {
+          this.events.push({ type: "miss", source: player.id, target: cast.targetId ?? "", ability: ability.id });
+        }
+        return;
+      }
+      case "direction": {
+        let best: Entity | null = null;
+        let bestAlong: number = Infinity;
+        for (const enemy of this.enemiesOf(player)) {
+          const ex: number = enemy.state.x - player.state.x;
+          const ez: number = enemy.state.z - player.state.z;
+          const along: number = ex * cast.aimX + ez * cast.aimZ;
+          const across: number = Math.abs(ex * cast.aimZ - ez * cast.aimX);
+          if (along < 0 || along > ability.range + BODY_RADIUS || across > ability.radius + BODY_RADIUS) continue;
+          if (along < bestAlong) {
+            best = enemy;
+            bestAlong = along;
+          }
+        }
+        if (best === null) {
+          this.events.push({ type: "miss", source: player.id, target: "", ability: ability.id });
+          return;
+        }
+        this.events.push({ type: "impact", source: player.id, ability: ability.id, x: best.state.x, z: best.state.z, radius: ability.radius });
+        this.damage(player, best, ability.damage, ability.id);
+        return;
+      }
+      case "area": {
+        const dx: number = cast.aimX - player.state.x;
+        const dz: number = cast.aimZ - player.state.z;
+        if (Math.sqrt(dx * dx + dz * dz) > ability.range + RANGE_TOLERANCE) {
+          this.events.push({ type: "miss", source: player.id, target: "", ability: ability.id });
+          return;
+        }
+        this.areaDamage(player, ability, cast.aimX, cast.aimZ);
+        return;
+      }
+      case "area_self":
+        this.areaDamage(player, ability, player.state.x, player.state.z);
+        return;
+      case "self":
+        if (ability.heal > 0) {
+          const healed: number = Math.min(player.maxHp - player.hp, ability.heal);
+          player.hp += healed;
+          this.events.push({ type: "heal", source: player.id, target: player.id, amount: healed, ability: ability.id });
+        }
+        if (ability.shield > 0) {
+          player.shield = ability.shield;
+          player.shieldUntilTick = this.currentTick + secondsToTicks(ability.shieldSeconds);
+        }
+        return;
+    }
+  }
+
+  /** Dano em todos os inimigos a até `radius` (+ corpo) do ponto, e o evento visual do impacto. */
+  private areaDamage(player: ZonePlayer, ability: AbilityDef, x: number, z: number): void {
+    this.events.push({ type: "impact", source: player.id, ability: ability.id, x, z, radius: ability.radius });
+    for (const enemy of this.enemiesOf(player)) {
+      const dx: number = enemy.state.x - x;
+      const dz: number = enemy.state.z - z;
+      if (Math.sqrt(dx * dx + dz * dz) <= ability.radius + BODY_RADIUS) this.damage(player, enemy, ability.damage, ability.id);
+    }
+  }
+
+  /** `true` se `player` pode atingir `target`: vivo, não é ele mesmo, e jogador só com PvP na zona. */
+  private isEnemy(player: ZonePlayer, target: Entity): boolean {
+    if (target.dead || target.id === player.id) return false;
+    return target.kind === "dummy" || this.config.pvp;
+  }
+
+  private enemiesOf(player: ZonePlayer): Entity[] {
+    return this.entities().filter((entity) => this.isEnemy(player, entity));
+  }
+
+  /** Vira quem lança para o alvo, o ponto (área) ou a direção (linha) do lançamento. */
+  private faceCast(player: ZonePlayer, cast: Cast): void {
+    if (cast.targetId !== null) {
+      const target: Entity | undefined = this.entity(cast.targetId);
+      if (target !== undefined) Zone.face(player, target);
+      return;
+    }
+    if (cast.ability.aim === "direction") {
+      player.state = { ...player.state, rotY: Math.atan2(-cast.aimX, -cast.aimZ) };
+    } else if (cast.ability.aim === "area") {
+      const dx: number = cast.aimX - player.state.x;
+      const dz: number = cast.aimZ - player.state.z;
+      if (dx * dx + dz * dz > 1e-6) player.state = { ...player.state, rotY: Math.atan2(-dx, -dz) };
+    }
+  }
+
+  private static refuse(reason: CastFailure, message: string): CastResult {
+    return { ok: false, reason, message };
   }
 
   /** `true` se `target` está a até `range` (+ folga) de `source`, no plano XZ. */
@@ -377,17 +620,28 @@ export class Zone {
     source.state = { ...source.state, rotY: Math.atan2(-dx, -dz) };
   }
 
-  /** Aplica dano; em 0 de vida, morre (e quem mirava nele perde o alvo). */
+  /**
+   * Aplica dano; o escudo absorve primeiro. Em 0 de vida, morre (e quem mirava nele perde o alvo).
+   * O evento leva o dano na vida (`amount`) e o absorvido pelo escudo (`absorbed`).
+   */
   private damage(source: Entity, target: Entity, amount: number, abilityId: string): void {
     if (target.dead || amount <= 0) return;
-    const dealt: number = Math.min(target.hp, amount);
+    let remaining: number = amount;
+    let absorbed: number = 0;
+    if (target.shield > 0 && this.currentTick < target.shieldUntilTick) {
+      absorbed = Math.min(target.shield, remaining);
+      target.shield -= absorbed;
+      remaining -= absorbed;
+    }
+    const dealt: number = Math.min(target.hp, remaining);
     target.hp -= dealt;
-    this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, ability: abilityId });
+    this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId });
     if (target.hp > 0) return;
     target.hp = 0;
     target.dead = true;
     const respawnSeconds: number = target.kind === "player" ? PLAYER_RESPAWN_SECONDS : DUMMY_RESPAWN_SECONDS;
     target.respawnTick = this.currentTick + secondsToTicks(respawnSeconds);
+    target.shield = 0;
     if (target.kind === "player") {
       target.attackTarget = null;
       target.cast = null;
@@ -398,6 +652,9 @@ export class Zone {
   }
 
   private regenerate(): void {
+    for (const entity of this.entities()) {
+      if (entity.shield > 0 && this.currentTick >= entity.shieldUntilTick) entity.shield = 0;
+    }
     for (const player of this.players.values()) {
       if (player.dead) continue;
       player.hp = Math.min(player.maxHp, player.hp + HP_REGEN_PER_SECOND * TICK_SECONDS);
@@ -427,7 +684,7 @@ export class Zone {
             ? null
             : {
                 ability: player.cast.ability.id,
-                target: player.cast.targetId,
+                target: player.cast.targetId ?? "",
                 remaining: round1(Math.max(0, player.cast.endTick - this.currentTick) * TICK_SECONDS),
               },
       };
@@ -469,6 +726,7 @@ export class Zone {
       hp: round1(entity.hp),
       maxHp: entity.maxHp,
       dead: entity.dead,
+      shield: round1(entity.shield),
     };
   }
 

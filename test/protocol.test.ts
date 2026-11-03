@@ -26,6 +26,14 @@ describe("parseClientMessage", () => {
       type: ClientMessageType.Attack,
       data: { targetId: "dummy_1" },
     });
+    assert.deepStrictEqual(parseClientMessage('{"type":"cast","data":{"abilityId":"meteor","x":1.5,"z":-2}}'), {
+      type: ClientMessageType.Cast,
+      data: { abilityId: "meteor", targetId: null, x: 1.5, z: -2 },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"cast","data":{"abilityId":"bolt","targetId":"dummy_1"}}'), {
+      type: ClientMessageType.Cast,
+      data: { abilityId: "bolt", targetId: "dummy_1", x: null, z: null },
+    });
     assert.deepStrictEqual(parseClientMessage('{"type":"attack","data":{"targetId":null}}'), {
       type: ClientMessageType.Attack,
       data: { targetId: null },
@@ -59,6 +67,8 @@ describe("parseClientMessage", () => {
       '{"type":"resume","data":{"version":4,"sessionToken":""}}',
       '{"type":"equip","data":{"uid":""}}',
       '{"type":"unequip","data":{"slot":"mochila"}}',
+      '{"type":"cast","data":{"abilityId":""}}',
+      '{"type":"cast","data":{"abilityId":"meteor","x":"1"}}',
     ];
     for (const text of bad) assert.strictEqual(parseClientMessage(text), null, text);
   });

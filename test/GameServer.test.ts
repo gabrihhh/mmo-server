@@ -276,6 +276,23 @@ describe("GameServer", () => {
       assert.ok(Array.isArray(npcs) && npcs.length === 3, "bonecos no snapshot");
     });
 
+    it("cast: aceito vira cast_start; durante o lançamento = busy; depois, antes da recarga = on_cooldown", async () => {
+      const a: Player = await registered();
+      await join(a);
+      a.client.send("cast", { abilityId: "shield" });
+      await a.client.nextMatching("snapshot", (m) => {
+        const events: unknown = m.data["events"];
+        return Array.isArray(events) && events.some((e) => typeof e === "object" && e !== null && "type" in e && e.type === "cast_start");
+      });
+      a.client.send("cast", { abilityId: "shield" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "busy", "ainda lançando");
+      await sleep(400);
+      a.client.send("cast", { abilityId: "shield" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "on_cooldown");
+      a.client.send("cast", { abilityId: "sprint" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "ability_unavailable");
+    });
+
     it("ignora o antigo `move` com posição (o cliente não diz onde está)", async () => {
       const a: Player = await registered();
       await join(a);
