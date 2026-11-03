@@ -48,7 +48,14 @@ function setup(dummyAt: { x: number; z: number } = { x: 0, z: -2 }): { z: Zone; 
   return { z, a };
 }
 
-const cast = (abilityId: string, extra: Partial<CastData> = {}): CastData => ({ abilityId, targetId: null, x: null, z: null, ...extra });
+const cast = (abilityId: string, extra: Partial<CastData> = {}): CastData => ({
+  abilityId,
+  targetId: null,
+  x: null,
+  z: null,
+  seq: null,
+  ...extra,
+});
 
 /** Roda ticks até o fim do lançamento de `ability`. */
 function finish(z: Zone, ability: AbilityDef): void {
@@ -76,11 +83,10 @@ describe("habilidades (cast)", () => {
     assert.ok(!again.ok && again.reason === "on_cooldown", "recarga");
   });
 
-  it("recusas: não vestida, indisponível (3c), alvo inválido, fora de alcance, sem mana", () => {
+  it("recusas: não vestida, alvo inválido, fora de alcance, sem mana", () => {
     const { z } = setup({ x: 0, z: -20 });
     const reason = (r: ReturnType<Zone["castAbility"]>): string => (r.ok ? "ok" : r.reason);
     assert.strictEqual(reason(z.castAbility("a", cast("nao_existe"))), "ability_not_equipped");
-    assert.strictEqual(reason(z.castAbility("a", cast("sprint"))), "ability_unavailable");
     assert.strictEqual(reason(z.castAbility("a", cast("bolt"))), "invalid_target");
     assert.strictEqual(reason(z.castAbility("a", cast("bolt", { targetId: "a" }))), "invalid_target", "você mesmo");
     assert.strictEqual(reason(z.castAbility("a", cast("heavy_strike", { targetId: "dummy" }))), "out_of_range");
@@ -154,4 +160,54 @@ describe("habilidades (cast)", () => {
     const me: unknown = a.last["me"];
     assert.ok(typeof me === "object" && me !== null && "mana" in me && typeof me.mana === "number" && me.mana < PLAYER_MAX_MANA, "gastou mana");
   });
+
+  it("Investida na fila: aplicada na ordem dos inputs, desloca exatamente a distância", () => {
+    const { z } = setup({ x: 50, z: 50 });
+    const dash: AbilityDef = def("training_sword", "dash");
+    z.queueInput("a", { seq: 1, x: 1, z: 0 });
+    assert.deepStrictEqual(z.castAbility("a", cast("dash", { x: 0, z: -1, seq: 2 })), { ok: true }, "enfileirado");
+    z.queueInput("a", { seq: 3, x: 1, z: 0 });
+    z.tick(); // processa seq 1 e 2
+    z.tick(); // processa seq 3
+    const step: number = 5 * 0.05;
+    const snap = z.getSnapshot("a");
+    assert.ok(snap);
+    assert.ok(Math.abs(snap.x - 2 * step) < 1e-9 && Math.abs(snap.z - -dash.dashDistance) < 1e-9, `posição ${snap.x}, ${snap.z}`);
+  });
+
+  it("Disparada: dobra a velocidade dos próximos passos (contados em passos) e acaba", () => {
+    const { z } = setup({ x: 50, z: 50 });
+    const sprint: AbilityDef = def("training_boots", "sprint");
+    z.castAbility("a", cast("sprint", { seq: 1 }));
+    let seq = 1;
+    const steps: number = Math.round(sprint.speedSeconds * TICK_RATE_HZ);
+    for (let i = 0; i < steps; i++) {
+      z.queueInput("a", { seq: ++seq, x: 1, z: 0 });
+      z.tick();
+    }
+    const fast: number = z.getSnapshot("a")?.x ?? NaN;
+    assert.ok(Math.abs(fast - steps * 2 * 5 * 0.05) < 1e-6, `rápido: ${fast}`);
+    z.queueInput("a", { seq: ++seq, x: 1, z: 0 });
+    z.tick();
+    assert.ok(Math.abs((z.getSnapshot("a")?.x ?? NaN) - (fast + 5 * 0.05)) < 1e-6, "volta ao normal");
+    assert.strictEqual(z.getSnapshot("a")?.speed, 1);
+  });
+
+  it("recusa na fila (recarga) vai como erro para o jogador e não move", () => {
+    const { z, a } = setup({ x: 50, z: 50 });
+    const errors: string[] = [];
+    const original = a.send.bind(a);
+    a.send = (text: string): void => {
+      if (text.includes('"type":"error"')) errors.push(text);
+      original(text);
+    };
+    z.castAbility("a", cast("dash", { x: 1, z: 0, seq: 1 }));
+    z.tick();
+    const after: number = z.getSnapshot("a")?.x ?? NaN;
+    z.castAbility("a", cast("dash", { x: 1, z: 0, seq: 2 }));
+    z.tick();
+    assert.strictEqual(z.getSnapshot("a")?.x, after, "segunda investida recusada (recarga)");
+    assert.ok(errors.some((e) => e.includes("on_cooldown")));
+  });
 });
+

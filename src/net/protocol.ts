@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -198,6 +198,11 @@ export interface CastData {
    */
   readonly x: number | null;
   readonly z: number | null;
+  /**
+   * Habilidades de movimento (Investida, Disparada): número na MESMA sequência dos `input` ([JOGO-07]).
+   * O servidor processa o comando na fila, na ordem em que o cliente previu. `null` nas outras.
+   */
+  readonly seq: number | null;
 }
 
 /** Payload de `attack`. */
@@ -234,6 +239,8 @@ export interface PlayerSnapshot {
   readonly dead: boolean;
   /** Escudo ativo (dano que ainda absorve; 0 = sem escudo). */
   readonly shield: number;
+  /** Disparada ativa (multiplicador de velocidade; 1 = normal). */
+  readonly speed: number;
 }
 
 /** Boneco de treino / monstro: mesmos campos do jogador + nome. Vai em `welcome.npcs` e `snapshot.npcs`. */
@@ -310,6 +317,12 @@ export interface AbilityView {
   readonly cooldown: number;
   /** Tempo de lançamento em segundos (o personagem fica virado para o alvo/direção durante ele). */
   readonly castTime: number;
+  /** Mana gasta (o cliente confere antes de prever Investida/Disparada). */
+  readonly manaCost: number;
+  /** Investida: metros deslocados; Disparada: multiplicador, segundos e passos. 0 nas outras. */
+  readonly dashDistance: number;
+  readonly speedMultiplier: number;
+  readonly speedSeconds: number;
 }
 
 /** Item como o cliente vê. */
@@ -487,8 +500,10 @@ export function parseCastData(data: unknown): CastData | null {
   }
   const x: number | null | undefined = optionalNumber(data["x"]);
   const z: number | null | undefined = optionalNumber(data["z"]);
-  if (x === undefined || z === undefined) return null;
-  return { abilityId, targetId: target, x, z };
+  const seq: number | null | undefined = optionalNumber(data["seq"]);
+  if (x === undefined || z === undefined || seq === undefined) return null;
+  if (seq !== null && (!Number.isInteger(seq) || seq < 1 || seq > MAX_INPUT_SEQ)) return null;
+  return { abilityId, targetId: target, x, z, seq };
 }
 
 /** Valida o payload de `attack`. */

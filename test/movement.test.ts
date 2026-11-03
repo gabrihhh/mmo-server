@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { stepMovement, type MoveState } from "../src/sim/movement.js";
+import { dashMovement, stepMovement, type MoveState } from "../src/sim/movement.js";
 
 /**
  * Valores de referência da simulação. O cliente (mmo-client/scripts/sim/movement.gd) tem que
@@ -31,4 +31,13 @@ describe("stepMovement (simulação compartilhada)", () => {
     assert.strictEqual(s.x, 150);
     assert.strictEqual(s.z, -150);
   });
+
+  it("dashMovement: desloca a distância na direção normalizada, vira e respeita a borda", () => {
+    const s: MoveState = dashMovement(origin, 3, 4, 10, 150);
+    assert.ok(Math.abs(s.x - 6) < 1e-12 && Math.abs(s.z - 8) < 1e-12);
+    assert.strictEqual(s.rotY, Math.atan2(-0.6, -0.8));
+    assert.strictEqual(dashMovement({ x: 149, y: 0, z: 0, rotY: 0 }, 1, 0, 6, 150).x, 150);
+    assert.strictEqual(dashMovement(origin, 0, 0, 6, 150), origin);
+  });
 });
+

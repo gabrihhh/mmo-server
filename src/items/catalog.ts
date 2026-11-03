@@ -44,10 +44,12 @@ export interface AbilityDef {
   /** Escudo: dano absorvido e por quantos segundos. Só o servidor usa. */
   readonly shield: number;
   readonly shieldSeconds: number;
-  /**
-   * `false` = ainda não implementada no servidor (Investida e Disparada mexem no movimento: passo 3c do
-   * [ROAD-05]). O servidor recusa com "Disponível em breve".
-   */
+  /** Investida: metros deslocados na direção, na hora em que o comando é processado ([JOGO-07]). */
+  readonly dashDistance: number;
+  /** Disparada: multiplicador de velocidade e por quantos segundos / passos de movimento ([JOGO-07]). */
+  readonly speedMultiplier: number;
+  readonly speedSeconds: number;
+  /** `false` = ainda não implementada no servidor; ele recusa com "disponível em breve". */
   readonly available: boolean;
 }
 
@@ -75,6 +77,9 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   heal: 0,
   shield: 0,
   shieldSeconds: 0,
+  dashDistance: 0,
+  speedMultiplier: 0,
+  speedSeconds: 0,
   available: true,
   ...spec,
 });
@@ -93,7 +98,8 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     basicAttack: ability({ id: "sword_attack", title: "Ataque", aim: "target", range: 2.5, cooldown: 1, castTime: 1, damage: 10 }),
     abilities: [
       ability({ id: "heavy_strike", title: "Golpe forte", aim: "target", range: 3, cooldown: 6, castTime: 0.5, manaCost: 15, damage: 25 }),
-      ability({ id: "dash", title: "Investida", aim: "direction", range: 6, radius: 1, cooldown: 8, castTime: 0.15, manaCost: 10, available: false }),
+      // Instantânea: o deslocamento entra na fila de movimento para a predição do cliente bater ([JOGO-07]).
+      ability({ id: "dash", title: "Investida", aim: "direction", range: 6, radius: 1, cooldown: 8, castTime: 0, manaCost: 10, dashDistance: 6 }),
       ability({ id: "spin", title: "Giro", aim: "area_self", radius: 3, cooldown: 10, castTime: 0.4, manaCost: 20, damage: 15 }),
     ],
   },
@@ -127,7 +133,9 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Bota de treino",
     slot: "feet",
     basicAttack: null,
-    abilities: [ability({ id: "sprint", title: "Disparada", aim: "self", cooldown: 12, castTime: 0, manaCost: 10, available: false })],
+    abilities: [
+      ability({ id: "sprint", title: "Disparada", aim: "self", cooldown: 12, castTime: 0, manaCost: 10, speedMultiplier: 2, speedSeconds: 2.5 }),
+    ],
   },
 };
 
@@ -144,3 +152,8 @@ export const STARTER_EQUIPPED: Readonly<Record<EquipSlot, string>> = {
   feet: "training_boots",
 };
 export const STARTER_BAG: readonly string[] = ["training_staff"];
+
+/** `true` se a habilidade mexe no movimento (Investida, Disparada): vai pela fila de comandos ([JOGO-07]). */
+export function isMovementAbility(ability: AbilityDef): boolean {
+  return ability.dashDistance > 0 || ability.speedMultiplier > 0;
+}

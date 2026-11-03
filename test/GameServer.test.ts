@@ -289,8 +289,8 @@ describe("GameServer", () => {
       await sleep(400);
       a.client.send("cast", { abilityId: "shield" });
       assert.strictEqual((await a.client.next("error")).data["code"], "on_cooldown");
-      a.client.send("cast", { abilityId: "sprint" });
-      assert.strictEqual((await a.client.next("error")).data["code"], "ability_unavailable");
+      a.client.send("cast", { abilityId: "nao_existe" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "ability_not_equipped");
     });
 
     it("ignora o antigo `move` com posição (o cliente não diz onde está)", async () => {

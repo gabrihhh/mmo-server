@@ -66,3 +66,20 @@ export function stepMovement(state: MoveState, input: MoveInput, dt: number, par
     rotY: Math.atan2(-dx, -dz),
   };
 }
+
+/**
+ * Investida: desloca `distance` metros na direção (dirX, dirZ) de uma vez, limitado às bordas, e vira para ela.
+ * Direção quase zero = não faz nada. ATENÇÃO: espelho em mmo-client/scripts/sim/movement.gd (`dash`).
+ */
+export function dashMovement(state: MoveState, dirX: number, dirZ: number, distance: number, halfSize: number): MoveState {
+  const length: number = Math.sqrt(dirX * dirX + dirZ * dirZ);
+  if (length < MIN_INPUT_LENGTH) return state;
+  const dx: number = dirX / length;
+  const dz: number = dirZ / length;
+  return {
+    x: Math.min(halfSize, Math.max(-halfSize, state.x + dx * distance)),
+    y: state.y,
+    z: Math.min(halfSize, Math.max(-halfSize, state.z + dz * distance)),
+    rotY: Math.atan2(-dx, -dz),
+  };
+}

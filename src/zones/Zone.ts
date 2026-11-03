@@ -11,8 +11,16 @@ import {
   type ServerMessage,
   type SimParams,
 } from "../net/protocol.js";
-import { MOVE_SPEED, TICK_RATE_HZ, TICK_SECONDS, stepMovement, type MoveParams, type MoveState } from "../sim/movement.js";
-import { UNARMED_ATTACK, type AbilityDef } from "../items/catalog.js";
+import {
+  MOVE_SPEED,
+  TICK_RATE_HZ,
+  TICK_SECONDS,
+  dashMovement,
+  stepMovement,
+  type MoveParams,
+  type MoveState,
+} from "../sim/movement.js";
+import { UNARMED_ATTACK, isMovementAbility, type AbilityDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
   DUMMY_RESPAWN_SECONDS,
@@ -106,7 +114,9 @@ interface ZonePlayer extends Combatant {
   mana: number;
   readonly maxMana: number;
   /** Inputs recebidos e ainda não simulados, em ordem de seq. */
-  readonly inputs: InputData[];
+  readonly inputs: Command[];
+  /** Disparada ativa ([JOGO-07]): multiplicador para os próximos `stepsLeft` passos, até `untilTick`. */
+  boost: SpeedBoost | null;
   /** Maior seq já recebido (para rejeitar repetidos/fora de ordem). */
   lastReceivedSeq: number;
   /** Último seq aplicado na simulação; vai como `ack` no snapshot dele. */
@@ -121,6 +131,23 @@ interface ZonePlayer extends Combatant {
   attackTarget: string | null;
   /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
   cast: Cast | null;
+}
+
+/**
+ * Um comando na fila do jogador, na ordem do `seq` do cliente: passo de movimento (`input`) ou habilidade de
+ * movimento (Investida/Disparada, [JOGO-07]). A mesma ordem dos dois lados é o que mantém a predição exata.
+ */
+type Command =
+  | { readonly kind: "move"; readonly seq: number; readonly input: InputData }
+  | { readonly kind: "cast"; readonly seq: number; readonly request: CastData };
+
+/** Disparada em andamento. */
+interface SpeedBoost {
+  readonly multiplier: number;
+  /** Passos de movimento que ainda ganham o bônus (conta igual no cliente). */
+  stepsLeft: number;
+  /** Também acaba neste tick, mesmo parado. */
+  readonly untilTick: number;
 }
 
 /** Um lançamento em andamento ([JOGO-05], [JOGO-06]): golpe do ataque simples ou habilidade. */
@@ -260,6 +287,7 @@ export class Zone {
       shield: 0,
       shieldUntilTick: 0,
       inputs: [],
+      boost: null,
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
       basicAttack,
@@ -286,10 +314,14 @@ export class Zone {
    * passar de {@link MAX_INPUT_QUEUE}, descarta os mais antigos (o cliente se corrige pelo snapshot).
    */
   queueInput(id: string, input: InputData): void {
+    this.enqueue(id, { kind: "move", seq: input.seq, input });
+  }
+
+  private enqueue(id: string, command: Command): void {
     const player: ZonePlayer | undefined = this.players.get(id);
-    if (player === undefined || input.seq <= player.lastReceivedSeq) return;
-    player.lastReceivedSeq = input.seq;
-    player.inputs.push(input);
+    if (player === undefined || command.seq <= player.lastReceivedSeq) return;
+    player.lastReceivedSeq = command.seq;
+    player.inputs.push(command);
     while (player.inputs.length > MAX_INPUT_QUEUE) player.inputs.shift();
   }
 
@@ -308,6 +340,17 @@ export class Zone {
    * O efeito sai no fim do lançamento ({@link tick}), se ainda couber no alcance.
    */
   castAbility(id: string, request: CastData): CastResult {
+    // Investida/Disparada com seq: entram na fila de movimento e são validadas na vez delas ([JOGO-07]).
+    const queued: AbilityDef | undefined = this.players.get(id)?.abilities.get(request.abilityId);
+    if (request.seq !== null && queued !== undefined && isMovementAbility(queued)) {
+      this.enqueue(id, { kind: "cast", seq: request.seq, request });
+      return { ok: true };
+    }
+    return this.startAbility(id, request);
+  }
+
+  /** Validação e início de uma habilidade (ver {@link castAbility}). */
+  private startAbility(id: string, request: CastData): CastResult {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined || player.dead) return Zone.refuse("busy", "Você não pode agir agora.");
     if (player.cast !== null && player.cast.kind === "ability") return Zone.refuse("busy", "Já está lançando uma habilidade.");
@@ -359,6 +402,10 @@ export class Zone {
 
     player.mana -= ability.manaCost;
     player.readyTick.set(ability.id, this.currentTick + secondsToTicks(ability.cooldown));
+    if (isMovementAbility(ability)) {
+      this.applyMovementAbility(player, ability, aimX, aimZ);
+      return { ok: true };
+    }
     const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
     player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick: this.currentTick + castTicks };
     this.faceCast(player, player.cast);
@@ -377,6 +424,27 @@ export class Zone {
       ...visual,
     });
     return { ok: true };
+  }
+
+  /**
+   * Investida/Disparada: efeito na hora (sem lançamento), para bater com a predição do cliente ([JOGO-07]).
+   * Investida desloca `dashDistance` na direção; Disparada multiplica a velocidade dos próximos passos.
+   */
+  private applyMovementAbility(player: ZonePlayer, ability: AbilityDef, dirX: number, dirZ: number): void {
+    const visual: { x?: number; z?: number } = {};
+    if (ability.dashDistance > 0) {
+      player.state = dashMovement(player.state, dirX, dirZ, ability.dashDistance, this.config.halfSize);
+      visual.x = player.state.x;
+      visual.z = player.state.z;
+    }
+    if (ability.speedMultiplier > 0) {
+      player.boost = {
+        multiplier: ability.speedMultiplier,
+        stepsLeft: Math.round(ability.speedSeconds * TICK_RATE_HZ),
+        untilTick: this.currentTick + secondsToTicks(ability.speedSeconds),
+      };
+    }
+    this.events.push({ type: "cast_start", source: player.id, ability: ability.id, target: "", duration: 0, ...visual });
   }
 
   /**
@@ -438,16 +506,42 @@ export class Zone {
     }
   }
 
+  /**
+   * Processa a fila de cada jogador na ordem do `seq`: passos (com a Disparada, se ativa) e Investida/Disparada.
+   * Recusa de habilidade na fila (recarga, mana...) vai como `error` só para o jogador; o cliente se corrige
+   * pela reconciliação.
+   */
   private applyMovement(): void {
-    const params: MoveParams = { speed: MOVE_SPEED, halfSize: this.config.halfSize };
     for (const player of this.players.values()) {
+      if (player.boost !== null && this.currentTick >= player.boost.untilTick) player.boost = null;
       for (let i = 0; i < MAX_INPUTS_PER_TICK; i++) {
-        const input: InputData | undefined = player.inputs.shift();
-        if (input === undefined) break;
-        if (!player.dead) player.state = stepMovement(player.state, input, TICK_SECONDS, params);
-        player.lastAppliedSeq = input.seq;
+        const command: Command | undefined = player.inputs.shift();
+        if (command === undefined) break;
+        player.lastAppliedSeq = command.seq;
+        if (player.dead) continue;
+        if (command.kind === "move") {
+          this.step(player, command.input);
+          continue;
+        }
+        const result: CastResult = this.startAbility(player.id, command.request);
+        if (!result.ok) {
+          player.member.send(encodeServerMessage({ type: ServerMessageType.Error, data: { code: result.reason, message: result.message } }));
+        }
       }
     }
+  }
+
+  /** Um passo de movimento; com Disparada, velocidade multiplicada (e gasta um passo do bônus). */
+  private step(player: ZonePlayer, input: InputData): void {
+    let speed: number = MOVE_SPEED;
+    const boost: SpeedBoost | null = player.boost;
+    if (boost !== null && boost.stepsLeft > 0) {
+      speed = MOVE_SPEED * boost.multiplier;
+      boost.stepsLeft--;
+      if (boost.stepsLeft <= 0) player.boost = null;
+    }
+    const params: MoveParams = { speed, halfSize: this.config.halfSize };
+    player.state = stepMovement(player.state, input, TICK_SECONDS, params);
   }
 
   /**
@@ -646,6 +740,7 @@ export class Zone {
       target.attackTarget = null;
       target.cast = null;
       target.inputs.length = 0;
+      target.boost = null;
     }
     for (const player of this.players.values()) if (player.attackTarget === target.id) player.attackTarget = null;
     this.events.push({ type: "death", id: target.id, killer: source.id });
@@ -716,7 +811,7 @@ export class Zone {
     return { x: Math.cos(angle) * radius, y: 0, z: Math.sin(angle) * radius, rotY: 0 };
   }
 
-  private static snapshot(entity: Combatant): PlayerSnapshot {
+  private static snapshot(entity: Entity): PlayerSnapshot {
     return {
       id: entity.id,
       x: entity.state.x,
@@ -727,6 +822,7 @@ export class Zone {
       maxHp: entity.maxHp,
       dead: entity.dead,
       shield: round1(entity.shield),
+      speed: entity.kind === "player" && entity.boost !== null ? entity.boost.multiplier : 1,
     };
   }
 

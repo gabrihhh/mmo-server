@@ -8,7 +8,13 @@ import { UNARMED_ATTACK, getItem, type AbilityDef } from "./catalog.js";
  */
 
 function abilityView(def: AbilityDef): AbilityView {
-  return { id: def.id, title: def.title, aim: def.aim, range: def.range, radius: def.radius, cooldown: def.cooldown, castTime: def.castTime };
+  return { id: def.id, title: def.title, aim: def.aim, range: def.range, radius: def.radius, cooldown: def.cooldown,
+    castTime: def.castTime,
+    manaCost: def.manaCost,
+    dashDistance: def.dashDistance,
+    speedMultiplier: def.speedMultiplier,
+    speedSeconds: def.speedSeconds,
+  };
 }
 
 /** Item visto pelo cliente; `null` se o item não existe no catálogo (não deveria acontecer após readInventory). */
