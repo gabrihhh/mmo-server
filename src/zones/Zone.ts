@@ -442,7 +442,7 @@ export class Zone {
     const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
     player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick: this.currentTick + castTicks };
     this.faceCast(player, player.cast);
-    const visual: { x?: number; z?: number; radius?: number } =
+    const visual: { x?: number; z?: number; radius?: number; aim?: string } =
       ability.aim === "area"
         ? { x: aimX, z: aimZ, radius: ability.radius }
         : ability.aim === "direction"
@@ -456,6 +456,7 @@ export class Zone {
       ability: ability.id,
       target: targetId ?? "",
       duration: castTicks * TICK_SECONDS,
+      aim: ability.aim,
       ...visual,
     });
     return { ok: true };

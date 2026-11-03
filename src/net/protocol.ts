@@ -278,6 +278,8 @@ export type CombatEvent =
       readonly z?: number;
       /** Raio da área (ou meia-largura da linha), em m: o cliente desenha o aviso no chão para todos. */
       readonly radius?: number;
+      /** Tipo de mira da habilidade (só cartas): "direction" = aviso em faixa, "area" = círculo. */
+      readonly aim?: string;
     }
   | {
       /** Projétil saiu ([JOGO-08]): voa em linha reta de (x, z) na direção (dirX, dirZ) a `speed` m/s até `range` m. */
