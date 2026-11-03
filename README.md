@@ -16,3 +16,5 @@ npm test
 ```
 
 Zonas: `zone_1` (Zone 1, 300 m × 300 m). Protocolo (JSON sobre WebSocket): ver mmo-docs [INFRA-04].
+
+Como criar um item novo (catálogo, habilidades, teste): [docs/COMO-CRIAR-ITEM.md](docs/COMO-CRIAR-ITEM.md).
