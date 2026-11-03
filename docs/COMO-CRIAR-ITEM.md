@@ -102,4 +102,4 @@ Ainda **não existe** loja, drop nem comando de admin. Hoje o único jeito é o 
 | Efeito novo (veneno, atordoar, puxar...) | `src/zones/Zone.ts` (aplicar o efeito) + teste em `test/` + cliente (visual) + [JOGO-06] |
 | Mira nova | `AimType` aqui + `mmo-client/scripts/combat/ability_view.gd` + prévia no cliente |
 | Slot novo (ex.: anel) | `EQUIP_SLOTS` / `ABILITIES_PER_SLOT` + `mmo-client/scripts/items/inventory_state.gd` + HUD + [JOGO-01] |
-| Ver o item no boneco | ⏳ ainda não existe (aparência: [JOGO-04], modelos: [ART-01]) |
+| Ver o item no boneco | gere o modelo ([ART-02]) e ligue itemId → `.glb` em `mmo-client/scripts/items/item_models.gd` |
