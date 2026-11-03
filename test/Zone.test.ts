@@ -1,6 +1,8 @@
 import assert from "assert";
 
-import { MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, NO_LOOK, Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { UNARMED_ATTACK } from "../src/items/catalog.js";
+import type { Look } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 
 /** Membro falso que guarda as mensagens recebidas, já decodificadas. */
@@ -140,5 +142,26 @@ describe("Zone", () => {
     assert.deepStrictEqual(a.received.at(-1), { type: "player_left", data: { id: "b" } });
     assert.deepStrictEqual(a.types().filter((t) => t === "player_left"), ["player_left"]);
     assert.strictEqual(zone.size, 1);
+  });
+  it("aparência: vai no welcome/player_joined e a troca vira o evento look para todos", () => {
+    const zone = newZone();
+    const a = new FakeMember("a");
+    const b = new FakeMember("b");
+    const sword: Look = { ...NO_LOOK, hand: "training_sword" };
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, new Map(), sword);
+    const rb = zone.join(b);
+    assert.ok(rb.status === "joined");
+    assert.deepStrictEqual(rb.players.find((p) => p.id === "a")?.look, sword, "quem entra vê a espada de a");
+
+    const staff: Look = { ...NO_LOOK, hand: "training_staff" };
+    zone.setLoadout("a", UNARMED_ATTACK, new Map(), staff);
+    zone.setLoadout("a", UNARMED_ATTACK, new Map(), staff); // igual: não repete o evento
+    zone.tick();
+    for (const member of [a, b]) {
+      const snap = member.received.filter((m) => m.type === "snapshot").at(-1)?.data;
+      assert.ok(typeof snap === "object" && snap !== null && "events" in snap && Array.isArray(snap.events));
+      const looks: unknown[] = snap.events.filter((e: unknown) => typeof e === "object" && e !== null && "type" in e && e.type === "look");
+      assert.deepStrictEqual(looks, [{ type: "look", id: "a", look: staff }]);
+    }
   });
 });

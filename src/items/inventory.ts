@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import type { Look } from "../net/protocol.js";
 import { EQUIP_SLOTS, STARTER_BAG, STARTER_EQUIPPED, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
 
 /**
@@ -122,4 +123,14 @@ export function equippedAbilities(inventory: Inventory): Map<string, AbilityDef>
     for (const ability of def?.abilities ?? []) result.set(ability.id, ability);
   }
   return result;
+}
+
+/** Aparência: o `itemId` vestido em cada slot (o que os outros jogadores veem). */
+export function lookOf(inventory: Inventory): Look {
+  return {
+    hand: inventory.equipped.hand?.itemId ?? null,
+    head: inventory.equipped.head?.itemId ?? null,
+    chest: inventory.equipped.chest?.itemId ?? null,
+    feet: inventory.equipped.feet?.itemId ?? null,
+  };
 }

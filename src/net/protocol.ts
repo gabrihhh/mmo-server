@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -176,6 +176,12 @@ export interface InputData {
 export const EQUIP_SLOT_NAMES = ["hand", "head", "chest", "feet"] as const;
 export type EquipSlotName = (typeof EQUIP_SLOT_NAMES)[number];
 
+/**
+ * Aparência: o `itemId` vestido em cada slot (`null` = vazio). Vai no `PlayerInfo` e no evento `look`, para todos
+ * verem o equipamento de todos ([ART-02]). ATENÇÃO: lido por mmo-client/scripts/network/player_state.gd.
+ */
+export type Look = Readonly<Record<EquipSlotName, string | null>>;
+
 /** Payload de `equip`. */
 export interface EquipData {
   /** `uid` do item na mochila. */
@@ -275,7 +281,9 @@ export type CombatEvent =
   | { readonly type: "impact"; readonly source: string; readonly ability: string; readonly x: number; readonly z: number; readonly radius: number }
   | { readonly type: "miss"; readonly source: string; readonly target: string; readonly ability: string }
   | { readonly type: "death"; readonly id: string; readonly killer: string }
-  | { readonly type: "respawn"; readonly id: string };
+  | { readonly type: "respawn"; readonly id: string }
+  /** O jogador `id` trocou o que veste (aparência nova). */
+  | { readonly type: "look"; readonly id: string; readonly look: Look };
 
 /** Só de quem recebe o snapshot (os outros não sabem). */
 export interface OwnStatus {
@@ -289,10 +297,12 @@ export interface OwnStatus {
   readonly casting: { readonly ability: string; readonly target: string; readonly remaining: number } | null;
 }
 
-/** Jogador completo, como vai no `welcome` e no `player_joined`: posição + nome exibido. */
+/** Jogador completo, como vai no `welcome` e no `player_joined`: posição + nome exibido + aparência. */
 export interface PlayerInfo extends PlayerSnapshot {
   /** Username exatamente como foi cadastrado. */
   readonly name: string;
+  /** O que está vestindo (muda depois pelo evento `look`). */
+  readonly look: Look;
 }
 
 /** Parâmetros da simulação enviados no `welcome`. */

@@ -258,7 +258,12 @@ describe("GameServer", () => {
       c.send("join", { zone: ZONE });
       const players: unknown = (await c.next("welcome")).data["players"];
       const me = entryOf(players, first.playerId);
-      assert.deepStrictEqual({ ...me, name: undefined }, { ...where, name: undefined });
+      assert.deepStrictEqual({ ...me, name: undefined, look: undefined }, { ...where, name: undefined, look: undefined });
+      assert.deepStrictEqual(
+        me?.["look"],
+        { hand: "training_sword", head: "training_hood", chest: "training_vest", feet: "training_boots" },
+        "welcome leva a aparência (kit inicial)",
+      );
     });
 
     it("attack fixa o alvo (aparece em snapshot.me.target) e recusa alvo inexistente", async () => {

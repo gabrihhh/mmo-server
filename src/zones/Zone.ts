@@ -6,6 +6,7 @@ import {
   type InputData,
   type NpcSnapshot,
   type OwnStatus,
+  type Look,
   type PlayerInfo,
   type PlayerSnapshot,
   type ServerMessage,
@@ -92,6 +93,9 @@ export const MAX_INPUT_QUEUE = 4;
 /** Converte segundos em ticks (arredonda para cima: nunca antes da hora). */
 const secondsToTicks = (seconds: number): number => Math.max(1, Math.ceil(seconds * TICK_RATE_HZ));
 
+/** Aparência sem nada vestido (padrão de quem entra sem inventário, ex.: testes). */
+export const NO_LOOK: Look = { hand: null, head: null, chest: null, feet: null };
+
 /** Vida, morte e posição: o que jogadores e bonecos têm em comum. */
 interface Combatant {
   readonly id: string;
@@ -125,6 +129,8 @@ interface ZonePlayer extends Combatant {
   basicAttack: AbilityDef;
   /** Habilidades (cartas) vestidas, por id ([JOGO-06]). */
   abilities: ReadonlyMap<string, AbilityDef>;
+  /** O que veste (aparência que os outros veem). */
+  look: Look;
   /** Tick em que cada habilidade fica pronta de novo (recarga), por id. */
   readonly readyTick: Map<string, number>;
   /** Alvo fixo do ataque simples (`null` = nenhum). */
@@ -266,6 +272,7 @@ export class Zone {
     spawn?: SpawnPoint,
     basicAttack: AbilityDef = UNARMED_ATTACK,
     abilities: ReadonlyMap<string, AbilityDef> = new Map(),
+    look: Look = NO_LOOK,
   ): JoinResult {
     if (!this.players.has(member.id) && this.players.size >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
@@ -292,6 +299,7 @@ export class Zone {
       lastAppliedSeq: 0,
       basicAttack,
       abilities,
+      look,
       readyTick: new Map(),
       attackTarget: null,
       cast: null,
@@ -325,12 +333,19 @@ export class Zone {
     while (player.inputs.length > MAX_INPUT_QUEUE) player.inputs.shift();
   }
 
-  /** Troca o ataque simples e as cartas (o inventário mudou). A recarga de cada habilidade é mantida. */
-  setLoadout(id: string, basicAttack: AbilityDef, abilities: ReadonlyMap<string, AbilityDef>): void {
+  /**
+   * Troca o ataque simples, as cartas e a aparência (o inventário mudou). A recarga de cada habilidade é mantida.
+   * Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
+   */
+  setLoadout(id: string, basicAttack: AbilityDef, abilities: ReadonlyMap<string, AbilityDef>, look?: Look): void {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined) return;
     player.basicAttack = basicAttack;
     player.abilities = abilities;
+    if (look !== undefined && !Zone.sameLook(player.look, look)) {
+      player.look = look;
+      this.events.push({ type: "look", id, look });
+    }
   }
 
   /**
@@ -826,8 +841,13 @@ export class Zone {
     };
   }
 
-  /** Snapshot + nome: para quem está conhecendo o jogador agora (`welcome`, `player_joined`). */
+  /** Snapshot + nome + aparência: para quem está conhecendo o jogador agora (`welcome`, `player_joined`). */
   private static info(player: ZonePlayer): PlayerInfo {
-    return { ...Zone.snapshot(player), name: player.name };
+    return { ...Zone.snapshot(player), name: player.name, look: player.look };
+  }
+
+  /** `true` se as duas aparências vestem o mesmo item em todos os slots. */
+  private static sameLook(a: Look, b: Look): boolean {
+    return a.hand === b.hand && a.head === b.head && a.chest === b.chest && a.feet === b.feet;
   }
 }
