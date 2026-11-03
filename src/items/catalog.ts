@@ -44,6 +44,12 @@ export interface AbilityDef {
   /** Escudo: dano absorvido e por quantos segundos. Só o servidor usa. */
   readonly shield: number;
   readonly shieldSeconds: number;
+  /**
+   * Projétil (só mira "direction"), em m/s. Maior que 0: no fim do lançamento sai um projétil que voa em linha reta
+   * até `range` e acerta o primeiro inimigo que encontrar NO CAMINHO — dá para desviar ([JOGO-08]).
+   * 0: acerta na hora, no fim do lançamento, o primeiro inimigo na linha.
+   */
+  readonly projectileSpeed: number;
   /** Investida: metros deslocados na direção, na hora em que o comando é processado ([JOGO-07]). */
   readonly dashDistance: number;
   /** Disparada: multiplicador de velocidade e por quantos segundos / passos de movimento ([JOGO-07]). */
@@ -77,6 +83,7 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   heal: 0,
   shield: 0,
   shieldSeconds: 0,
+  projectileSpeed: 0,
   dashDistance: 0,
   speedMultiplier: 0,
   speedSeconds: 0,
@@ -109,7 +116,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     slot: "hand",
     basicAttack: ability({ id: "staff_attack", title: "Ataque", aim: "target", range: 8, cooldown: 1.2, castTime: 1.2, damage: 7 }),
     abilities: [
-      ability({ id: "fireball", title: "Bola de fogo", aim: "direction", range: 12, radius: 0.6, cooldown: 4, castTime: 0.6, manaCost: 15, damage: 20 }),
+      ability({ id: "fireball", title: "Bola de fogo", aim: "direction", range: 12, radius: 0.6, cooldown: 4, castTime: 0.6, manaCost: 15, damage: 20, projectileSpeed: 14 }),
       ability({ id: "meteor", title: "Meteoro", aim: "area", range: 10, radius: 2.5, cooldown: 12, castTime: 1, manaCost: 30, damage: 30 }),
       ability({ id: "bolt", title: "Raio", aim: "target", range: 10, cooldown: 7, castTime: 0.4, manaCost: 12, damage: 18 }),
     ],

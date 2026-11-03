@@ -101,17 +101,44 @@ describe("habilidades (cast)", () => {
     assert.ok(spent > 0);
   });
 
-  it("Bola de fogo: acerta o primeiro na linha; erra se não há ninguém", () => {
+  it("Bola de fogo: projétil voa até o alvo (dano na chegada, não no fim do lançamento); erra se não há ninguém", () => {
     const { z, a } = setup({ x: 0, z: -5 });
+    const fireball: AbilityDef = def("training_staff", "fireball");
+    assert.ok(fireball.projectileSpeed > 0);
+    z.castAbility("a", cast("fireball", { x: 0, z: -1 }));
+    finish(z, fireball);
+    assert.ok(a.events.some((e) => e["type"] === "projectile" && e["ability"] === "fireball" && e["dirZ"] === -1), "saiu o projétil");
+    assert.strictEqual(npcHp(a), DUMMY_MAX_HP, "ainda voando: sem dano");
+    // Encosta no corpo a 5 - 0,4 - 0,6 = 4 m: 4 / 14 m/s ≈ 0,29 s ≈ 6 ticks.
+    for (let i = 0; i < 6; i++) z.tick();
+    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - fireball.damage);
+    const end = a.events.find((e) => e["type"] === "projectile_end");
+    assert.ok(end && typeof end["z"] === "number" && Math.abs(end["z"] + 4) < 1e-6, "acaba onde encostou (z = -4)");
+    assert.ok(a.has("impact", "fireball"));
+
+    for (let i = 0; i < fireball.cooldown * TICK_RATE_HZ; i++) z.tick();
+    a.events.length = 0;
+    z.castAbility("a", cast("fireball", { x: 1, z: 0 }));
+    finish(z, fireball);
+    for (let i = 0; i < Math.ceil((fireball.range / fireball.projectileSpeed) * TICK_RATE_HZ) + 1; i++) z.tick();
+    assert.ok(a.has("miss", "fireball"), "para o lado: voa até o alcance e erra");
+    assert.ok(a.events.some((e) => e["type"] === "projectile_end"));
+  });
+
+  it("Bola de fogo: dá para desviar saindo do caminho enquanto ela voa", () => {
+    const { z, a } = setup({ x: 50, z: 50 }); // boneco longe
+    const b = new Member("b");
+    z.join(b, { x: 0, y: 0, z: -10, rotY: 0 }, UNARMED_ATTACK, ALL);
     const fireball: AbilityDef = def("training_staff", "fireball");
     z.castAbility("a", cast("fireball", { x: 0, z: -1 }));
     finish(z, fireball);
-    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - fireball.damage);
-    assert.ok(a.has("impact", "fireball"));
-    for (let i = 0; i < fireball.cooldown * TICK_RATE_HZ; i++) z.tick();
-    z.castAbility("a", cast("fireball", { x: 1, z: 0 }));
-    finish(z, fireball);
-    assert.ok(a.events.some((e) => e["type"] === "miss" && e["ability"] === "fireball"), "para o lado: erra");
+    // b anda para o lado (5 m/s) durante o voo (~0,64 s até chegar perto dele): sai do caminho.
+    for (let seq = 1; seq <= 20; seq++) {
+      z.queueInput("b", { seq, x: 1, z: 0 });
+      z.tick();
+    }
+    assert.ok(!a.events.some((e) => e["type"] === "damage" && e["target"] === "b"), "b desviou");
+    assert.ok(a.has("miss", "fireball"));
   });
 
   it("Meteoro: dano em área no ponto; ponto além do alcance é limitado ao alcance", () => {

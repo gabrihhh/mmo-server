@@ -276,7 +276,25 @@ export type CombatEvent =
       /** Ponto mirado (área) ou um ponto na direção (linha); para efeitos visuais. Ausente nas outras miras. */
       readonly x?: number;
       readonly z?: number;
+      /** Raio da área (ou meia-largura da linha), em m: o cliente desenha o aviso no chão para todos. */
+      readonly radius?: number;
     }
+  | {
+      /** Projétil saiu ([JOGO-08]): voa em linha reta de (x, z) na direção (dirX, dirZ) a `speed` m/s até `range` m. */
+      readonly type: "projectile";
+      readonly id: number;
+      readonly source: string;
+      readonly ability: string;
+      readonly x: number;
+      readonly z: number;
+      readonly dirX: number;
+      readonly dirZ: number;
+      readonly speed: number;
+      readonly range: number;
+      readonly radius: number;
+    }
+  /** Projétil `id` acabou em (x, z): acertou alguém (vem junto um `damage`) ou chegou ao alcance (vem um `miss`). */
+  | { readonly type: "projectile_end"; readonly id: number; readonly x: number; readonly z: number }
   | { readonly type: "heal"; readonly source: string; readonly target: string; readonly amount: number; readonly ability: string }
   | { readonly type: "impact"; readonly source: string; readonly ability: string; readonly x: number; readonly z: number; readonly radius: number }
   | { readonly type: "miss"; readonly source: string; readonly target: string; readonly ability: string }

@@ -169,6 +169,21 @@ interface Cast {
   readonly endTick: number;
 }
 
+/** Projétil em voo ([JOGO-08]): sai no fim do lançamento e anda `speed` m/s em linha reta a cada tick. */
+interface Projectile {
+  readonly id: number;
+  /** Quem lançou (continua valendo para o dano mesmo se ele morrer ou sair). */
+  readonly source: ZonePlayer;
+  readonly ability: AbilityDef;
+  /** Posição atual (m) e direção (vetor unitário). */
+  x: number;
+  z: number;
+  readonly dirX: number;
+  readonly dirZ: number;
+  /** Metros já percorridos (acaba em `ability.range`). */
+  traveled: number;
+}
+
 /** Motivo de recusa de um `cast` (mesmos nomes dos códigos de erro do protocolo). */
 export type CastFailure =
   | "busy"
@@ -213,6 +228,9 @@ const round1 = (value: number): number => Math.round(value * 10) / 10;
 export class Zone {
   private readonly players: Map<string, ZonePlayer> = new Map();
   private readonly dummies: Map<string, ZoneDummy> = new Map();
+  /** Projéteis em voo ([JOGO-08]). */
+  private projectiles: Projectile[] = [];
+  private nextProjectileId: number = 1;
   private currentTick = 0;
   /** Eventos acumulados no tick em andamento (vão no próximo snapshot). */
   private events: CombatEvent[] = [];
@@ -424,12 +442,14 @@ export class Zone {
     const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
     player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick: this.currentTick + castTicks };
     this.faceCast(player, player.cast);
-    const visual: { x?: number; z?: number } =
+    const visual: { x?: number; z?: number; radius?: number } =
       ability.aim === "area"
-        ? { x: aimX, z: aimZ }
+        ? { x: aimX, z: aimZ, radius: ability.radius }
         : ability.aim === "direction"
-          ? { x: player.state.x + aimX * ability.range, z: player.state.z + aimZ * ability.range }
-          : {};
+          ? { x: player.state.x + aimX * ability.range, z: player.state.z + aimZ * ability.range, radius: ability.radius }
+          : ability.aim === "area_self"
+            ? { radius: ability.radius }
+            : {};
     this.events.push({
       type: "cast_start",
       source: player.id,
@@ -498,6 +518,8 @@ export class Zone {
     this.currentTick++;
     this.respawnDue();
     this.applyMovement();
+    // Antes dos lançamentos: o projétil que sai neste tick começa a andar só no próximo (o cliente desenha igual).
+    this.moveProjectiles();
     this.applyCasts();
     this.regenerate();
     this.sendSnapshots();
@@ -626,6 +648,10 @@ export class Zone {
         return;
       }
       case "direction": {
+        if (ability.projectileSpeed > 0) {
+          this.launchProjectile(player, ability, cast.aimX, cast.aimZ);
+          return;
+        }
         let best: Entity | null = null;
         let bestAlong: number = Infinity;
         for (const enemy of this.enemiesOf(player)) {
@@ -672,6 +698,83 @@ export class Zone {
         }
         return;
     }
+  }
+
+  /** Solta um projétil de quem lançou, na direção (dirX, dirZ) unitária ([JOGO-08]). */
+  private launchProjectile(player: ZonePlayer, ability: AbilityDef, dirX: number, dirZ: number): void {
+    const projectile: Projectile = {
+      id: this.nextProjectileId++,
+      source: player,
+      ability,
+      x: player.state.x,
+      z: player.state.z,
+      dirX,
+      dirZ,
+      traveled: 0,
+    };
+    this.projectiles.push(projectile);
+    this.events.push({
+      type: "projectile",
+      id: projectile.id,
+      source: player.id,
+      ability: ability.id,
+      x: projectile.x,
+      z: projectile.z,
+      dirX,
+      dirZ,
+      speed: ability.projectileSpeed,
+      range: ability.range,
+      radius: ability.radius,
+    });
+  }
+
+  /**
+   * Anda cada projétil `speed × tick` (sem passar do alcance) e confere quem ele cruzou NESTE trecho: acerta o
+   * primeiro inimigo cujo corpo (+ raio do projétil) encosta no caminho. Acertou ou chegou ao fim: some.
+   */
+  private moveProjectiles(): void {
+    const flying: Projectile[] = [];
+    for (const projectile of this.projectiles) {
+      const ability: AbilityDef = projectile.ability;
+      const step: number = Math.min(ability.projectileSpeed * TICK_SECONDS, ability.range - projectile.traveled);
+      const reach: number = ability.radius + BODY_RADIUS;
+      let hit: Entity | null = null;
+      let hitAlong: number = Infinity;
+      for (const enemy of this.enemiesOf(projectile.source)) {
+        const ex: number = enemy.state.x - projectile.x;
+        const ez: number = enemy.state.z - projectile.z;
+        const along: number = ex * projectile.dirX + ez * projectile.dirZ;
+        const across: number = Math.abs(ex * projectile.dirZ - ez * projectile.dirX);
+        if (across > reach) continue;
+        // Primeiro ponto do trecho que encosta no corpo (entrada no círculo), limitado ao começo do trecho.
+        const entry: number = Math.max(0, along - Math.sqrt(reach * reach - across * across));
+        if (entry > step) continue;
+        // Atrás do ponto de partida: só acerta se o corpo já encosta nele.
+        if (along < 0 && along * along + across * across > reach * reach) continue;
+        if (entry < hitAlong) {
+          hit = enemy;
+          hitAlong = entry;
+        }
+      }
+      if (hit !== null) {
+        const x: number = projectile.x + projectile.dirX * hitAlong;
+        const z: number = projectile.z + projectile.dirZ * hitAlong;
+        this.events.push({ type: "projectile_end", id: projectile.id, x, z });
+        this.events.push({ type: "impact", source: projectile.source.id, ability: ability.id, x, z, radius: ability.radius });
+        this.damage(projectile.source, hit, ability.damage, ability.id);
+        continue;
+      }
+      projectile.x += projectile.dirX * step;
+      projectile.z += projectile.dirZ * step;
+      projectile.traveled += step;
+      if (projectile.traveled >= ability.range - 1e-9) {
+        this.events.push({ type: "projectile_end", id: projectile.id, x: projectile.x, z: projectile.z });
+        this.events.push({ type: "miss", source: projectile.source.id, target: "", ability: ability.id });
+        continue;
+      }
+      flying.push(projectile);
+    }
+    this.projectiles = flying;
   }
 
   /** Dano em todos os inimigos a até `radius` (+ corpo) do ponto, e o evento visual do impacto. */
