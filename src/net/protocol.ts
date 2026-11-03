@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -300,6 +300,11 @@ export type CombatEvent =
   | { readonly type: "heal"; readonly source: string; readonly target: string; readonly amount: number; readonly ability: string }
   | { readonly type: "impact"; readonly source: string; readonly ability: string; readonly x: number; readonly z: number; readonly radius: number }
   | { readonly type: "miss"; readonly source: string; readonly target: string; readonly ability: string }
+  /**
+   * Lançamento de habilidade de `source` cancelado porque ele andou ([JOGO-06]): sem efeito, mana devolvida e
+   * recarga zerada. O cliente para a animação/aviso no chão e libera a carta.
+   */
+  | { readonly type: "cast_cancel"; readonly source: string; readonly ability: string }
   | { readonly type: "death"; readonly id: string; readonly killer: string }
   | { readonly type: "respawn"; readonly id: string }
   /** O jogador `id` trocou o que veste (aparência nova). */
@@ -349,8 +354,10 @@ export interface AbilityView {
   readonly castTime: number;
   /** Mana gasta (o cliente confere antes de prever Investida/Disparada). */
   readonly manaCost: number;
-  /** Investida: metros deslocados; Disparada: multiplicador, segundos e passos. 0 nas outras. */
+  /** Investida: metros percorridos e em quantos segundos (passos = round(s × tick)); Disparada: multiplicador,
+   * segundos e passos. 0 nas outras. */
   readonly dashDistance: number;
+  readonly dashSeconds: number;
   readonly speedMultiplier: number;
   readonly speedSeconds: number;
 }

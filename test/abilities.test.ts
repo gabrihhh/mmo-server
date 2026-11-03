@@ -1,7 +1,7 @@
 import assert from "assert";
 
 import { Zone, type ZoneMember } from "../src/zones/Zone.js";
-import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
+import { ITEMS, UNARMED_ATTACK, dashSteps, type AbilityDef } from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
@@ -70,17 +70,52 @@ function npcHp(member: Member): number {
 }
 
 describe("habilidades (cast)", () => {
-  it("Golpe forte: gasta mana, começa recarga, dano no fim do lançamento", () => {
+  it("Golpe forte: gasta mana, começa recarga, dano em volta no fim do lançamento (sem precisar de alvo)", () => {
     const { z, a } = setup();
     const strike: AbilityDef = def("training_sword", "heavy_strike");
-    assert.deepStrictEqual(z.castAbility("a", cast("heavy_strike", { targetId: "dummy" })), { ok: true });
+    assert.strictEqual(strike.aim, "area_self");
+    assert.deepStrictEqual(z.castAbility("a", cast("heavy_strike")), { ok: true });
     z.tick();
     assert.ok(a.has("cast_start", "heavy_strike"));
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP, "sem dano antes do fim");
     finish(z, strike);
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP - strike.damage);
-    const again = z.castAbility("a", cast("heavy_strike", { targetId: "dummy" }));
+    const again = z.castAbility("a", cast("heavy_strike"));
     assert.ok(!again.ok && again.reason === "on_cooldown", "recarga");
+  });
+
+  it("Golpe forte: não pega quem está longe (só em volta do personagem)", () => {
+    const { z, a } = setup({ x: 0, z: -4 });
+    const strike: AbilityDef = def("training_sword", "heavy_strike");
+    z.castAbility("a", cast("heavy_strike", { targetId: "dummy" }));
+    finish(z, strike);
+    assert.strictEqual(npcHp(a), DUMMY_MAX_HP);
+  });
+
+  it("andar durante o lançamento cancela a habilidade: sem efeito, mana devolvida, recarga zerada", () => {
+    const { z, a } = setup({ x: 50, z: 50 });
+    const meteor: AbilityDef = def("training_staff", "meteor");
+    z.castAbility("a", cast("meteor", { x: 0, z: -5 }));
+    z.queueInput("a", { seq: 1, x: 0, z: 0 }); // parado: não cancela
+    z.tick();
+    assert.ok(!a.has("cast_cancel", "meteor"), "input parado não cancela");
+    z.queueInput("a", { seq: 2, x: 1, z: 0 });
+    z.tick();
+    assert.ok(a.has("cast_cancel", "meteor"), "cancelou ao andar");
+    finish(z, meteor);
+    assert.ok(!a.events.some((e) => e["type"] === "impact" && e["ability"] === "meteor"), "sem efeito");
+    const me: unknown = a.last["me"];
+    assert.ok(typeof me === "object" && me !== null && "mana" in me && me.mana === PLAYER_MAX_MANA, "mana devolvida");
+    assert.deepStrictEqual(z.castAbility("a", cast("meteor", { x: 0, z: -5 })), { ok: true }, "sem recarga");
+  });
+
+  it("andar não cancela o golpe do ataque simples", () => {
+    const { z, a } = setup({ x: 0, z: -1 });
+    assert.strictEqual(z.setAttackTarget("a", "dummy"), "ok");
+    z.tick();
+    z.queueInput("a", { seq: 1, x: 0.05, z: 0 });
+    z.tick();
+    assert.ok(!a.events.some((e) => e["type"] === "cast_cancel"));
   });
 
   it("recusas: não vestida, alvo inválido, fora de alcance, sem mana", () => {
@@ -89,7 +124,7 @@ describe("habilidades (cast)", () => {
     assert.strictEqual(reason(z.castAbility("a", cast("nao_existe"))), "ability_not_equipped");
     assert.strictEqual(reason(z.castAbility("a", cast("bolt"))), "invalid_target");
     assert.strictEqual(reason(z.castAbility("a", cast("bolt", { targetId: "a" }))), "invalid_target", "você mesmo");
-    assert.strictEqual(reason(z.castAbility("a", cast("heavy_strike", { targetId: "dummy" }))), "out_of_range");
+    assert.strictEqual(reason(z.castAbility("a", cast("bolt", { targetId: "dummy" }))), "out_of_range");
     let spent = 0;
     for (const id of ["meteor", "spin", "heal", "shield"]) {
       const r = z.castAbility("a", cast(id));
@@ -188,15 +223,25 @@ describe("habilidades (cast)", () => {
     assert.ok(typeof me === "object" && me !== null && "mana" in me && typeof me.mana === "number" && me.mana < PLAYER_MAX_MANA, "gastou mana");
   });
 
-  it("Investida na fila: aplicada na ordem dos inputs, desloca exatamente a distância", () => {
+  it("Investida na fila: percorre a distância nos passos seguintes (não teleporta), ignorando o joystick", () => {
     const { z } = setup({ x: 50, z: 50 });
     const dash: AbilityDef = def("training_sword", "dash");
+    const steps: number = dashSteps(dash);
+    assert.ok(steps > 1, "dura mais de um passo");
     z.queueInput("a", { seq: 1, x: 1, z: 0 });
     assert.deepStrictEqual(z.castAbility("a", cast("dash", { x: 0, z: -1, seq: 2 })), { ok: true }, "enfileirado");
-    z.queueInput("a", { seq: 3, x: 1, z: 0 });
-    z.tick(); // processa seq 1 e 2
-    z.tick(); // processa seq 3
+    z.tick(); // seq 1 (passo) e 2 (começa a Investida, sem mover)
     const step: number = 5 * 0.05;
+    assert.ok(Math.abs((z.getSnapshot("a")?.z ?? NaN) - 0) < 1e-9, "o comando em si não move");
+    let seq = 2;
+    for (let i = 0; i < steps; i++) {
+      z.queueInput("a", { seq: ++seq, x: 1, z: 0 }); // joystick para o lado: ignorado durante a Investida
+      z.tick();
+      const partial = z.getSnapshot("a");
+      assert.ok(partial && Math.abs(partial.z - -(dash.dashDistance * (i + 1)) / steps) < 1e-9, `passo ${i + 1}: z ${partial?.z}`);
+    }
+    z.queueInput("a", { seq: ++seq, x: 1, z: 0 }); // acabou: volta a andar normal
+    z.tick();
     const snap = z.getSnapshot("a");
     assert.ok(snap);
     assert.ok(Math.abs(snap.x - 2 * step) < 1e-9 && Math.abs(snap.z - -dash.dashDistance) < 1e-9, `posição ${snap.x}, ${snap.z}`);

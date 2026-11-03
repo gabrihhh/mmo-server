@@ -16,12 +16,13 @@ import {
   MOVE_SPEED,
   TICK_RATE_HZ,
   TICK_SECONDS,
+  MIN_INPUT_LENGTH,
   dashMovement,
   stepMovement,
   type MoveParams,
   type MoveState,
 } from "../sim/movement.js";
-import { UNARMED_ATTACK, isMovementAbility, type AbilityDef } from "../items/catalog.js";
+import { UNARMED_ATTACK, dashSteps, isMovementAbility, type AbilityDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
   DUMMY_RESPAWN_SECONDS,
@@ -121,6 +122,8 @@ interface ZonePlayer extends Combatant {
   readonly inputs: Command[];
   /** Disparada ativa ([JOGO-07]): multiplicador para os próximos `stepsLeft` passos, até `untilTick`. */
   boost: SpeedBoost | null;
+  /** Investida em andamento ([JOGO-07]): os próximos `stepsLeft` passos andam na direção dela (ignoram o joystick). */
+  dash: DashMove | null;
   /** Maior seq já recebido (para rejeitar repetidos/fora de ordem). */
   lastReceivedSeq: number;
   /** Último seq aplicado na simulação; vai como `ack` no snapshot dele. */
@@ -153,6 +156,20 @@ interface SpeedBoost {
   /** Passos de movimento que ainda ganham o bônus (conta igual no cliente). */
   stepsLeft: number;
   /** Também acaba neste tick, mesmo parado. */
+  readonly untilTick: number;
+}
+
+/**
+ * Investida em andamento. Conta em PASSOS de movimento (igual ao cliente), não em tempo: assim os dois lados
+ * aplicam o mesmo trecho nos mesmos `seq` e a predição bate. O cliente manda um passo por tick enquanto dura.
+ */
+interface DashMove {
+  /** Direção (vetor unitário) e metros por passo. */
+  readonly dirX: number;
+  readonly dirZ: number;
+  readonly stepDistance: number;
+  stepsLeft: number;
+  /** Segurança: acaba neste tick mesmo se os passos não chegarem (cliente travado/trapaceando). */
   readonly untilTick: number;
 }
 
@@ -313,6 +330,7 @@ export class Zone {
       shieldUntilTick: 0,
       inputs: [],
       boost: null,
+      dash: null,
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
       basicAttack,
@@ -463,15 +481,27 @@ export class Zone {
   }
 
   /**
-   * Investida/Disparada: efeito na hora (sem lançamento), para bater com a predição do cliente ([JOGO-07]).
-   * Investida desloca `dashDistance` na direção; Disparada multiplica a velocidade dos próximos passos.
+   * Investida/Disparada: começam na hora (sem lançamento), na ordem da fila, para bater com a predição do cliente
+   * ([JOGO-07]). Investida: os próximos `round(dashSeconds × tick)` passos percorrem `dashDistance` na direção (o
+   * comando em si não move). Disparada: multiplica a velocidade dos próximos passos.
    */
   private applyMovementAbility(player: ZonePlayer, ability: AbilityDef, dirX: number, dirZ: number): void {
     const visual: { x?: number; z?: number } = {};
+    let duration: number = 0;
     if (ability.dashDistance > 0) {
-      player.state = dashMovement(player.state, dirX, dirZ, ability.dashDistance, this.config.halfSize);
-      visual.x = player.state.x;
-      visual.z = player.state.z;
+      const steps: number = dashSteps(ability);
+      player.dash = {
+        dirX,
+        dirZ,
+        stepDistance: ability.dashDistance / steps,
+        stepsLeft: steps,
+        untilTick: this.currentTick + steps + TICK_RATE_HZ,
+      };
+      // Onde a Investida termina (se nada mudar): só para efeitos visuais.
+      const end: MoveState = dashMovement(player.state, dirX, dirZ, ability.dashDistance, this.config.halfSize);
+      visual.x = end.x;
+      visual.z = end.z;
+      duration = steps * TICK_SECONDS;
     }
     if (ability.speedMultiplier > 0) {
       player.boost = {
@@ -480,7 +510,7 @@ export class Zone {
         untilTick: this.currentTick + secondsToTicks(ability.speedSeconds),
       };
     }
-    this.events.push({ type: "cast_start", source: player.id, ability: ability.id, target: "", duration: 0, ...visual });
+    this.events.push({ type: "cast_start", source: player.id, ability: ability.id, target: "", duration, ...visual });
   }
 
   /**
@@ -552,6 +582,7 @@ export class Zone {
   private applyMovement(): void {
     for (const player of this.players.values()) {
       if (player.boost !== null && this.currentTick >= player.boost.untilTick) player.boost = null;
+      if (player.dash !== null && this.currentTick >= player.dash.untilTick) player.dash = null;
       for (let i = 0; i < MAX_INPUTS_PER_TICK; i++) {
         const command: Command | undefined = player.inputs.shift();
         if (command === undefined) break;
@@ -569,8 +600,23 @@ export class Zone {
     }
   }
 
-  /** Um passo de movimento; com Disparada, velocidade multiplicada (e gasta um passo do bônus). */
+  /**
+   * Um passo de movimento:
+   * - Investida em andamento: anda o trecho dela na direção dela (o joystick é ignorado; não gasta Disparada);
+   * - senão, anda pelo input (com Disparada, velocidade multiplicada e gasta um passo do bônus). Andar de verdade
+   *   CANCELA uma habilidade em lançamento ({@link cancelCast}); o golpe do ataque simples não.
+   */
   private step(player: ZonePlayer, input: InputData): void {
+    const dash: DashMove | null = player.dash;
+    if (dash !== null) {
+      player.state = dashMovement(player.state, dash.dirX, dash.dirZ, dash.stepDistance, this.config.halfSize);
+      dash.stepsLeft--;
+      if (dash.stepsLeft <= 0) player.dash = null;
+      return;
+    }
+    if (Math.sqrt(input.x * input.x + input.z * input.z) >= MIN_INPUT_LENGTH && player.cast?.kind === "ability") {
+      this.cancelCast(player, player.cast);
+    }
     let speed: number = MOVE_SPEED;
     const boost: SpeedBoost | null = player.boost;
     if (boost !== null && boost.stepsLeft > 0) {
@@ -580,6 +626,17 @@ export class Zone {
     }
     const params: MoveParams = { speed, halfSize: this.config.halfSize };
     player.state = stepMovement(player.state, input, TICK_SECONDS, params);
+  }
+
+  /**
+   * Cancela a habilidade em lançamento (o jogador andou, [JOGO-06]): sem efeito, devolve a mana, zera a recarga
+   * (pode lançar de novo na hora) e avisa todos com `cast_cancel` (param a animação e o aviso no chão).
+   */
+  private cancelCast(player: ZonePlayer, cast: Cast): void {
+    player.cast = null;
+    player.mana = Math.min(player.maxMana, player.mana + cast.ability.manaCost);
+    player.readyTick.delete(cast.ability.id);
+    this.events.push({ type: "cast_cancel", source: player.id, ability: cast.ability.id });
   }
 
   /**
@@ -860,6 +917,7 @@ export class Zone {
       target.cast = null;
       target.inputs.length = 0;
       target.boost = null;
+      target.dash = null;
     }
     for (const player of this.players.values()) if (player.attackTarget === target.id) player.attackTarget = null;
     this.events.push({ type: "death", id: target.id, killer: source.id });

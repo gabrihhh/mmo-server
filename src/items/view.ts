@@ -12,6 +12,7 @@ function abilityView(def: AbilityDef): AbilityView {
     castTime: def.castTime,
     manaCost: def.manaCost,
     dashDistance: def.dashDistance,
+    dashSeconds: def.dashSeconds,
     speedMultiplier: def.speedMultiplier,
     speedSeconds: def.speedSeconds,
   };

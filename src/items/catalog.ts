@@ -7,6 +7,8 @@
  * ATENÇÃO: os tipos de mira (`AimType`) são lidos por mmo-client/scripts/combat/ability_view.gd.
  */
 
+import { TICK_RATE_HZ } from "../sim/movement.js";
+
 /** Slots vestidos. A ordem é a da HUD: arma (3 cartas), cabeça, peito, pés. */
 export const EQUIP_SLOTS = ["hand", "head", "chest", "feet"] as const;
 export type EquipSlot = (typeof EQUIP_SLOTS)[number];
@@ -50,8 +52,13 @@ export interface AbilityDef {
    * 0: acerta na hora, no fim do lançamento, o primeiro inimigo na linha.
    */
   readonly projectileSpeed: number;
-  /** Investida: metros deslocados na direção, na hora em que o comando é processado ([JOGO-07]). */
+  /** Investida: metros percorridos na direção ([JOGO-07]). */
   readonly dashDistance: number;
+  /**
+   * Investida: duração do deslocamento, em segundos. O personagem PERCORRE o caminho (não teleporta): a distância é
+   * dividida igualmente pelos `round(dashSeconds × 20)` passos de movimento seguintes ([JOGO-07]).
+   */
+  readonly dashSeconds: number;
   /** Disparada: multiplicador de velocidade e por quantos segundos / passos de movimento ([JOGO-07]). */
   readonly speedMultiplier: number;
   readonly speedSeconds: number;
@@ -85,6 +92,7 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   shieldSeconds: 0,
   projectileSpeed: 0,
   dashDistance: 0,
+  dashSeconds: 0,
   speedMultiplier: 0,
   speedSeconds: 0,
   available: true,
@@ -104,9 +112,10 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     slot: "hand",
     basicAttack: ability({ id: "sword_attack", title: "Ataque", aim: "target", range: 2.5, cooldown: 1, castTime: 1, damage: 10 }),
     abilities: [
-      ability({ id: "heavy_strike", title: "Golpe forte", aim: "target", range: 3, cooldown: 6, castTime: 0.5, manaCost: 15, damage: 25 }),
-      // Instantânea: o deslocamento entra na fila de movimento para a predição do cliente bater ([JOGO-07]).
-      ability({ id: "dash", title: "Investida", aim: "direction", range: 6, radius: 1, cooldown: 8, castTime: 0, manaCost: 10, dashDistance: 6 }),
+      // Corpo a corpo: acerta só quem está em volta do personagem (não precisa de alvo).
+      ability({ id: "heavy_strike", title: "Golpe forte", aim: "area_self", radius: 2.5, cooldown: 6, castTime: 0.5, manaCost: 15, damage: 25 }),
+      // Sem lançamento: começa na hora e percorre 6 m em 0,3 s pela fila de movimento (predição exata, [JOGO-07]).
+      ability({ id: "dash", title: "Investida", aim: "direction", range: 6, radius: 1, cooldown: 8, castTime: 0, manaCost: 10, dashDistance: 6, dashSeconds: 0.3 }),
       ability({ id: "spin", title: "Giro", aim: "area_self", radius: 3, cooldown: 10, castTime: 0.4, manaCost: 20, damage: 15 }),
     ],
   },
@@ -163,4 +172,9 @@ export const STARTER_BAG: readonly string[] = ["training_staff"];
 /** `true` se a habilidade mexe no movimento (Investida, Disparada): vai pela fila de comandos ([JOGO-07]). */
 export function isMovementAbility(ability: AbilityDef): boolean {
   return ability.dashDistance > 0 || ability.speedMultiplier > 0;
+}
+
+/** Passos de movimento que uma Investida dura (pelo menos 1). ATENÇÃO: mesma conta em mmo-client AbilityView.dash_steps. */
+export function dashSteps(ability: AbilityDef): number {
+  return Math.max(1, Math.round(ability.dashSeconds * TICK_RATE_HZ));
 }

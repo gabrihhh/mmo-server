@@ -18,8 +18,8 @@ export const TICK_SECONDS: number = 1 / TICK_RATE_HZ;
 /** Velocidade de caminhada, em m/s. */
 export const MOVE_SPEED = 5;
 
-/** Abaixo deste comprimento o input é "parado" (não gira o personagem). */
-const MIN_INPUT_LENGTH = 0.01;
+/** Abaixo deste comprimento o input é "parado" (não move nem gira; também não cancela lançamento). */
+export const MIN_INPUT_LENGTH = 0.01;
 
 /** Estado simulado de um personagem. Metros e radianos. */
 export interface MoveState {
@@ -68,8 +68,8 @@ export function stepMovement(state: MoveState, input: MoveInput, dt: number, par
 }
 
 /**
- * Investida: desloca `distance` metros na direção (dirX, dirZ) de uma vez, limitado às bordas, e vira para ela.
- * Direção quase zero = não faz nada. ATENÇÃO: espelho em mmo-client/scripts/sim/movement.gd (`dash`).
+ * Um passo da Investida: desloca `distance` metros na direção (dirX, dirZ), limitado às bordas, e vira para ela.
+ * A Investida inteira são vários destes, um por passo de movimento ([JOGO-07]). Direção quase zero = não faz nada. ATENÇÃO: espelho em mmo-client/scripts/sim/movement.gd (`dash`).
  */
 export function dashMovement(state: MoveState, dirX: number, dirZ: number, distance: number, halfSize: number): MoveState {
   const length: number = Math.sqrt(dirX * dirX + dirZ * dirZ);
