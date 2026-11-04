@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { Look } from "../net/protocol.js";
-import { EQUIP_SLOTS, STARTER_BAG, STARTER_EQUIPPED, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
+import { EQUIP_SLOTS, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
 
 /**
  * Inventário de um personagem: 4 slots vestidos + mochila. Regras puras (sem banco nem rede),
@@ -23,6 +23,8 @@ export interface Inventory {
   readonly equipped: Readonly<Record<EquipSlot, ItemStack | null>>;
   /** Itens guardados, na ordem em que aparecem. */
   readonly bag: readonly ItemStack[];
+  /** Presentes únicos já recebidos (ids de `GRANTS` do catálogo): não são dados de novo. */
+  readonly grants: readonly string[];
 }
 
 /** Motivo de recusa de uma troca. */
@@ -38,11 +40,40 @@ export function newItemUid(): string {
   return randomBytes(9).toString("base64url");
 }
 
-/** Inventário inicial de uma conta nova. */
+/** Nada vestido. */
+const NOTHING_EQUIPPED: Readonly<Record<EquipSlot, ItemStack | null>> = { hand: null, head: null, chest: null, feet: null };
+
+/**
+ * Inventário inicial de uma conta nova: **nada vestido** ("nasce pelada") e todos os conjuntos na mochila
+ * ([JOGO-04]). Os presentes de `GRANTS` contam como recebidos (os itens deles já estão aqui).
+ */
 export function starterInventory(): Inventory {
-  const equipped: Record<EquipSlot, ItemStack | null> = { hand: null, head: null, chest: null, feet: null };
-  for (const slot of EQUIP_SLOTS) equipped[slot] = { uid: newItemUid(), itemId: STARTER_EQUIPPED[slot] };
-  return { equipped, bag: STARTER_BAG.map((itemId) => ({ uid: newItemUid(), itemId })) };
+  return {
+    equipped: { ...NOTHING_EQUIPPED },
+    bag: STARTER_BAG.map((itemId) => ({ uid: newItemUid(), itemId })),
+    grants: Object.keys(GRANTS),
+  };
+}
+
+/**
+ * Dá os presentes de `GRANTS` que o inventário ainda não recebeu: põe no fim da mochila cada item que a conta ainda
+ * não tem (vestido ou guardado), até a mochila encher, e marca o presente como recebido.
+ * O `uid` do item dado é fixo (`grant-<presente>-<itemId>`): ler a mesma conta duas vezes antes de salvar dá o mesmo
+ * inventário (o `equip` de quem ainda não salvou continua achando o item).
+ */
+export function applyGrants(inventory: Inventory): Inventory {
+  const missing: string[] = Object.keys(GRANTS).filter((grant) => !inventory.grants.includes(grant));
+  if (missing.length === 0) return inventory;
+  const bag: ItemStack[] = [...inventory.bag];
+  const owned: Set<string> = new Set([...bag, ...EQUIP_SLOTS.map((slot) => inventory.equipped[slot])].flatMap((stack) => (stack === null ? [] : [stack.itemId])));
+  for (const grant of missing) {
+    for (const itemId of GRANTS[grant] ?? []) {
+      if (owned.has(itemId) || bag.length >= BAG_CAPACITY || getItem(itemId) === undefined) continue;
+      bag.push({ uid: `grant-${grant}-${itemId}`, itemId });
+      owned.add(itemId);
+    }
+  }
+  return { equipped: inventory.equipped, bag, grants: [...inventory.grants, ...missing] };
 }
 
 /**
@@ -59,7 +90,7 @@ export function equip(inventory: Inventory, uid: string): InventoryResult {
   const bag: ItemStack[] = [...inventory.bag];
   if (previous === null) bag.splice(index, 1);
   else bag.splice(index, 1, previous);
-  return { ok: true, inventory: { equipped: { ...inventory.equipped, [def.slot]: stack }, bag } };
+  return { ok: true, inventory: { ...inventory, equipped: { ...inventory.equipped, [def.slot]: stack }, bag } };
 }
 
 /** Tira o item do slot e põe no fim da mochila. `slot_empty` se não há nada; `bag_full` se não cabe. */
@@ -67,7 +98,7 @@ export function unequip(inventory: Inventory, slot: EquipSlot): InventoryResult 
   const current: ItemStack | null = inventory.equipped[slot];
   if (current === null) return { ok: false, reason: "slot_empty" };
   if (inventory.bag.length >= BAG_CAPACITY) return { ok: false, reason: "bag_full" };
-  return { ok: true, inventory: { equipped: { ...inventory.equipped, [slot]: null }, bag: [...inventory.bag, current] } };
+  return { ok: true, inventory: { ...inventory, equipped: { ...inventory.equipped, [slot]: null }, bag: [...inventory.bag, current] } };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -84,6 +115,7 @@ function readStack(value: unknown): ItemStack | null {
 /**
  * Lê o inventário vindo do banco (não confiável: pode ser antigo ou ter item removido do catálogo).
  * Sem inventário salvo → inicial. Item no slot errado volta para a mochila; itens desconhecidos somem.
+ * Presentes ainda não recebidos ({@link applyGrants}) entram no fim da mochila.
  */
 export function readInventory(raw: unknown): Inventory {
   if (!isRecord(raw)) return starterInventory();
@@ -103,7 +135,9 @@ export function readInventory(raw: unknown): Inventory {
       if (stack !== null && bag.length < BAG_CAPACITY) bag.push(stack);
     }
   }
-  return { equipped, bag };
+  const rawGrants: unknown = raw["grants"];
+  const grants: string[] = Array.isArray(rawGrants) ? rawGrants.filter((grant): grant is string => typeof grant === "string") : [];
+  return applyGrants({ equipped, bag, grants });
 }
 
 

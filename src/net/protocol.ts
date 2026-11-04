@@ -378,10 +378,12 @@ export interface SimParams {
   readonly zoneHalfSize: number;
 }
 
-/** Habilidade como o cliente vê: nome e mira (efeitos ficam no servidor). Metros. */
+/** Habilidade como o cliente vê: nome, mira e os números para exibir (quem aplica é o servidor). Metros, segundos. */
 export interface AbilityView {
   readonly id: string;
   readonly title: string;
+  /** Frase curta para a ficha do item no inventário. */
+  readonly description: string;
   /** "target" | "direction" | "area" | "area_self" | "self". */
   readonly aim: string;
   readonly range: number;
@@ -398,6 +400,15 @@ export interface AbilityView {
   readonly dashSeconds: number;
   readonly speedMultiplier: number;
   readonly speedSeconds: number;
+  /**
+   * Só para MOSTRAR na ficha do item (quem aplica é o servidor): dano por alvo, cura, escudo (absorve) e por quantos
+   * segundos, velocidade do projétil (m/s; 0 = acerta na hora). 0 = não tem.
+   */
+  readonly damage: number;
+  readonly heal: number;
+  readonly shield: number;
+  readonly shieldSeconds: number;
+  readonly projectileSpeed: number;
 }
 
 /** Item como o cliente vê. */
@@ -405,6 +416,9 @@ export interface ItemView {
   readonly uid: string;
   readonly itemId: string;
   readonly name: string;
+  /** Frase curta e conjunto ("Treino", "Mago", "Cavaleiro") para a ficha do item. */
+  readonly description: string;
+  readonly set: string;
   readonly slot: EquipSlotName;
   /** Ataque simples (só armas). */
   readonly basicAttack: AbilityView | null;

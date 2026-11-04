@@ -51,10 +51,11 @@ describe("MongoAccountStore (MongoDB real)", function () {
     assert.deepStrictEqual(resumed?.lastPosition, { zone: "zone_1", x: 1, y: 0, z: 2, rotY: 3 });
 
     const resumedInventory = resumed?.inventory;
-    assert.strictEqual(resumedInventory?.equipped.hand?.itemId, "training_sword", "conta nova tem o kit");
-    assert.ok(resumedInventory);
-    await store.saveInventory(byName.account.playerId, { ...resumedInventory, equipped: { ...resumedInventory.equipped, hand: null } });
-    assert.strictEqual((await store.resume(byName.sessionToken))?.inventory.equipped.hand, null, "inventário salvo");
+    assert.strictEqual(resumedInventory?.equipped.hand, null, "conta nova nasce pelada");
+    assert.ok(resumedInventory?.bag.some((s) => s.itemId === "training_sword"), "com o kit na mochila");
+    const sword = { uid: "espada", itemId: "training_sword" };
+    await store.saveInventory(byName.account.playerId, { ...resumedInventory, equipped: { ...resumedInventory.equipped, hand: sword } });
+    assert.deepStrictEqual((await store.resume(byName.sessionToken))?.inventory.equipped.hand, sword, "inventário salvo");
 
     await store.logout(byName.sessionToken);
     assert.strictEqual(await store.resume(byName.sessionToken), null);

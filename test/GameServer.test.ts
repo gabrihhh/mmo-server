@@ -64,6 +64,16 @@ describe("GameServer", () => {
     return player;
   }
 
+  /** Veste `itemId` (da mochila da conta nova) e espera o inventário novo. */
+  async function wear(player: Player, itemId: string): Promise<void> {
+    const bag: unknown = (await player.client.next("inventory")).data["bag"];
+    assert.ok(Array.isArray(bag));
+    const stack: unknown = bag.find((item: unknown) => typeof item === "object" && item !== null && "itemId" in item && item.itemId === itemId);
+    assert.ok(typeof stack === "object" && stack !== null && "uid" in stack);
+    player.client.send("equip", { uid: stack.uid });
+    await player.client.next("inventory");
+  }
+
   /** Manda `join` e devolve a lista `players` do `welcome`. */
   async function join(player: Player): Promise<unknown[]> {
     player.client.send("join", { zone: ZONE });
@@ -201,16 +211,16 @@ describe("GameServer", () => {
       return typeof value.uid === "string" && typeof value.itemId === "string" ? { uid: value.uid, itemId: value.itemId } : null;
     }
 
-    it("chega logo após o auth_ok; equip troca a arma; fica salvo para a próxima sessão", async () => {
+    it("chega logo após o auth_ok (nasce pelado); equip veste; fica salvo para a próxima sessão", async () => {
       const p: Player = await registered();
       const first: ReceivedMessage = await p.client.next("inventory");
       const equipped: unknown = first.data["equipped"];
       assert.ok(typeof equipped === "object" && equipped !== null && "hand" in equipped);
-      assert.strictEqual(itemOf(equipped.hand)?.itemId, "training_sword");
+      assert.strictEqual(equipped.hand, null, "conta nova não tem nada vestido");
       const bag: unknown = first.data["bag"];
       assert.ok(Array.isArray(bag));
-      const staff = itemOf(bag[0]);
-      assert.ok(staff && staff.itemId === "training_staff");
+      const staff = bag.map(itemOf).find((item) => item?.itemId === "training_staff");
+      assert.ok(staff);
 
       p.client.send("equip", { uid: staff.uid });
       const after: ReceivedMessage = await p.client.next("inventory");
@@ -232,9 +242,7 @@ describe("GameServer", () => {
       p.client.send("equip", { uid: "nao-existe" });
       assert.strictEqual((await p.client.next("error")).data["code"], "item_not_found");
       p.client.send("unequip", { slot: "head" });
-      await p.client.next("inventory");
-      p.client.send("unequip", { slot: "head" });
-      assert.strictEqual((await p.client.next("error")).data["code"], "slot_empty");
+      assert.strictEqual((await p.client.next("error")).data["code"], "slot_empty", "nasce sem nada vestido");
     });
 
     it("equip sem autenticar é recusado", async () => {
@@ -298,8 +306,8 @@ describe("GameServer", () => {
       assert.deepStrictEqual({ ...me, name: undefined, look: undefined, body: undefined }, { ...where, name: undefined, look: undefined, body: undefined });
       assert.deepStrictEqual(
         me?.["look"],
-        { hand: "training_sword", head: "training_hood", chest: "training_vest", feet: "training_boots" },
-        "welcome leva a aparência (kit inicial)",
+        { hand: null, head: null, chest: null, feet: null },
+        "welcome leva a aparência (conta nova: nada vestido)",
       );
     });
 
@@ -320,6 +328,7 @@ describe("GameServer", () => {
 
     it("cast: aceito vira cast_start; durante o lançamento = busy; depois, antes da recarga = on_cooldown", async () => {
       const a: Player = await registered();
+      await wear(a, "training_vest");
       await join(a);
       a.client.send("cast", { abilityId: "shield" });
       await a.client.nextMatching("snapshot", (m) => {

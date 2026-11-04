@@ -1,7 +1,7 @@
 import assert from "assert";
 
 import { Zone, type ZoneMember } from "../src/zones/Zone.js";
-import { ITEMS, UNARMED_ATTACK, dashSteps, type AbilityDef } from "../src/items/catalog.js";
+import { ITEMS, KNIGHT_SET, MAGE_SET, UNARMED_ATTACK, dashSteps, isMovementAbility, type AbilityDef } from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
@@ -70,6 +70,23 @@ function npcHp(member: Member): number {
 }
 
 describe("habilidades (cast)", () => {
+  it("conjuntos do Mago e do Cavaleiro: toda carta de dano/cura/escudo é aceita e faz efeito no boneco/em si", () => {
+    for (const itemId of [...MAGE_SET, ...KNIGHT_SET]) {
+      for (const ability of ITEMS[itemId]?.abilities ?? []) {
+        if (isMovementAbility(ability)) continue; // Teleporte/Avanço/Marcha: mesma regra de Investida/Disparada ([JOGO-07])
+        const { z, a } = setup();
+        const aim: Partial<CastData> =
+          ability.aim === "target" ? { targetId: "dummy" } : ability.aim === "direction" ? { x: 0, z: -1 } : ability.aim === "area" ? { x: 0, z: -2 } : {};
+        assert.deepStrictEqual(z.castAbility("a", cast(ability.id, aim)), { ok: true }, ability.id);
+        finish(z, ability);
+        for (let i = 0; i < 20; i++) z.tick(); // projéteis chegam
+        if (ability.damage > 0) assert.strictEqual(npcHp(a), DUMMY_MAX_HP - ability.damage, ability.id);
+        if (ability.heal > 0) assert.ok(a.has("heal", ability.id), ability.id);
+        if (ability.shield > 0) assert.ok(a.events.some((e) => e["type"] === "cast_start" && e["ability"] === ability.id), ability.id);
+      }
+    }
+  });
+
   it("Golpe forte: gasta mana, começa recarga, dano em volta no fim do lançamento (sem precisar de alvo)", () => {
     const { z, a } = setup();
     const strike: AbilityDef = def("training_sword", "heavy_strike");

@@ -50,10 +50,12 @@ O número de habilidades tem que bater com o slot; o `test/inventory.test.ts` co
 iron_helmet: {
   id: "iron_helmet",            // igual à chave; nunca mude depois (fica salvo no banco)
   name: "Elmo de ferro",        // nome exibido
+  description: "Elmo simples de ferro.",  // frase da ficha do item no inventário
+  set: "Cavaleiro",             // conjunto: agrupa e dá a cor da moldura no cliente
   slot: "head",
   basicAttack: null,            // só armas têm
   abilities: [
-    ability({ id: "iron_skin", title: "Pele de ferro", aim: "self", cooldown: 20, castTime: 0.3, manaCost: 15, shield: 40, shieldSeconds: 5 }),
+    ability({ id: "iron_skin", title: "Pele de ferro", description: "Escudo curto.", aim: "self", cooldown: 20, castTime: 0.3, manaCost: 15, shield: 40, shieldSeconds: 5 }),
   ],
 },
 ```
@@ -64,6 +66,8 @@ Arma (3 habilidades + ataque simples):
 training_axe: {
   id: "training_axe",
   name: "Machado de treino",
+  description: "Machado pesado de lenhador.",
+  set: "Treino",
   slot: "hand",
   basicAttack: ability({ id: "axe_attack", title: "Ataque", aim: "target", range: 2.5, cooldown: 1.3, castTime: 1.3, damage: 13 }),
   abilities: [
@@ -86,13 +90,16 @@ training_axe: {
 
 Ainda **não existe** loja, drop nem comando de admin. Hoje o único jeito é o kit inicial:
 
-- Adicione o `id` em `STARTER_BAG` (mochila) ou troque em `STARTER_EQUIPPED` (vestido).
-- O kit só vale para **conta nova**: contas que já existem não recebem o item. Crie uma conta nova
-  (no PC: `godot --path . -- --dev-user=TesteNovo`).
+- Adicione o `id` em `STARTER_BAG`: a conta nova nasce **pelada** e com tudo isso na mochila ([JOGO-04]).
+- Para contas que **já existem** receberem também: crie um presente novo em `GRANTS` (ex.: `sets_v2: ["iron_helmet"]`).
+  Cada conta recebe uma vez, no fim da mochila, o que ainda não tem. Nunca reaproveite nem mude um id de presente.
 
 ### 6. Atualize a documentação e verifique
 
 - Números do item na tabela de [JOGO-03] (mmo-docs).
+- **Ícones** (pixel art 48×48): `mmo-client/assets/icons/items/<itemId>.png` e
+  `mmo-client/assets/icons/abilities/<abilityId>.png` — como gerar em [MESHY-07]. Sem ícone, o inventário e a carta
+  mostram só a moldura e o nome.
 - `npm run typecheck && npm test`.
 
 ## Quando precisa de mais do que o catálogo
