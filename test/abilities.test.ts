@@ -109,13 +109,22 @@ describe("habilidades (cast)", () => {
     assert.deepStrictEqual(z.castAbility("a", cast("meteor", { x: 0, z: -5 })), { ok: true }, "sem recarga");
   });
 
-  it("andar não cancela o golpe do ataque simples", () => {
+  it("andar cancela o golpe do ataque simples (sem dano) e não começa outro andando; parado, volta a atacar", () => {
     const { z, a } = setup({ x: 0, z: -1 });
     assert.strictEqual(z.setAttackTarget("a", "dummy"), "ok");
     z.tick();
-    z.queueInput("a", { seq: 1, x: 0.05, z: 0 });
-    z.tick();
-    assert.ok(!a.events.some((e) => e["type"] === "cast_cancel"));
+    assert.ok(a.events.some((e) => e["type"] === "cast_start"), "golpe começou");
+    let seq = 1;
+    for (let i = 0; i < 30; i++) {
+      z.queueInput("a", { seq: seq++, x: i % 2 === 0 ? 0.05 : -0.05, z: 0 }); // vai e volta: continua no alcance
+      z.tick();
+    }
+    assert.ok(a.events.some((e) => e["type"] === "cast_cancel"), "cancelou ao andar");
+    const startsWhileWalking: number = a.events.filter((e) => e["type"] === "cast_start").length;
+    assert.strictEqual(startsWhileWalking, 1, "andando não recomeça o golpe");
+    assert.ok(!a.events.some((e) => e["type"] === "damage"), "golpe cancelado não dá dano");
+    for (let i = 0; i < 40; i++) z.tick();
+    assert.ok(a.events.filter((e) => e["type"] === "cast_start").length > 1, "parado, voltou a atacar");
   });
 
   it("recusas: não vestida, alvo inválido, fora de alcance, sem mana", () => {

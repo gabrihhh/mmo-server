@@ -331,8 +331,9 @@ export type CombatEvent =
   | { readonly type: "impact"; readonly source: string; readonly ability: string; readonly x: number; readonly z: number; readonly radius: number }
   | { readonly type: "miss"; readonly source: string; readonly target: string; readonly ability: string }
   /**
-   * Lançamento de habilidade de `source` cancelado porque ele andou ([JOGO-06]): sem efeito, mana devolvida e
-   * recarga zerada. O cliente para a animação/aviso no chão e libera a carta.
+   * Lançamento de `source` cancelado porque ele andou ([JOGO-05]/[JOGO-06]): sem efeito. Habilidade: mana devolvida
+   * e recarga zerada. Golpe do ataque simples: sem dano; recomeça quando ele parar no alcance. O cliente para a
+   * animação/aviso no chão e libera a carta/o botão Atacar.
    */
   | { readonly type: "cast_cancel"; readonly source: string; readonly ability: string }
   | { readonly type: "death"; readonly id: string; readonly killer: string }

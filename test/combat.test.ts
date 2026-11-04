@@ -78,30 +78,33 @@ describe("combate (ataque simples)", () => {
     assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - 2 * SWORD.damage, "segundo golpe 1 lançamento depois");
   });
 
-  it("durante o golpe fica virado para o alvo, mesmo andando para outro lado", () => {
+  it("durante o golpe fica virado para o alvo", () => {
     const z = zone();
     const a = new Member("a");
-    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    z.join(a, { x: 0, y: 0, z: 0, rotY: Math.PI / 2 }, SWORD); // de lado para o boneco
     z.setAttackTarget("a", "dummy"); // boneco em (0, -2): à frente (-Z) → rotY 0
-    z.queueInput("a", { seq: 1, x: 1, z: 0 }); // anda para +X (viraria para -PI/2)
     z.tick();
     const rot: number | undefined = z.getSnapshot("a")?.rotY;
     assert.ok(rot !== undefined && Math.abs(Math.atan2(Math.sin(rot), Math.cos(rot))) < 0.2, `virado para o boneco (rotY=${rot})`);
   });
 
-  it("se no fim do golpe o alvo saiu do alcance, erra (miss)", () => {
+  it("andar durante o golpe cancela (cast_cancel), sem dano nem miss", () => {
     const z = zone();
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     z.setAttackTarget("a", "dummy");
     z.tick(); // começa o golpe em alcance
     let seq = 0;
+    let cancelled = false;
+    let missed = false;
     for (let i = 0; i < SWORD.castTime * TICK_RATE_HZ; i++) {
       z.queueInput("a", { seq: ++seq, x: 0, z: 1 }); // se afasta do boneco (que está em -Z)
       z.tick();
-      if (a.events().some((e) => e["type"] === "miss")) break;
+      cancelled ||= a.events().some((e) => e["type"] === "cast_cancel" && e["source"] === "a");
+      missed ||= a.events().some((e) => e["type"] === "miss");
     }
-    assert.ok(a.events().some((e) => e["type"] === "miss" && e["target"] === "dummy"), "errou");
+    assert.ok(cancelled, "cancelou");
+    assert.ok(!missed, "sem miss");
     assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP);
   });
 

@@ -39,6 +39,12 @@ import {
  * Quem está numa zona, do ponto de vista dela: um id e um jeito de receber mensagens.
  * A zona não conhece WebSocket, o que permite testá-la sem rede.
  */
+/**
+ * Ticks depois do último passo em que o ataque simples ainda não começa um golpe (20 Hz → 0,1 s): o input do
+ * joystick pode chegar com buracos de 1 tick sem o jogador ter parado de verdade.
+ */
+const ATTACK_MOVE_GRACE_TICKS = 2;
+
 export interface ZoneMember {
   /** Id do jogador. */
   readonly id: string;
@@ -141,6 +147,8 @@ interface ZonePlayer extends Combatant {
   readonly readyTick: Map<string, number>;
   /** Alvo fixo do ataque simples (`null` = nenhum). */
   attackTarget: string | null;
+  /** Último tick em que o jogador andou de verdade (input ≥ {@link MIN_INPUT_LENGTH}); -Infinity = nunca. */
+  lastMoveTick: number;
   /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
   cast: Cast | null;
 }
@@ -341,6 +349,7 @@ export class Zone {
       look,
       readyTick: new Map(),
       attackTarget: null,
+      lastMoveTick: Number.NEGATIVE_INFINITY,
       cast: null,
     };
     this.players.set(member.id, player);
@@ -607,7 +616,7 @@ export class Zone {
    * Um passo de movimento:
    * - Investida em andamento: anda o trecho dela na direção dela (o joystick é ignorado; não gasta Disparada);
    * - senão, anda pelo input (com Disparada, velocidade multiplicada e gasta um passo do bônus). Andar de verdade
-   *   CANCELA uma habilidade em lançamento ({@link cancelCast}); o golpe do ataque simples não.
+   *   CANCELA o que estiver em lançamento ({@link cancelCast}): habilidade ou golpe do ataque simples.
    */
   private step(player: ZonePlayer, input: InputData): void {
     const dash: DashMove | null = player.dash;
@@ -617,8 +626,9 @@ export class Zone {
       if (dash.stepsLeft <= 0) player.dash = null;
       return;
     }
-    if (Math.sqrt(input.x * input.x + input.z * input.z) >= MIN_INPUT_LENGTH && player.cast?.kind === "ability") {
-      this.cancelCast(player, player.cast);
+    if (Math.sqrt(input.x * input.x + input.z * input.z) >= MIN_INPUT_LENGTH) {
+      player.lastMoveTick = this.currentTick;
+      if (player.cast !== null) this.cancelCast(player, player.cast);
     }
     let speed: number = MOVE_SPEED;
     const boost: SpeedBoost | null = player.boost;
@@ -632,13 +642,16 @@ export class Zone {
   }
 
   /**
-   * Cancela a habilidade em lançamento (o jogador andou, [JOGO-06]): sem efeito, devolve a mana, zera a recarga
-   * (pode lançar de novo na hora) e avisa todos com `cast_cancel` (param a animação e o aviso no chão).
+   * Cancela o lançamento em andamento (o jogador andou, [JOGO-05]/[JOGO-06]) e avisa todos com `cast_cancel` (param a
+   * animação, o brilho e o aviso no chão). Habilidade: sem efeito, devolve a mana e zera a recarga (pode lançar de
+   * novo na hora). Golpe do ataque simples: sem dano; o alvo fixo continua e o golpe recomeça quando parar.
    */
   private cancelCast(player: ZonePlayer, cast: Cast): void {
     player.cast = null;
-    player.mana = Math.min(player.maxMana, player.mana + cast.ability.manaCost);
-    player.readyTick.delete(cast.ability.id);
+    if (cast.kind === "ability") {
+      player.mana = Math.min(player.maxMana, player.mana + cast.ability.manaCost);
+      player.readyTick.delete(cast.ability.id);
+    }
     this.events.push({ type: "cast_cancel", source: player.id, ability: cast.ability.id });
   }
 
@@ -680,6 +693,8 @@ export class Zone {
       else this.events.push({ type: "miss", source: player.id, target: target.id, ability: cast.ability.id });
     }
     if (player.cast !== null) return;
+    // Andando (ou acabou de andar) não começa golpe: senão cada passo cancelaria e recomeçaria o ataque.
+    if (this.currentTick - player.lastMoveTick <= ATTACK_MOVE_GRACE_TICKS) return;
     const attack: AbilityDef = player.basicAttack;
     if (!Zone.inRange(player, target, attack.range)) return;
     const duration: number = secondsToTicks(attack.castTime);
