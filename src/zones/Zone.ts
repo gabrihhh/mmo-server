@@ -112,13 +112,17 @@ interface Combatant {
   readonly name: string;
   state: MoveState;
   hp: number;
-  readonly maxHp: number;
+  /** Vida máxima. Jogador: base + vida extra dos itens vestidos ([JOGO-09]); muda ao trocar de item. */
+  maxHp: number;
   dead: boolean;
   /** Tick em que renasce (só vale com `dead`). */
   respawnTick: number;
   /** Escudo: dano que ainda absorve e o tick em que acaba (0 = sem escudo). */
   shield: number;
   shieldUntilTick: number;
+  /** Redução de dano (0..1) e o tick em que acaba ([JOGO-09]); 0 = sem redução. */
+  reduction: number;
+  reductionUntilTick: number;
 }
 
 /** Jogador dentro da zona (estado interno; o que vai para a rede é {@link PlayerSnapshot}). */
@@ -285,6 +289,8 @@ export class Zone {
         respawnTick: 0,
         shield: 0,
         shieldUntilTick: 0,
+        reduction: 0,
+        reductionUntilTick: 0,
       });
     }
   }
@@ -326,6 +332,7 @@ export class Zone {
     basicAttack: AbilityDef = UNARMED_ATTACK,
     abilities: ReadonlyMap<string, AbilityDef> = new Map(),
     look: Look = NO_LOOK,
+    bonusHp: number = 0,
   ): JoinResult {
     if (!this.players.has(member.id) && this.players.size >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
@@ -338,14 +345,16 @@ export class Zone {
       name: member.name,
       member,
       state: { x: clamp(start.x, -limit, limit), y: start.y, z: clamp(start.z, -limit, limit), rotY: start.rotY },
-      hp: PLAYER_MAX_HP,
-      maxHp: PLAYER_MAX_HP,
+      hp: PLAYER_MAX_HP + bonusHp,
+      maxHp: PLAYER_MAX_HP + bonusHp,
       mana: PLAYER_MAX_MANA,
       maxMana: PLAYER_MAX_MANA,
       dead: false,
       respawnTick: 0,
       shield: 0,
       shieldUntilTick: 0,
+      reduction: 0,
+      reductionUntilTick: 0,
       inputs: [],
       boost: null,
       dash: null,
@@ -389,14 +398,32 @@ export class Zone {
   }
 
   /**
-   * Troca o ataque simples, as cartas e a aparência (o inventário mudou). A recarga de cada habilidade é mantida.
-   * Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
+   * Troca o ataque simples, as cartas, a aparência e a vida extra dos itens (o inventário mudou). A recarga de cada
+   * habilidade é mantida. Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
+   * Vida máxima nova: a vida atual acompanha na MESMA proporção (tirar e vestir de novo não cura).
+   * Se o alvo fixo não serve mais para o ataque novo (ex.: aliado e agora é uma espada), ele é solto.
    */
-  setLoadout(id: string, basicAttack: AbilityDef, abilities: ReadonlyMap<string, AbilityDef>, look?: Look): void {
+  setLoadout(
+    id: string,
+    basicAttack: AbilityDef,
+    abilities: ReadonlyMap<string, AbilityDef>,
+    look?: Look,
+    bonusHp: number = 0,
+  ): void {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined) return;
     player.basicAttack = basicAttack;
     player.abilities = abilities;
+    const maxHp: number = PLAYER_MAX_HP + bonusHp;
+    if (maxHp !== player.maxHp) {
+      player.hp = player.dead ? 0 : (player.hp * maxHp) / player.maxHp;
+      player.maxHp = maxHp;
+    }
+    const target: Entity | undefined = player.attackTarget === null ? undefined : this.entity(player.attackTarget);
+    if (target !== undefined && !this.validAttackTarget(player, basicAttack, target)) {
+      player.attackTarget = null;
+      if (player.cast?.kind === "attack") player.cast = null;
+    }
     if (look !== undefined && !Zone.sameLook(player.look, look)) {
       player.look = look;
       this.events.push({ type: "look", id, look });
@@ -463,6 +490,14 @@ export class Zone {
         }
         aimX = player.state.x + dx;
         aimZ = player.state.z + dz;
+        break;
+      }
+      case "ally": {
+        // Sem alvo (ou alvo = você): em você mesmo. Alvo que não é aliado: recusa.
+        const target: Entity | undefined = request.targetId === null ? player : this.entity(request.targetId);
+        if (target === undefined || !Zone.isAlly(target)) return Zone.refuse("invalid_target", "Escolha um aliado.");
+        if (!Zone.inRange(player, target, ability.range)) return Zone.refuse("out_of_range", "Fora de alcance.");
+        targetId = target.id;
         break;
       }
       case "area_self":
@@ -536,7 +571,8 @@ export class Zone {
 
   /**
    * Fixa o alvo do ataque simples de `id` (ou limpa com `null`). Recusa alvo inexistente, morto,
-   * ele mesmo, ou outro jogador numa zona sem PvP. O ataque acontece nos ticks, quando em alcance.
+   * ele mesmo, ou outro jogador numa zona sem PvP. Ataque de cura (mira "ally", [JOGO-09]): o alvo é outro jogador
+   * vivo. O ataque acontece nos ticks, quando em alcance.
    */
   setAttackTarget(id: string, targetId: string | null): TargetResult {
     const player: ZonePlayer | undefined = this.players.get(id);
@@ -547,7 +583,7 @@ export class Zone {
       return "ok";
     }
     const target: Entity | undefined = this.entity(targetId);
-    if (target === undefined || player.dead || !this.isEnemy(player, target)) return "invalid_target";
+    if (target === undefined || player.dead || !this.validAttackTarget(player, player.basicAttack, target)) return "invalid_target";
     // Trocar de alvo cancela o golpe do ataque simples em andamento (habilidade não).
     if (player.cast !== null && player.cast.kind === "attack" && player.cast.targetId !== targetId) player.cast = null;
     player.attackTarget = targetId;
@@ -707,7 +743,7 @@ export class Zone {
   private applyAttack(player: ZonePlayer): void {
     if (player.dead || player.attackTarget === null) return;
     const target: Entity | undefined = this.entity(player.attackTarget);
-    if (target === undefined || target.dead) {
+    if (target === undefined || target.dead || !this.validAttackTarget(player, player.basicAttack, target)) {
       player.attackTarget = null;
       if (player.cast?.kind === "attack") player.cast = null;
       return;
@@ -719,7 +755,8 @@ export class Zone {
       if (this.currentTick < cast.endTick) return;
       player.cast = null;
       if (cast.inRangeAtRelease ?? Zone.inRange(player, target, cast.ability.range)) {
-        this.damage(player, target, cast.ability.damage, cast.ability.id);
+        if (cast.ability.aim === "ally") this.support(player, target, cast.ability);
+        else this.damage(player, target, cast.ability.damage, cast.ability.id);
       }
       else this.events.push({ type: "miss", source: player.id, target: target.id, ability: cast.ability.id });
     }
@@ -793,16 +830,30 @@ export class Zone {
       }
       case "area_self":
         this.areaDamage(player, ability, player.state.x, player.state.z);
-        return;
-      case "self":
-        if (ability.heal > 0) {
-          const healed: number = Math.min(player.maxHp - player.hp, ability.heal);
-          player.hp += healed;
-          this.events.push({ type: "heal", source: player.id, target: player.id, amount: healed, ability: ability.id });
+        // Cura/escudo em área: em você e nos aliados em volta ([JOGO-09]).
+        if (ability.heal > 0 || ability.shield > 0) {
+          for (const ally of this.players.values()) {
+            if (!Zone.isAlly(ally)) continue;
+            const dx: number = ally.state.x - player.state.x;
+            const dz: number = ally.state.z - player.state.z;
+            if (Math.sqrt(dx * dx + dz * dz) <= ability.radius + BODY_RADIUS) this.support(player, ally, ability);
+          }
         }
-        if (ability.shield > 0) {
-          player.shield = ability.shield;
-          player.shieldUntilTick = this.currentTick + secondsToTicks(ability.shieldSeconds);
+        return;
+      case "ally": {
+        const target: Entity | undefined = cast.targetId === null ? undefined : this.entity(cast.targetId);
+        if (target !== undefined && Zone.isAlly(target) && Zone.inRange(player, target, ability.range)) {
+          this.support(player, target, ability);
+        } else {
+          this.events.push({ type: "miss", source: player.id, target: cast.targetId ?? "", ability: ability.id });
+        }
+        return;
+      }
+      case "self":
+        this.support(player, player, ability);
+        if (ability.damageReduction > 0) {
+          player.reduction = ability.damageReduction;
+          player.reductionUntilTick = this.currentTick + secondsToTicks(ability.reductionSeconds);
         }
         return;
     }
@@ -885,9 +936,27 @@ export class Zone {
     this.projectiles = flying;
   }
 
+  /**
+   * Cura e/ou escudo de `ability` em `target` (você mesmo ou um aliado, [JOGO-09]). A cura não passa da vida
+   * máxima (o evento `heal` leva quanto curou de fato); o escudo substitui o anterior.
+   */
+  private support(source: ZonePlayer, target: Entity, ability: AbilityDef): void {
+    if (target.dead) return;
+    if (ability.heal > 0) {
+      const healed: number = Math.min(target.maxHp - target.hp, ability.heal);
+      target.hp += healed;
+      this.events.push({ type: "heal", source: source.id, target: target.id, amount: healed, ability: ability.id });
+    }
+    if (ability.shield > 0) {
+      target.shield = ability.shield;
+      target.shieldUntilTick = this.currentTick + secondsToTicks(ability.shieldSeconds);
+    }
+  }
+
   /** Dano em todos os inimigos a até `radius` (+ corpo) do ponto, e o evento visual do impacto. */
   private areaDamage(player: ZonePlayer, ability: AbilityDef, x: number, z: number): void {
     this.events.push({ type: "impact", source: player.id, ability: ability.id, x, z, radius: ability.radius });
+    if (ability.damage <= 0) return;
     for (const enemy of this.enemiesOf(player)) {
       const dx: number = enemy.state.x - x;
       const dz: number = enemy.state.z - z;
@@ -899,6 +968,23 @@ export class Zone {
   private isEnemy(player: ZonePlayer, target: Entity): boolean {
     if (target.dead || target.id === player.id) return false;
     return target.kind === "dummy" || this.config.pvp;
+  }
+
+  /**
+   * `true` se um jogador pode curar/proteger `target` ([JOGO-09]): jogador vivo — você mesmo ou outro. Ainda não há
+   * grupos, então todo jogador conta como aliado, mesmo numa zona com PvP (onde ele também é inimigo).
+   */
+  private static isAlly(target: Entity): boolean {
+    return target.kind === "player" && !target.dead;
+  }
+
+  /**
+   * `true` se `target` serve de alvo fixo para o ataque simples `attack`: inimigo (dano) ou, no ataque de cura
+   * (mira "ally"), outro jogador vivo (você mesmo não: o alvo fixo é sempre outro).
+   */
+  private validAttackTarget(player: ZonePlayer, attack: AbilityDef, target: Entity): boolean {
+    if (attack.aim === "ally") return target.id !== player.id && Zone.isAlly(target);
+    return this.isEnemy(player, target);
   }
 
   private enemiesOf(player: ZonePlayer): Entity[] {
@@ -941,12 +1027,14 @@ export class Zone {
   }
 
   /**
-   * Aplica dano; o escudo absorve primeiro. Em 0 de vida, morre (e quem mirava nele perde o alvo).
+   * Aplica dano; a redução de dano diminui e depois o escudo absorve. Em 0 de vida, morre (e quem mirava nele perde o alvo).
    * O evento leva o dano na vida (`amount`) e o absorvido pelo escudo (`absorbed`).
    */
   private damage(source: Entity, target: Entity, amount: number, abilityId: string): void {
     if (target.dead || amount <= 0) return;
-    let remaining: number = amount;
+    // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
+    const reduced: boolean = target.reduction > 0 && this.currentTick < target.reductionUntilTick;
+    let remaining: number = reduced ? Math.round(amount * (1 - target.reduction)) : amount;
     let absorbed: number = 0;
     if (target.shield > 0 && this.currentTick < target.shieldUntilTick) {
       absorbed = Math.min(target.shield, remaining);
@@ -962,6 +1050,7 @@ export class Zone {
     const respawnSeconds: number = target.kind === "player" ? PLAYER_RESPAWN_SECONDS : DUMMY_RESPAWN_SECONDS;
     target.respawnTick = this.currentTick + secondsToTicks(respawnSeconds);
     target.shield = 0;
+    target.reduction = 0;
     if (target.kind === "player") {
       target.attackTarget = null;
       target.cast = null;
@@ -976,6 +1065,7 @@ export class Zone {
   private regenerate(): void {
     for (const entity of this.entities()) {
       if (entity.shield > 0 && this.currentTick >= entity.shieldUntilTick) entity.shield = 0;
+      if (entity.reduction > 0 && this.currentTick >= entity.reductionUntilTick) entity.reduction = 0;
     }
     for (const player of this.players.values()) {
       if (player.dead) continue;
@@ -1049,6 +1139,8 @@ export class Zone {
       maxHp: entity.maxHp,
       dead: entity.dead,
       shield: round1(entity.shield),
+      // Redução de dano ativa (0..1, [JOGO-09]); o cliente desenha um brilho em quem tem.
+      guard: entity.reduction,
       speed: entity.kind === "player" && entity.boost !== null ? entity.boost.multiplier : 1,
       // Mana é pública (barra acima da cabeça, [CLI-04]); bonecos não têm.
       ...(entity.kind === "player" ? { mana: round1(entity.mana), maxMana: entity.maxMana } : {}),

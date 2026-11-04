@@ -28,7 +28,7 @@ const newZone = (maxPlayers: number = 50, pvp: boolean = true): Zone =>
 
 /** Vida cheia de jogador, como sai no snapshot. */
 /** Campos de combate de um jogador recém-chegado (vida e mana cheias). */
-const FULL = { hp: 100, maxHp: 100, dead: false, shield: 0, speed: 1, mana: 100, maxMana: 100 };
+const FULL = { hp: 100, maxHp: 100, dead: false, shield: 0, guard: 0, speed: 1, mana: 100, maxMana: 100 };
 
 describe("Zone", () => {
   it("devolve a lista de jogadores a quem entra e avisa player_joined aos outros", () => {

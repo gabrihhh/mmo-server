@@ -9,7 +9,7 @@ import { EQUIP_SLOTS, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type Ability
  */
 
 /** Capacidade da mochila, em itens. */
-export const BAG_CAPACITY = 20;
+export const BAG_CAPACITY = 30;
 
 /** Um item que o jogador possui. `uid` diferencia dois itens iguais (no futuro: qualidade, durabilidade). */
 export interface ItemStack {
@@ -157,6 +157,16 @@ export function equippedAbilities(inventory: Inventory): Map<string, AbilityDef>
     for (const ability of def?.abilities ?? []) result.set(ability.id, ability);
   }
   return result;
+}
+
+/** Vida máxima extra de tudo que está vestido ([JOGO-09]); soma com `PLAYER_MAX_HP`. */
+export function bonusHpOf(inventory: Inventory): number {
+  let total: number = 0;
+  for (const slot of EQUIP_SLOTS) {
+    const stack: ItemStack | null = inventory.equipped[slot];
+    total += (stack === null ? undefined : getItem(stack.itemId))?.bonusHp ?? 0;
+  }
+  return total;
 }
 
 /** Aparência: o `itemId` vestido em cada slot (o que os outros jogadores veem). */

@@ -1,7 +1,8 @@
 # Como criar um item
 
 Guia prático. As regras do jogo ficam no mmo-docs: [JOGO-01] equipamento → habilidades, [JOGO-03] números do
-kit de treino, [JOGO-04] inventário, [JOGO-06] habilidades no servidor.
+kit de treino, [JOGO-04] inventário, [JOGO-06] habilidades no servidor, [JOGO-09] conjuntos em baixo/médio/alto
+(perfil, vida extra, defesa, aliados) e [JOGO-10] números dos conjuntos.
 
 ## Ideia principal
 
@@ -32,13 +33,15 @@ O número de habilidades tem que bater com o slot; o `test/inventory.test.ts` co
 | `"direction"` | arrasta: linha na direção | `range`, `radius` (meia-largura da linha) |
 | `"area"` | arrasta: círculo num ponto | `range`, `radius` |
 | `"area_self"` | toca: círculo ao redor de si | `radius` |
-| `"self"` | toca: em si mesmo (cura, escudo, velocidade) | — |
+| `"self"` | toca: em si mesmo (cura, escudo, velocidade, redução de dano) | — |
+| `"ally"` | toca: no aliado fixo (ou em você); arrasta: no jogador da mira | `range` |
 
 ### 3. Escolha o efeito (campos de `AbilityDef`; o que não usar fica 0)
 
 - `damage` — dano por alvo atingido.
-- `heal` — vida recuperada (só `"self"`).
-- `shield` + `shieldSeconds` — escudo que absorve dano.
+- `heal` — vida recuperada (`"self"`, `"ally"` ou `"area_self"` = você e aliados em volta).
+- `shield` + `shieldSeconds` — escudo que absorve dano (mesmas miras da cura).
+- `damageReduction` (0..1) + `reductionSeconds` — recebe menos dano por um tempo (só `"self"`, [JOGO-09]).
 - `dashDistance` — investida (desloca em metros, [JOGO-07]).
 - `speedMultiplier` + `speedSeconds` — corrida (multiplica a velocidade, [JOGO-07]).
 - Sempre: `cooldown` (s), `castTime` (s, 0 = instantânea), `manaCost`.
@@ -51,8 +54,9 @@ iron_helmet: {
   id: "iron_helmet",            // igual à chave; nunca mude depois (fica salvo no banco)
   name: "Elmo de ferro",        // nome exibido
   description: "Elmo simples de ferro.",  // frase da ficha do item no inventário
-  set: "Cavaleiro",             // conjunto: agrupa e dá a cor da moldura no cliente
+  set: "Cavaleiro",             // conjunto: agrupa, dá a cor da moldura e o perfil baixo/médio/alto (SET_PROFILES)
   slot: "head",
+  bonusHp: 40,                  // vida máxima extra enquanto vestido (0 = nenhuma; ver SET_BONUS_HP, [JOGO-09])
   basicAttack: null,            // só armas têm
   abilities: [
     ability({ id: "iron_skin", title: "Pele de ferro", description: "Escudo curto.", aim: "self", cooldown: 20, castTime: 0.3, manaCost: 15, shield: 40, shieldSeconds: 5 }),

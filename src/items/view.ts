@@ -1,6 +1,6 @@
 import type { AbilityView, InventoryView, ItemView } from "../net/protocol.js";
 import { BAG_CAPACITY, type Inventory, type ItemStack } from "./inventory.js";
-import { UNARMED_ATTACK, getItem, type AbilityDef } from "./catalog.js";
+import { SET_PROFILES, UNARMED_ATTACK, getItem, type AbilityDef } from "./catalog.js";
 
 /**
  * Monta o que vai para o cliente na mensagem `inventory` (nome, slot, descrição e habilidades de cada item, com os
@@ -28,6 +28,8 @@ function abilityView(def: AbilityDef): AbilityView {
     shield: def.shield,
     shieldSeconds: def.shieldSeconds,
     projectileSpeed: def.projectileSpeed,
+    damageReduction: def.damageReduction,
+    reductionSeconds: def.reductionSeconds,
   };
 }
 
@@ -42,6 +44,8 @@ function itemView(stack: ItemStack): ItemView | null {
     description: def.description,
     set: def.set,
     slot: def.slot,
+    bonusHp: def.bonusHp,
+    profile: SET_PROFILES[def.set] ?? null,
     basicAttack: def.basicAttack === null ? null : abilityView(def.basicAttack),
     abilities: def.abilities.map(abilityView),
   };

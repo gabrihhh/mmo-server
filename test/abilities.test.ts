@@ -1,7 +1,18 @@
 import assert from "assert";
 
 import { Zone, type ZoneMember } from "../src/zones/Zone.js";
-import { ITEMS, KNIGHT_SET, MAGE_SET, UNARMED_ATTACK, dashSteps, isMovementAbility, type AbilityDef } from "../src/items/catalog.js";
+import {
+  ASSASSIN_SET,
+  HEALER_SET,
+  ITEMS,
+  KNIGHT_SET,
+  MAGE_SET,
+  RANGER_SET,
+  UNARMED_ATTACK,
+  dashSteps,
+  isMovementAbility,
+  type AbilityDef,
+} from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
@@ -70,8 +81,8 @@ function npcHp(member: Member): number {
 }
 
 describe("habilidades (cast)", () => {
-  it("conjuntos do Mago e do Cavaleiro: toda carta de dano/cura/escudo é aceita e faz efeito no boneco/em si", () => {
-    for (const itemId of [...MAGE_SET, ...KNIGHT_SET]) {
+  it("todos os conjuntos: toda carta de dano/cura/escudo é aceita e faz efeito no boneco/em si", () => {
+    for (const itemId of [...MAGE_SET, ...KNIGHT_SET, ...RANGER_SET, ...ASSASSIN_SET, ...HEALER_SET]) {
       for (const ability of ITEMS[itemId]?.abilities ?? []) {
         if (isMovementAbility(ability)) continue; // Teleporte/Avanço/Marcha: mesma regra de Investida/Disparada ([JOGO-07])
         const { z, a } = setup();
@@ -81,7 +92,7 @@ describe("habilidades (cast)", () => {
         finish(z, ability);
         for (let i = 0; i < 20; i++) z.tick(); // projéteis chegam
         if (ability.damage > 0) assert.strictEqual(npcHp(a), DUMMY_MAX_HP - ability.damage, ability.id);
-        if (ability.heal > 0) assert.ok(a.has("heal", ability.id), ability.id);
+        if (ability.heal > 0) assert.ok(a.has("heal", ability.id), ability.id); // sem alvo, "ally" cura você
         if (ability.shield > 0) assert.ok(a.events.some((e) => e["type"] === "cast_start" && e["ability"] === ability.id), ability.id);
       }
     }
@@ -307,5 +318,114 @@ describe("habilidades (cast)", () => {
     assert.strictEqual(z.getSnapshot("a")?.x, after, "segunda investida recusada (recarga)");
     assert.ok(errors.some((e) => e.includes("on_cooldown")));
   });
-});
 
+  /** Zona sem bonecos com dois jogadores: "a" em (0,0) e "b" em `bAt`. "a" veste tudo; "b" nada. */
+  function pair(bAt: { x: number; z: number } = { x: 0, z: -3 }): { z: Zone; a: Member; b: Member } {
+    const z = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true, dummies: [] });
+    const a = new Member("a");
+    const b = new Member("b");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, ALL);
+    z.join(b, { x: bAt.x, y: 0, z: bAt.z, rotY: 0 }, UNARMED_ATTACK, new Map());
+    return { z, a, b };
+  }
+
+  /** Vida de `id` no último snapshot recebido por `member`. */
+  function playerHp(member: Member, id: string): number {
+    const players: unknown = member.last["players"];
+    if (!Array.isArray(players)) return NaN;
+    for (const p of players) {
+      if (typeof p === "object" && p !== null && "id" in p && p.id === id && "hp" in p && typeof p.hp === "number") return p.hp;
+    }
+    return NaN;
+  }
+
+  it("Cura maior (mira aliado): cura outro jogador no alcance; sem alvo, cura você; alvo boneco é recusado", () => {
+    const { z, a } = pair({ x: 0, z: -1 });
+    const heal: AbilityDef = def("healer_tome", "greater_heal");
+    // b apanha de a (PvP) para ter vida a recuperar.
+    z.setAttackTarget("a", "b");
+    for (let i = 0; i < 40; i++) z.tick();
+    z.setAttackTarget("a", null);
+    const hurt: number = playerHp(a, "b");
+    assert.ok(hurt < PLAYER_MAX_HP, "b apanhou");
+    assert.deepStrictEqual(z.castAbility("a", cast(heal.id, { targetId: "b" })), { ok: true });
+    finish(z, heal);
+    assert.ok(a.events.some((e) => e["type"] === "heal" && e["target"] === "b" && e["ability"] === heal.id));
+    assert.ok(playerHp(a, "b") > hurt);
+
+    const far = pair({ x: 0, z: -30 });
+    assert.strictEqual(far.z.castAbility("a", cast(heal.id, { targetId: "b" })).ok, false, "fora de alcance");
+    const withDummy = setup();
+    assert.deepStrictEqual(withDummy.z.castAbility("a", cast(heal.id, { targetId: "dummy" })).ok, false, "boneco não é aliado");
+    assert.deepStrictEqual(withDummy.z.castAbility("a", cast(heal.id)), { ok: true }, "sem alvo = em você");
+    finish(withDummy.z, heal);
+    assert.ok(withDummy.a.events.some((e) => e["type"] === "heal" && e["target"] === "a"));
+  });
+
+  it("Égide (área em volta, sem dano): escudo em você e nos aliados perto, não nos longe; boneco não apanha", () => {
+    const aegis: AbilityDef = def("healer_robe", "aegis");
+    const { z, a } = pair({ x: 0, z: -3 });
+    const c = new Member("c");
+    z.join(c, { x: 0, y: 0, z: -40, rotY: 0 }, UNARMED_ATTACK, new Map());
+    assert.deepStrictEqual(z.castAbility("a", cast(aegis.id)), { ok: true });
+    finish(z, aegis);
+    const shieldOf = (id: string): unknown => {
+      const players: unknown = a.last["players"];
+      return Array.isArray(players) ? players.find((p) => typeof p === "object" && p !== null && "id" in p && p.id === id)?.shield : undefined;
+    };
+    assert.strictEqual(shieldOf("a"), aegis.shield);
+    assert.strictEqual(shieldOf("b"), aegis.shield);
+    assert.strictEqual(shieldOf("c"), 0);
+    assert.ok(!a.events.some((e) => e["type"] === "damage"));
+  });
+
+  it("Pés de ferro (redução de dano): o dano cai pela metade enquanto dura, e volta depois", () => {
+    const stance: AbilityDef = def("knight_greaves", "iron_stance");
+    const { z, a } = pair({ x: 0, z: -1 });
+    // b bate em a com o soco (4 de dano).
+    z.setLoadout("b", UNARMED_ATTACK, new Map());
+    assert.deepStrictEqual(z.castAbility("a", cast(stance.id)), { ok: true });
+    z.tick();
+    z.setAttackTarget("b", "a");
+    for (let i = 0; i < 40; i++) z.tick();
+    const reduced = a.events.filter((e) => e["type"] === "damage" && e["target"] === "a");
+    assert.ok(reduced.length > 0);
+    assert.ok(reduced.every((e) => e["amount"] === Math.round(UNARMED_ATTACK.damage * (1 - stance.damageReduction))), "metade");
+    for (let i = 0; i < stance.reductionSeconds * TICK_RATE_HZ; i++) z.tick();
+    const later = a.events.filter((e) => e["type"] === "damage" && e["target"] === "a").at(-1);
+    assert.strictEqual(later?.["amount"], UNARMED_ATTACK.damage, "acabou: dano cheio");
+  });
+
+  it("vida extra dos itens: entra com a vida máxima maior; trocar de item mantém a proporção (não cura)", () => {
+    const z = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true, dummies: [] });
+    const a = new Member("a");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, new Map(), undefined, 150);
+    z.tick();
+    assert.strictEqual(z.getSnapshot("a")?.maxHp, PLAYER_MAX_HP + 150);
+    assert.strictEqual(z.getSnapshot("a")?.hp, PLAYER_MAX_HP + 150);
+    z.setLoadout("a", UNARMED_ATTACK, new Map(), undefined, 0);
+    assert.strictEqual(z.getSnapshot("a")?.maxHp, PLAYER_MAX_HP);
+    assert.strictEqual(z.getSnapshot("a")?.hp, PLAYER_MAX_HP, "cheia continua cheia");
+  });
+
+  it("ataque simples de cura (Livro): alvo fixo é outro jogador e recebe cura a cada lançamento; boneco recusado", () => {
+    const tome = ITEMS["healer_tome"];
+    assert.ok(tome?.basicAttack);
+    const { z, a } = pair({ x: 0, z: -1 });
+    z.setLoadout("a", tome.basicAttack, ALL);
+    // b apanha antes, de a com o soco.
+    z.setLoadout("a", UNARMED_ATTACK, ALL);
+    z.setAttackTarget("a", "b");
+    for (let i = 0; i < 40; i++) z.tick();
+    z.setLoadout("a", tome.basicAttack, ALL);
+    assert.strictEqual(z.setAttackTarget("a", "b"), "ok");
+    assert.strictEqual(z.setAttackTarget("a", "a"), "invalid_target", "você mesmo não");
+    z.setAttackTarget("a", "b");
+    for (let i = 0; i < 40; i++) z.tick();
+    assert.ok(a.events.some((e) => e["type"] === "heal" && e["target"] === "b" && e["ability"] === tome.basicAttack?.id));
+
+    const withDummy = setup();
+    withDummy.z.setLoadout("a", tome.basicAttack, ALL);
+    assert.strictEqual(withDummy.z.setAttackTarget("a", "dummy"), "invalid_target");
+  });
+});

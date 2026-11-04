@@ -1,7 +1,19 @@
 import assert from "assert";
 
 import { BAG_CAPACITY, equip, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
-import { ABILITIES_PER_SLOT, EQUIP_SLOTS, ITEMS, KNIGHT_SET, MAGE_SET, STARTER_BAG } from "../src/items/catalog.js";
+import {
+  ABILITIES_PER_SLOT,
+  ASSASSIN_SET,
+  EQUIP_SLOTS,
+  HEALER_SET,
+  ITEMS,
+  KNIGHT_SET,
+  MAGE_SET,
+  RANGER_SET,
+  SET_BONUS_HP,
+  SET_PROFILES,
+  STARTER_BAG,
+} from "../src/items/catalog.js";
 import { inventoryView } from "../src/items/view.js";
 
 describe("catálogo e inventário", () => {
@@ -20,7 +32,24 @@ describe("catálogo e inventário", () => {
     assert.strictEqual(new Set(ids).size, ids.length);
   });
 
-  it("conta nova nasce pelada, com os três conjuntos na mochila", () => {
+  it("conjuntos ([JOGO-09]): 4 peças cada, perfil baixo/médio/alto, vida extra do nível, carta defensiva", () => {
+    for (const set of [MAGE_SET, KNIGHT_SET, RANGER_SET, ASSASSIN_SET, HEALER_SET]) {
+      const items = set.map((id) => ITEMS[id]);
+      assert.deepStrictEqual(items.map((item) => item?.slot), ["hand", "head", "chest", "feet"], set.join());
+      const name: string = items[0]?.set ?? "";
+      const profile = SET_PROFILES[name];
+      assert.ok(profile, name);
+      const bonus: number = items.reduce((sum, item) => sum + (item?.bonusHp ?? 0), 0);
+      assert.strictEqual(bonus, SET_BONUS_HP[profile.health], `${name}: vida extra do conjunto`);
+      const abilities = items.flatMap((item) => item?.abilities ?? []);
+      const defensive = abilities.filter((a) => a.shield > 0 || a.heal > 0 || a.damageReduction > 0);
+      assert.ok(defensive.length >= 1, `${name}: carta defensiva`);
+      const dealsDamage: boolean = items.some((item) => (item?.basicAttack?.damage ?? 0) > 0) || abilities.some((a) => a.damage > 0);
+      assert.strictEqual(dealsDamage, profile.damage !== "zero", `${name}: dano zero = nenhuma carta de dano`);
+    }
+  });
+
+  it("conta nova nasce pelada, com todos os conjuntos na mochila", () => {
     const inv: Inventory = starterInventory();
     for (const slot of EQUIP_SLOTS) assert.strictEqual(inv.equipped[slot], null, slot);
     assert.deepStrictEqual(inv.bag.map((s) => s.itemId), [...STARTER_BAG]);
@@ -33,7 +62,7 @@ describe("catálogo e inventário", () => {
     return {
       equipped: { hand: { uid: "s", itemId: "training_sword" }, head: { uid: "h", itemId: "training_hood" }, chest: null, feet: { uid: "f", itemId: "training_boots" } },
       bag: [{ uid: "st", itemId: "training_staff" }],
-      grants: ["sets_v1"],
+      grants: ["sets_v1", "sets_v2"],
     };
   }
 
@@ -75,7 +104,7 @@ describe("catálogo e inventário", () => {
     const inv: Inventory = readInventory({
       equipped: { hand: { uid: "a", itemId: "training_boots" }, head: { uid: "b", itemId: "item_apagado" }, chest: null },
       bag: [{ uid: "c", itemId: "training_staff" }, { lixo: true }],
-      grants: ["sets_v1"],
+      grants: ["sets_v1", "sets_v2"],
     });
     assert.strictEqual(inv.equipped.hand, null);
     assert.strictEqual(inv.equipped.head, null);
@@ -85,9 +114,10 @@ describe("catálogo e inventário", () => {
   it("conta antiga (sem grants) recebe uma vez os conjuntos novos que ainda não tem, com uid fixo", () => {
     const old = { equipped: { hand: { uid: "a", itemId: "knight_sword" } }, bag: [{ uid: "c", itemId: "training_staff" }] };
     const inv: Inventory = readInventory(old);
-    assert.deepStrictEqual(inv.grants, ["sets_v1"]);
+    assert.deepStrictEqual(inv.grants, ["sets_v1", "sets_v2"]);
     const given: string[] = inv.bag.slice(1).map((s) => s.itemId);
-    assert.deepStrictEqual(given, [...MAGE_SET, ...KNIGHT_SET].filter((id) => id !== "knight_sword"), "não duplica o que já tem");
+    const expected: string[] = [...MAGE_SET, ...KNIGHT_SET, ...RANGER_SET, ...ASSASSIN_SET, ...HEALER_SET];
+    assert.deepStrictEqual(given, expected.filter((id) => id !== "knight_sword"), "não duplica o que já tem");
     assert.deepStrictEqual(readInventory(old).bag, inv.bag, "ler de novo antes de salvar dá os mesmos uids");
     assert.deepStrictEqual(readInventory(inv).bag, inv.bag, "depois de salvo não dá de novo");
 

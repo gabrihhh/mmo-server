@@ -27,7 +27,7 @@ import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition 
 import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
-import { basicAttackOf, equip, equippedAbilities, lookOf, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
+import { basicAttackOf, bonusHpOf, equip, equippedAbilities, lookOf, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
 import { inventoryView } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
@@ -421,6 +421,7 @@ export class GameServer {
       basicAttackOf(result.inventory),
       equippedAbilities(result.inventory),
       lookOf(result.inventory),
+      bonusHpOf(result.inventory),
     );
     try {
       await this.options.accounts.saveInventory(account.playerId, result.inventory);
@@ -545,6 +546,7 @@ export class GameServer {
       basicAttackOf(account.inventory),
       equippedAbilities(account.inventory),
       lookOf(account.inventory),
+      bonusHpOf(account.inventory),
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");

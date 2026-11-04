@@ -269,6 +269,8 @@ export interface PlayerSnapshot {
   readonly dead: boolean;
   /** Escudo ativo (dano que ainda absorve; 0 = sem escudo). */
   readonly shield: number;
+  /** Redução de dano ativa (0..1; 0 = nenhuma), [JOGO-09]. O cliente mostra um brilho dourado. */
+  readonly guard: number;
   /** Disparada ativa (multiplicador de velocidade; 1 = normal). */
   readonly speed: number;
   /**
@@ -384,7 +386,7 @@ export interface AbilityView {
   readonly title: string;
   /** Frase curta para a ficha do item no inventário. */
   readonly description: string;
-  /** "target" | "direction" | "area" | "area_self" | "self". */
+  /** "target" | "direction" | "area" | "area_self" | "self" | "ally" ([JOGO-09]). */
   readonly aim: string;
   readonly range: number;
   readonly radius: number;
@@ -409,6 +411,17 @@ export interface AbilityView {
   readonly shield: number;
   readonly shieldSeconds: number;
   readonly projectileSpeed: number;
+  /** Redução de dano (0..1) e por quantos segundos ([JOGO-09]). 0 = não tem. */
+  readonly damageReduction: number;
+  readonly reductionSeconds: number;
+}
+
+/** Perfil do conjunto: cada atributo em "zero" | "low" | "medium" | "high" ([JOGO-09]). Só exibição. */
+export interface SetProfileView {
+  readonly damage: string;
+  readonly health: string;
+  readonly healing: string;
+  readonly cooldown: string;
 }
 
 /** Item como o cliente vê. */
@@ -420,6 +433,10 @@ export interface ItemView {
   readonly description: string;
   readonly set: string;
   readonly slot: EquipSlotName;
+  /** Vida máxima extra enquanto vestido ([JOGO-09]). */
+  readonly bonusHp: number;
+  /** Perfil do conjunto do item em baixo/médio/alto (`null` se o conjunto não tem perfil). */
+  readonly profile: SetProfileView | null;
   /** Ataque simples (só armas). */
   readonly basicAttack: AbilityView | null;
   readonly abilities: readonly AbilityView[];
