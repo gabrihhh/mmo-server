@@ -52,6 +52,13 @@ export interface AbilityDef {
    * 0: acerta na hora, no fim do lançamento, o primeiro inimigo na linha.
    */
   readonly projectileSpeed: number;
+  /**
+   * Mira "alvo" com projétil só visual (ataque do cajado, Raio): quantos segundos ANTES do fim do lançamento o tiro
+   * sai da mão ([JOGO-08]). Depois disso andar não cancela mais e o alcance é conferido nesse momento (o tiro que saiu
+   * sempre chega). 0 = sem soltura antecipada (efeito só no fim). Vai no `cast_start` como `release`.
+   * ATENÇÃO: o cliente lança o projétil visual nesse instante (mmo-client/scripts/world/zone.gd).
+   */
+  readonly releaseTime: number;
   /** Investida: metros percorridos na direção ([JOGO-07]). */
   readonly dashDistance: number;
   /**
@@ -91,6 +98,7 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   shield: 0,
   shieldSeconds: 0,
   projectileSpeed: 0,
+  releaseTime: 0,
   dashDistance: 0,
   dashSeconds: 0,
   speedMultiplier: 0,
@@ -123,11 +131,11 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     id: "training_staff",
     name: "Cajado de treino",
     slot: "hand",
-    basicAttack: ability({ id: "staff_attack", title: "Ataque", aim: "target", range: 8, cooldown: 1.2, castTime: 1.2, damage: 7 }),
+    basicAttack: ability({ id: "staff_attack", title: "Ataque", aim: "target", range: 8, cooldown: 1.2, castTime: 1.2, damage: 7, releaseTime: 0.3 }),
     abilities: [
       ability({ id: "fireball", title: "Bola de fogo", aim: "direction", range: 12, radius: 0.6, cooldown: 4, castTime: 0.6, manaCost: 15, damage: 20, projectileSpeed: 14 }),
       ability({ id: "meteor", title: "Meteoro", aim: "area", range: 10, radius: 2.5, cooldown: 12, castTime: 1, manaCost: 30, damage: 30 }),
-      ability({ id: "bolt", title: "Raio", aim: "target", range: 10, cooldown: 7, castTime: 0.4, manaCost: 12, damage: 18 }),
+      ability({ id: "bolt", title: "Raio", aim: "target", range: 10, cooldown: 7, castTime: 0.4, manaCost: 12, damage: 18, releaseTime: 0.15 }),
     ],
   },
   training_hood: {

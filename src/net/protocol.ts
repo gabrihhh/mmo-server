@@ -310,6 +310,11 @@ export type CombatEvent =
       readonly radius?: number;
       /** Tipo de mira da habilidade (só cartas): "direction" = aviso em faixa, "area" = círculo. */
       readonly aim?: string;
+      /**
+       * Segundos antes do fim em que o tiro sai da mão (ataque do cajado, Raio; [JOGO-08]): o cliente lança o
+       * projétil visual nesse instante; depois dele andar não cancela. Ausente = sem soltura antecipada.
+       */
+      readonly release?: number;
     }
   | {
       /** Projétil saiu ([JOGO-08]): voa em linha reta de (x, z) na direção (dirX, dirZ) a `speed` m/s até `range` m. */

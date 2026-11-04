@@ -28,6 +28,7 @@ class Member implements ZoneMember {
 }
 
 const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
+const STAFF: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
 
 function zone(pvp: boolean = true): Zone {
   return new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });
@@ -106,6 +107,43 @@ describe("combate (ataque simples)", () => {
     assert.ok(cancelled, "cancelou");
     assert.ok(!missed, "sem miss");
     assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP);
+  });
+
+  it("cajado: andar ANTES do tiro sair cancela; DEPOIS, o tiro chega mesmo se ele se afastar", () => {
+    assert.ok(STAFF.releaseTime > 0, "cajado tem soltura antecipada");
+    const castTicks: number = Math.ceil(STAFF.castTime * TICK_RATE_HZ);
+    const releaseTicks: number = Math.ceil(STAFF.releaseTime * TICK_RATE_HZ);
+    const run = (walkFromTick: number): { cancelled: boolean; damaged: boolean } => {
+      const z = zone();
+      const a = new Member("a");
+      z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, STAFF);
+      z.setAttackTarget("a", "dummy"); // boneco em (0, -2)
+      z.tick(); // tick 1: começa o golpe
+      let cancelled = false;
+      let damaged = false;
+      let seq = 0;
+      for (let t = 2; t <= castTicks + 2; t++) {
+        if (t >= walkFromTick) z.queueInput("a", { seq: ++seq, x: 0, z: 1 }); // se afasta
+        z.tick();
+        cancelled ||= a.events().some((e) => e["type"] === "cast_cancel");
+        damaged ||= a.events().some((e) => e["type"] === "damage" && e["ability"] === STAFF.id);
+      }
+      return { cancelled, damaged };
+    };
+    const early = run(3);
+    assert.ok(early.cancelled && !early.damaged, "andou antes de sair: cancelou, sem dano");
+    const late = run(1 + castTicks - releaseTicks + 1);
+    assert.ok(!late.cancelled && late.damaged, "andou depois de sair: o tiro chegou");
+  });
+
+  it("cast_start do cajado leva release (s antes do fim em que o tiro sai)", () => {
+    const z = zone();
+    const a = new Member("a");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, STAFF);
+    z.setAttackTarget("a", "dummy");
+    z.tick();
+    const start = a.events().find((e) => e["type"] === "cast_start");
+    assert.ok(start !== undefined && typeof start["release"] === "number" && Math.abs(start["release"] - 0.3) < 0.051);
   });
 
   it("fora de alcance não bate (mas o alvo continua fixo)", () => {

@@ -195,6 +195,13 @@ interface Cast {
   readonly aimZ: number;
   /** Tick em que o efeito acontece. */
   readonly endTick: number;
+  /**
+   * Tick em que o tiro sai da mão (`endTick` − `releaseTime`; = `endTick` sem soltura antecipada). A partir dele andar
+   * não cancela mais ([JOGO-05]).
+   */
+  readonly releaseTick: number;
+  /** Alvo estava no alcance quando o tiro saiu (`null` = ainda não saiu): é isso que vale no fim. */
+  inRangeAtRelease: boolean | null;
 }
 
 /** Projétil em voo ([JOGO-08]): sai no fim do lançamento e anda `speed` m/s em linha reta a cada tick. */
@@ -470,7 +477,8 @@ export class Zone {
       return { ok: true };
     }
     const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
-    player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick: this.currentTick + castTicks };
+    const endTick: number = this.currentTick + castTicks;
+    player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick, releaseTick: Zone.releaseTick(ability, endTick), inRangeAtRelease: null };
     this.faceCast(player, player.cast);
     const visual: { x?: number; z?: number; radius?: number; aim?: string } =
       ability.aim === "area"
@@ -488,6 +496,7 @@ export class Zone {
       duration: castTicks * TICK_SECONDS,
       aim: ability.aim,
       ...visual,
+      ...Zone.releaseField(player.cast),
     });
     return { ok: true };
   }
@@ -628,7 +637,8 @@ export class Zone {
     }
     if (Math.sqrt(input.x * input.x + input.z * input.z) >= MIN_INPUT_LENGTH) {
       player.lastMoveTick = this.currentTick;
-      if (player.cast !== null) this.cancelCast(player, player.cast);
+      // Só antes de o tiro sair: o que já saiu da mão chega ([JOGO-05]).
+      if (player.cast !== null && this.currentTick < player.cast.releaseTick) this.cancelCast(player, player.cast);
     }
     let speed: number = MOVE_SPEED;
     const boost: SpeedBoost | null = player.boost;
@@ -655,6 +665,23 @@ export class Zone {
     this.events.push({ type: "cast_cancel", source: player.id, ability: cast.ability.id });
   }
 
+  /** Tick em que o tiro de `ability` sai da mão, num lançamento que termina em `endTick`. */
+  private static releaseTick(ability: AbilityDef, endTick: number): number {
+    return ability.releaseTime > 0 ? endTick - secondsToTicks(ability.releaseTime) : endTick;
+  }
+
+  /** Campo `release` do `cast_start` (s antes do fim em que o tiro sai), só se houver soltura antecipada. */
+  private static releaseField(cast: Cast): { release?: number } {
+    return cast.releaseTick < cast.endTick ? { release: (cast.endTick - cast.releaseTick) * TICK_SECONDS } : {};
+  }
+
+  /** No tick em que o tiro sai, guarda se o alvo estava no alcance (é o que vale no fim, mesmo que ele ande). */
+  private markRelease(player: ZonePlayer, cast: Cast): void {
+    if (cast.inRangeAtRelease !== null || cast.releaseTick >= cast.endTick || this.currentTick < cast.releaseTick) return;
+    const target: Entity | undefined = cast.targetId === null ? undefined : this.entity(cast.targetId);
+    cast.inRangeAtRelease = target !== undefined && !target.dead && Zone.inRange(player, target, cast.ability.range);
+  }
+
   /**
    * Lançamentos, por jogador:
    * - habilidade em andamento: fica virado; no fim, resolve o efeito ({@link resolveAbility});
@@ -668,6 +695,7 @@ export class Zone {
       const cast: Cast | null = player.cast;
       if (cast !== null && cast.kind === "ability") {
         this.faceCast(player, cast);
+        this.markRelease(player, cast);
         if (this.currentTick < cast.endTick) continue;
         player.cast = null;
         this.resolveAbility(player, cast);
@@ -687,9 +715,12 @@ export class Zone {
     const cast: Cast | null = player.cast;
     if (cast !== null && cast.kind === "attack") {
       Zone.face(player, target);
+      this.markRelease(player, cast);
       if (this.currentTick < cast.endTick) return;
       player.cast = null;
-      if (Zone.inRange(player, target, cast.ability.range)) this.damage(player, target, cast.ability.damage, cast.ability.id);
+      if (cast.inRangeAtRelease ?? Zone.inRange(player, target, cast.ability.range)) {
+        this.damage(player, target, cast.ability.damage, cast.ability.id);
+      }
       else this.events.push({ type: "miss", source: player.id, target: target.id, ability: cast.ability.id });
     }
     if (player.cast !== null) return;
@@ -698,9 +729,10 @@ export class Zone {
     const attack: AbilityDef = player.basicAttack;
     if (!Zone.inRange(player, target, attack.range)) return;
     const duration: number = secondsToTicks(attack.castTime);
-    player.cast = { kind: "attack", ability: attack, targetId: target.id, aimX: 0, aimZ: 0, endTick: this.currentTick + duration };
+    const endTick: number = this.currentTick + duration;
+    player.cast = { kind: "attack", ability: attack, targetId: target.id, aimX: 0, aimZ: 0, endTick, releaseTick: Zone.releaseTick(attack, endTick), inRangeAtRelease: null };
     Zone.face(player, target);
-    this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS });
+    this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS, ...Zone.releaseField(player.cast) });
   }
 
   /**
@@ -716,7 +748,7 @@ export class Zone {
     switch (ability.aim) {
       case "target": {
         const target: Entity | undefined = cast.targetId === null ? undefined : this.entity(cast.targetId);
-        if (target !== undefined && !target.dead && Zone.inRange(player, target, ability.range)) {
+        if (target !== undefined && !target.dead && (cast.inRangeAtRelease ?? Zone.inRange(player, target, ability.range))) {
           this.damage(player, target, ability.damage, ability.id);
         } else {
           this.events.push({ type: "miss", source: player.id, target: cast.targetId ?? "", ability: ability.id });
