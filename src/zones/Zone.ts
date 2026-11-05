@@ -7,6 +7,7 @@ import {
   type NpcSnapshot,
   type OwnStatus,
   type BodyType,
+  type EquipSlotName,
   type Look,
   type PlayerInfo,
   type PlayerSnapshot,
@@ -23,7 +24,7 @@ import {
   type MoveParams,
   type MoveState,
 } from "../sim/movement.js";
-import { UNARMED_ATTACK, dashSteps, isMovementAbility, type AbilityDef } from "../items/catalog.js";
+import { ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
   DUMMY_RESPAWN_SECONDS,
@@ -56,12 +57,38 @@ export interface ZoneMember {
   send(text: string): void;
 }
 
-/** Boneco de treino fixo na zona. Metros. */
+/**
+ * O que um NPC fixo da zona faz ([JOGO-11]):
+ * - `dummy`: boneco de treino, parado, morre e reaparece;
+ * - `shooter`: humano **invulnerável** (não é alvo de ninguém) que lança as habilidades de `rotation` (ids do
+ *   catálogo), uma de cada vez, no NPC `target`, com `pauseSeconds` entre o fim de uma e o começo da próxima. Veste o
+ *   conjunto da habilidade da vez (evento `look`);
+ * - `punchingBag`: leva dano mas **não morre** (a vida para em 1); conta como **aliado** (os jogadores curam e
+ *   protegem, não atacam). Chegou em 1: volta à vida cheia `regenDelaySeconds` depois, mesmo apanhando (o atirador
+ *   nunca para). Sem levar dano por `regenDelaySeconds`, também recupera `regenPerSecond` de vida por segundo;
+ * - `brawler`: parado, ataca sozinho com o ataque simples da arma `weapon` quem chegar no alcance (jogadores e
+ *   NPCs); tem vida e morre como o boneco.
+ */
+export type NpcBehavior =
+  | { readonly kind: "dummy" }
+  | { readonly kind: "shooter"; readonly target: string; readonly rotation: readonly string[]; readonly pauseSeconds: number }
+  | { readonly kind: "punchingBag"; readonly regenDelaySeconds: number; readonly regenPerSecond: number }
+  | { readonly kind: "brawler"; readonly weapon: string };
+
+/** NPC fixo na zona (boneco de treino e os de teste, [JOGO-05], [JOGO-11]). Metros. */
 export interface DummyConfig {
   readonly id: string;
   readonly name: string;
   readonly x: number;
   readonly z: number;
+  /** Comportamento; sem = boneco de treino. */
+  readonly behavior?: NpcBehavior;
+  /** Corpo humano: o cliente desenha um personagem vestido em vez do boneco de palha. */
+  readonly body?: BodyType;
+  /** Roupa inicial (humanos). O atirador troca para o conjunto da habilidade da vez. */
+  readonly look?: Look;
+  /** Vida máxima (padrão: a do boneco de treino). */
+  readonly maxHp?: number;
 }
 
 /** Parâmetros de uma zona. */
@@ -106,7 +133,7 @@ const secondsToTicks = (seconds: number): number => Math.max(1, Math.ceil(second
 /** Aparência sem nada vestido (padrão de quem entra sem inventário, ex.: testes). */
 export const NO_LOOK: Look = { hand: null, head: null, chest: null, feet: null };
 
-/** Vida, morte e posição: o que jogadores e bonecos têm em comum. */
+/** Vida, morte, posição e lançamento: o que jogadores e NPCs têm em comum (os dois lançam e atacam). */
 interface Combatant {
   readonly id: string;
   readonly name: string;
@@ -123,6 +150,14 @@ interface Combatant {
   /** Redução de dano (0..1) e o tick em que acaba ([JOGO-09]); 0 = sem redução. */
   reduction: number;
   reductionUntilTick: number;
+  /** Ataque simples (jogador: da arma vestida; NPC brigão: da arma dele; os outros não atacam). */
+  basicAttack: AbilityDef;
+  /** Alvo fixo do ataque simples (`null` = nenhum). */
+  attackTarget: string | null;
+  /** Último tick em que andou de verdade (input ≥ {@link MIN_INPUT_LENGTH}); -Infinity = nunca (NPCs). */
+  lastMoveTick: number;
+  /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
+  cast: Cast | null;
 }
 
 /** Jogador dentro da zona (estado interno; o que vai para a rede é {@link PlayerSnapshot}). */
@@ -141,20 +176,12 @@ interface ZonePlayer extends Combatant {
   lastReceivedSeq: number;
   /** Último seq aplicado na simulação; vai como `ack` no snapshot dele. */
   lastAppliedSeq: number;
-  /** Ataque simples da arma vestida (muda com o inventário). */
-  basicAttack: AbilityDef;
   /** Habilidades (cartas) vestidas, por id ([JOGO-06]). */
   abilities: ReadonlyMap<string, AbilityDef>;
   /** O que veste (aparência que os outros veem). */
   look: Look;
   /** Tick em que cada habilidade fica pronta de novo (recarga), por id. */
   readonly readyTick: Map<string, number>;
-  /** Alvo fixo do ataque simples (`null` = nenhum). */
-  attackTarget: string | null;
-  /** Último tick em que o jogador andou de verdade (input ≥ {@link MIN_INPUT_LENGTH}); -Infinity = nunca. */
-  lastMoveTick: number;
-  /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
-  cast: Cast | null;
 }
 
 /**
@@ -211,8 +238,8 @@ interface Cast {
 /** Projétil em voo ([JOGO-08]): sai no fim do lançamento e anda `speed` m/s em linha reta a cada tick. */
 interface Projectile {
   readonly id: number;
-  /** Quem lançou (continua valendo para o dano mesmo se ele morrer ou sair). */
-  readonly source: ZonePlayer;
+  /** Quem lançou, jogador ou NPC (continua valendo para o dano mesmo se ele morrer ou sair). */
+  readonly source: Entity;
   readonly ability: AbilityDef;
   /** Posição atual (m) e direção (vetor unitário). */
   x: number;
@@ -239,10 +266,21 @@ export type CastResult = { readonly ok: true } | { readonly ok: false; readonly 
 /** "Raio do corpo" (m) somado às áreas e à largura da linha: acerta quem encosta na borda. */
 const BODY_RADIUS = 0.4;
 
-/** Boneco de treino: parado, sem regeneração, reaparece no mesmo lugar. */
+/** NPC fixo (boneco de treino e os de teste, [JOGO-11]): parado, reaparece no mesmo lugar. */
 interface ZoneDummy extends Combatant {
   readonly kind: "dummy";
   readonly home: MoveState;
+  readonly behavior: NpcBehavior;
+  /** Corpo humano (`null` = boneco de palha) e o que veste. */
+  readonly body: BodyType | null;
+  look: Look;
+  /** Atirador: próxima habilidade da rotação e o tick em que pode começar. */
+  rotationIndex: number;
+  nextActionTick: number;
+  /** Último tick em que levou dano (saco de pancadas: só recupera vida depois de um tempo sem apanhar). */
+  lastHitTick: number;
+  /** Saco de pancadas em 1 de vida: tick em que volta à vida cheia (0 = não está esperando). */
+  refillTick: number;
 }
 
 type Entity = ZonePlayer | ZoneDummy;
@@ -277,20 +315,34 @@ export class Zone {
   constructor(readonly config: ZoneConfig) {
     for (const dummy of config.dummies) {
       const home: MoveState = { x: dummy.x, y: 0, z: dummy.z, rotY: 0 };
+      const behavior: NpcBehavior = dummy.behavior ?? { kind: "dummy" };
+      const maxHp: number = dummy.maxHp ?? DUMMY_MAX_HP;
       this.dummies.set(dummy.id, {
         kind: "dummy",
         id: dummy.id,
         name: dummy.name,
         state: home,
         home,
-        hp: DUMMY_MAX_HP,
-        maxHp: DUMMY_MAX_HP,
+        behavior,
+        body: dummy.body ?? null,
+        look: dummy.look ?? NO_LOOK,
+        hp: maxHp,
+        maxHp,
         dead: false,
         respawnTick: 0,
         shield: 0,
         shieldUntilTick: 0,
         reduction: 0,
         reductionUntilTick: 0,
+        basicAttack: behavior.kind === "brawler" ? (getItem(behavior.weapon)?.basicAttack ?? UNARMED_ATTACK) : UNARMED_ATTACK,
+        attackTarget: null,
+        lastMoveTick: Number.NEGATIVE_INFINITY,
+        cast: null,
+        rotationIndex: 0,
+        // Começa 2 s depois de a zona subir (dá tempo de o cliente desenhar tudo).
+        nextActionTick: secondsToTicks(2),
+        lastHitTick: Number.NEGATIVE_INFINITY,
+        refillTick: 0,
       });
     }
   }
@@ -317,7 +369,15 @@ export class Zone {
 
   /** Bonecos/monstros como vão no `welcome` e no `snapshot`. */
   npcSnapshots(): NpcSnapshot[] {
-    return Array.from(this.dummies.values(), (dummy) => ({ ...Zone.snapshot(dummy), name: dummy.name }));
+    return Array.from(this.dummies.values(), (dummy) => ({
+      ...Zone.snapshot(dummy),
+      name: dummy.name,
+      // Humano: o cliente desenha um personagem com esse corpo e roupa ([JOGO-11]).
+      ...(dummy.body !== null ? { body: dummy.body, look: dummy.look } : {}),
+      // Aliado (saco de pancadas: dá para curar) e quem não serve de alvo de ataque (atirador invulnerável, aliado).
+      ...(dummy.behavior.kind === "punchingBag" ? { ally: true } : {}),
+      ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" ? { targetable: false } : {}),
+    }));
   }
 
   /**
@@ -511,29 +571,40 @@ export class Zone {
       this.applyMovementAbility(player, ability, aimX, aimZ);
       return { ok: true };
     }
+    this.beginAbilityCast(player, ability, targetId, aimX, aimZ);
+    return { ok: true };
+  }
+
+  /**
+   * Começa o lançamento de `ability` (já validada) por `caster`, jogador ou NPC: guarda o {@link Cast}, vira para a
+   * mira e manda `cast_start` com o visual (ponto, raio e mira do aviso no chão; soltura do tiro). Mira "target"/"ally":
+   * `targetId`; "direction": (aimX, aimZ) unitário; "area": ponto no chão; outras: posição de quem lança.
+   */
+  private beginAbilityCast(caster: Entity, ability: AbilityDef, targetId: string | null, aimX: number, aimZ: number): Cast {
     const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
     const endTick: number = this.currentTick + castTicks;
-    player.cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick, releaseTick: Zone.releaseTick(ability, endTick), inRangeAtRelease: null };
-    this.faceCast(player, player.cast);
+    const cast: Cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick, releaseTick: Zone.releaseTick(ability, endTick), inRangeAtRelease: null };
+    caster.cast = cast;
+    this.faceCast(caster, cast);
     const visual: { x?: number; z?: number; radius?: number; aim?: string } =
       ability.aim === "area"
         ? { x: aimX, z: aimZ, radius: ability.radius }
         : ability.aim === "direction"
-          ? { x: player.state.x + aimX * ability.range, z: player.state.z + aimZ * ability.range, radius: ability.radius }
+          ? { x: caster.state.x + aimX * ability.range, z: caster.state.z + aimZ * ability.range, radius: ability.radius }
           : ability.aim === "area_self"
             ? { radius: ability.radius }
             : {};
     this.events.push({
       type: "cast_start",
-      source: player.id,
+      source: caster.id,
       ability: ability.id,
       target: targetId ?? "",
       duration: castTicks * TICK_SECONDS,
       aim: ability.aim,
       ...visual,
-      ...Zone.releaseField(player.cast),
+      ...Zone.releaseField(cast),
     });
-    return { ok: true };
+    return cast;
   }
 
   /**
@@ -597,8 +668,8 @@ export class Zone {
   }
 
   /**
-   * Um passo da simulação, nesta ordem: renascimentos → movimento → lançamentos (habilidades e ataque
-   * simples) → regeneração/escudos → snapshot. Os lançamentos vêm depois do movimento: quem está lançando
+   * Um passo da simulação, nesta ordem: renascimentos → movimento → projéteis → decisão dos NPCs ({@link npcThink}) →
+   * lançamentos (habilidades e ataque simples, de jogadores e NPCs) → regeneração/escudos → snapshot. Os lançamentos vêm depois do movimento: quem está lançando
    * termina o tick virado para o alvo/ponto.
    * Morto não anda (os inputs são consumidos e confirmados sem mover, para o cliente não acumular).
    */
@@ -608,6 +679,7 @@ export class Zone {
     this.applyMovement();
     // Antes dos lançamentos: o projétil que sai neste tick começa a andar só no próximo (o cliente desenha igual).
     this.moveProjectiles();
+    this.npcThink();
     this.applyCasts();
     this.regenerate();
     this.sendSnapshots();
@@ -712,7 +784,7 @@ export class Zone {
   }
 
   /** No tick em que o tiro sai, guarda se o alvo estava no alcance (é o que vale no fim, mesmo que ele ande). */
-  private markRelease(player: ZonePlayer, cast: Cast): void {
+  private markRelease(player: Entity, cast: Cast): void {
     if (cast.inRangeAtRelease !== null || cast.releaseTick >= cast.endTick || this.currentTick < cast.releaseTick) return;
     const target: Entity | undefined = cast.targetId === null ? undefined : this.entity(cast.targetId);
     cast.inRangeAtRelease = target !== undefined && !target.dead && Zone.inRange(player, target, cast.ability.range);
@@ -726,21 +798,83 @@ export class Zone {
    *   O golpe seguinte pode começar no mesmo tick: com lançamento de 1 s, bate 1 vez por segundo.
    */
   private applyCasts(): void {
-    for (const player of this.players.values()) {
-      if (player.dead) continue;
-      const cast: Cast | null = player.cast;
+    for (const caster of this.entities()) {
+      if (caster.dead) continue;
+      const cast: Cast | null = caster.cast;
       if (cast !== null && cast.kind === "ability") {
-        this.faceCast(player, cast);
-        this.markRelease(player, cast);
+        this.faceCast(caster, cast);
+        this.markRelease(caster, cast);
         if (this.currentTick < cast.endTick) continue;
-        player.cast = null;
-        this.resolveAbility(player, cast);
+        caster.cast = null;
+        this.resolveAbility(caster, cast);
       }
-      this.applyAttack(player);
+      this.applyAttack(caster);
     }
   }
 
-  private applyAttack(player: ZonePlayer): void {
+  /**
+   * Decisão dos NPCs a cada tick ([JOGO-11]), antes dos lançamentos:
+   * - atirador: sem lançamento em andamento e passada a pausa, começa a próxima habilidade da rotação no alvo dele;
+   * - brigão: fixa como alvo do ataque simples o inimigo mais perto no alcance (o golpe em si é o mesmo dos jogadores,
+   *   {@link applyAttack}); ninguém no alcance = sem alvo.
+   */
+  private npcThink(): void {
+    for (const npc of this.dummies.values()) {
+      if (npc.dead) continue;
+      if (npc.behavior.kind === "shooter") this.shooterThink(npc, npc.behavior);
+      else if (npc.behavior.kind === "brawler") this.brawlerThink(npc);
+    }
+  }
+
+  private shooterThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "shooter" }>): void {
+    if (npc.cast !== null || this.currentTick < npc.nextActionTick || behavior.rotation.length === 0) return;
+    const target: Entity | undefined = this.entity(behavior.target);
+    if (target === undefined || target.dead) return;
+    const abilityId: string = behavior.rotation[npc.rotationIndex % behavior.rotation.length] ?? "";
+    npc.rotationIndex++;
+    const found: { item: ItemDef; ability: AbilityDef } | undefined = Zone.findAbility(abilityId);
+    if (found === undefined) return;
+    const look: Look = Zone.setLook(found.item);
+    if (!Zone.sameLook(look, npc.look)) {
+      npc.look = look;
+      this.events.push({ type: "look", id: npc.id, look });
+    }
+    const ability: AbilityDef = found.ability;
+    const dx: number = target.state.x - npc.state.x;
+    const dz: number = target.state.z - npc.state.z;
+    const length: number = Math.sqrt(dx * dx + dz * dz) || 1;
+    // Mira como um jogador faria: no alvo, na direção dele ou no ponto onde ele está.
+    const targetId: string | null = ability.aim === "target" ? target.id : null;
+    const aimX: number = ability.aim === "direction" ? dx / length : target.state.x;
+    const aimZ: number = ability.aim === "direction" ? dz / length : target.state.z;
+    const cast: Cast = this.beginAbilityCast(npc, ability, targetId, aimX, aimZ);
+    npc.nextActionTick = cast.endTick + secondsToTicks(behavior.pauseSeconds);
+  }
+
+  private brawlerThink(npc: ZoneDummy): void {
+    const range: number = npc.basicAttack.range;
+    const current: Entity | undefined = npc.attackTarget === null ? undefined : this.entity(npc.attackTarget);
+    if (current !== undefined && !current.dead && this.isEnemy(npc, current) && Zone.inRange(npc, current, range)) return;
+    let nearest: Entity | null = null;
+    let nearestDistance: number = Infinity;
+    for (const enemy of this.enemiesOf(npc)) {
+      const dx: number = enemy.state.x - npc.state.x;
+      const dz: number = enemy.state.z - npc.state.z;
+      const distance: number = Math.sqrt(dx * dx + dz * dz);
+      if (distance <= range + RANGE_TOLERANCE && distance < nearestDistance) {
+        nearest = enemy;
+        nearestDistance = distance;
+      }
+    }
+    if (nearest === null && npc.cast?.kind === "attack") {
+      // Ficou sem ninguém no meio do golpe: cancela (o cliente para a animação), como quando o jogador anda.
+      this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
+      npc.cast = null;
+    }
+    npc.attackTarget = nearest?.id ?? null;
+  }
+
+  private applyAttack(player: Entity): void {
     if (player.dead || player.attackTarget === null) return;
     const target: Entity | undefined = this.entity(player.attackTarget);
     if (target === undefined || target.dead || !this.validAttackTarget(player, player.basicAttack, target)) {
@@ -780,7 +914,7 @@ export class Zone {
    * - area_self: dano em todos ao redor;
    * - self: cura e/ou escudo em quem lançou.
    */
-  private resolveAbility(player: ZonePlayer, cast: Cast): void {
+  private resolveAbility(player: Entity, cast: Cast): void {
     const ability: AbilityDef = cast.ability;
     switch (ability.aim) {
       case "target": {
@@ -832,7 +966,7 @@ export class Zone {
         this.areaDamage(player, ability, player.state.x, player.state.z);
         // Cura/escudo em área: em você e nos aliados em volta ([JOGO-09]).
         if (ability.heal > 0 || ability.shield > 0) {
-          for (const ally of this.players.values()) {
+          for (const ally of this.entities()) {
             if (!Zone.isAlly(ally)) continue;
             const dx: number = ally.state.x - player.state.x;
             const dz: number = ally.state.z - player.state.z;
@@ -860,7 +994,7 @@ export class Zone {
   }
 
   /** Solta um projétil de quem lançou, na direção (dirX, dirZ) unitária ([JOGO-08]). */
-  private launchProjectile(player: ZonePlayer, ability: AbilityDef, dirX: number, dirZ: number): void {
+  private launchProjectile(player: Entity, ability: AbilityDef, dirX: number, dirZ: number): void {
     const projectile: Projectile = {
       id: this.nextProjectileId++,
       source: player,
@@ -940,7 +1074,7 @@ export class Zone {
    * Cura e/ou escudo de `ability` em `target` (você mesmo ou um aliado, [JOGO-09]). A cura não passa da vida
    * máxima (o evento `heal` leva quanto curou de fato); o escudo substitui o anterior.
    */
-  private support(source: ZonePlayer, target: Entity, ability: AbilityDef): void {
+  private support(source: Entity, target: Entity, ability: AbilityDef): void {
     if (target.dead) return;
     if (ability.heal > 0) {
       const healed: number = Math.min(target.maxHp - target.hp, ability.heal);
@@ -954,7 +1088,7 @@ export class Zone {
   }
 
   /** Dano em todos os inimigos a até `radius` (+ corpo) do ponto, e o evento visual do impacto. */
-  private areaDamage(player: ZonePlayer, ability: AbilityDef, x: number, z: number): void {
+  private areaDamage(player: Entity, ability: AbilityDef, x: number, z: number): void {
     this.events.push({ type: "impact", source: player.id, ability: ability.id, x, z, radius: ability.radius });
     if (ability.damage <= 0) return;
     for (const enemy of this.enemiesOf(player)) {
@@ -964,35 +1098,47 @@ export class Zone {
     }
   }
 
-  /** `true` se `player` pode atingir `target`: vivo, não é ele mesmo, e jogador só com PvP na zona. */
-  private isEnemy(player: ZonePlayer, target: Entity): boolean {
-    if (target.dead || target.id === player.id) return false;
-    return target.kind === "dummy" || this.config.pvp;
+  /**
+   * `true` se `source` pode atingir `target` (vivo e não é ele mesmo). Atirador de teste é invulnerável (ninguém o
+   * atinge). Jogador atinge NPCs (menos o saco de pancadas, que é aliado) e jogadores só com PvP na zona. NPC
+   * atirador só atinge o alvo dele; brigão atinge todos ([JOGO-11]); boneco não ataca.
+   */
+  private isEnemy(source: Entity, target: Entity): boolean {
+    if (target.dead || target.id === source.id) return false;
+    if (target.kind === "dummy" && target.behavior.kind === "shooter") return false;
+    if (source.kind === "dummy") {
+      if (source.behavior.kind === "shooter") return target.id === source.behavior.target;
+      return source.behavior.kind === "brawler";
+    }
+    if (target.kind === "dummy") return target.behavior.kind !== "punchingBag";
+    return this.config.pvp;
   }
 
   /**
-   * `true` se um jogador pode curar/proteger `target` ([JOGO-09]): jogador vivo — você mesmo ou outro. Ainda não há
-   * grupos, então todo jogador conta como aliado, mesmo numa zona com PvP (onde ele também é inimigo).
+   * `true` se um jogador pode curar/proteger `target` ([JOGO-09]): jogador vivo — você mesmo ou outro — ou o saco de
+   * pancadas de teste ([JOGO-11]). Ainda não há grupos, então todo jogador conta como aliado, mesmo numa zona com PvP
+   * (onde ele também é inimigo). ATENÇÃO: mesma regra em mmo-client/scripts/world/zone.gd (get_allies).
    */
   private static isAlly(target: Entity): boolean {
-    return target.kind === "player" && !target.dead;
+    if (target.dead) return false;
+    return target.kind === "player" || target.behavior.kind === "punchingBag";
   }
 
   /**
    * `true` se `target` serve de alvo fixo para o ataque simples `attack`: inimigo (dano) ou, no ataque de cura
    * (mira "ally"), outro jogador vivo (você mesmo não: o alvo fixo é sempre outro).
    */
-  private validAttackTarget(player: ZonePlayer, attack: AbilityDef, target: Entity): boolean {
+  private validAttackTarget(player: Entity, attack: AbilityDef, target: Entity): boolean {
     if (attack.aim === "ally") return target.id !== player.id && Zone.isAlly(target);
     return this.isEnemy(player, target);
   }
 
-  private enemiesOf(player: ZonePlayer): Entity[] {
+  private enemiesOf(player: Entity): Entity[] {
     return this.entities().filter((entity) => this.isEnemy(player, entity));
   }
 
   /** Vira quem lança para o alvo, o ponto (área) ou a direção (linha) do lançamento. */
-  private faceCast(player: ZonePlayer, cast: Cast): void {
+  private faceCast(player: Entity, cast: Cast): void {
     if (cast.targetId !== null) {
       const target: Entity | undefined = this.entity(cast.targetId);
       if (target !== undefined) Zone.face(player, target);
@@ -1005,6 +1151,28 @@ export class Zone {
       const dz: number = cast.aimZ - player.state.z;
       if (dx * dx + dz * dz > 1e-6) player.state = { ...player.state, rotY: Math.atan2(-dx, -dz) };
     }
+  }
+
+  /** Habilidade (carta ou ataque simples) `abilityId` do catálogo e o item que a dá, ou `undefined`. */
+  private static findAbility(abilityId: string): { item: ItemDef; ability: AbilityDef } | undefined {
+    for (const item of Object.values(ITEMS)) {
+      const ability: AbilityDef | undefined = [item.basicAttack, ...item.abilities].find((a) => a?.id === abilityId) ?? undefined;
+      if (ability !== undefined && ability !== null) return { item, ability };
+    }
+    return undefined;
+  }
+
+  /**
+   * Aparência com o conjunto de `item` inteiro vestido (um item por slot, [JOGO-09]), com o próprio `item` no slot
+   * dele (o Treino tem duas armas: quem lança o Raio segura o cajado, não a espada).
+   */
+  private static setLook(item: ItemDef): Look {
+    const look: Record<EquipSlotName, string | null> = { hand: null, head: null, chest: null, feet: null };
+    for (const other of Object.values(ITEMS)) {
+      if (other.set === item.set && look[other.slot] === null) look[other.slot] = other.id;
+    }
+    look[item.slot] = item.id;
+    return look;
   }
 
   private static refuse(reason: CastFailure, message: string): CastResult {
@@ -1032,6 +1200,8 @@ export class Zone {
    */
   private damage(source: Entity, target: Entity, amount: number, abilityId: string): void {
     if (target.dead || amount <= 0) return;
+    // Atirador de teste: invulnerável ([JOGO-11]).
+    if (target.kind === "dummy" && target.behavior.kind === "shooter") return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
     const reduced: boolean = target.reduction > 0 && this.currentTick < target.reductionUntilTick;
     let remaining: number = reduced ? Math.round(amount * (1 - target.reduction)) : amount;
@@ -1041,8 +1211,11 @@ export class Zone {
       target.shield -= absorbed;
       remaining -= absorbed;
     }
-    const dealt: number = Math.min(target.hp, remaining);
+    // Saco de pancadas: não morre, a vida para em 1 ([JOGO-11]).
+    const unkillable: boolean = target.kind === "dummy" && target.behavior.kind === "punchingBag";
+    const dealt: number = Math.min(unkillable ? Math.max(0, target.hp - 1) : target.hp, remaining);
     target.hp -= dealt;
+    if (target.kind === "dummy") target.lastHitTick = this.currentTick;
     this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId });
     if (target.hp > 0) return;
     target.hp = 0;
@@ -1051,14 +1224,14 @@ export class Zone {
     target.respawnTick = this.currentTick + secondsToTicks(respawnSeconds);
     target.shield = 0;
     target.reduction = 0;
+    target.attackTarget = null;
+    target.cast = null;
     if (target.kind === "player") {
-      target.attackTarget = null;
-      target.cast = null;
       target.inputs.length = 0;
       target.boost = null;
       target.dash = null;
     }
-    for (const player of this.players.values()) if (player.attackTarget === target.id) player.attackTarget = null;
+    for (const entity of this.entities()) if (entity.attackTarget === target.id) entity.attackTarget = null;
     this.events.push({ type: "death", id: target.id, killer: source.id });
   }
 
@@ -1066,6 +1239,21 @@ export class Zone {
     for (const entity of this.entities()) {
       if (entity.shield > 0 && this.currentTick >= entity.shieldUntilTick) entity.shield = 0;
       if (entity.reduction > 0 && this.currentTick >= entity.reductionUntilTick) entity.reduction = 0;
+    }
+    // Saco de pancadas: recupera vida depois de um tempo sem apanhar ([JOGO-11]).
+    for (const npc of this.dummies.values()) {
+      if (npc.dead || npc.behavior.kind !== "punchingBag") continue;
+      const delay: number = secondsToTicks(npc.behavior.regenDelaySeconds);
+      // Chegou em 1: enche de novo depois do tempo, mesmo apanhando.
+      if (npc.hp <= 1 && npc.refillTick === 0) npc.refillTick = this.currentTick + delay;
+      if (npc.refillTick !== 0 && this.currentTick >= npc.refillTick) {
+        npc.hp = npc.maxHp;
+        npc.refillTick = 0;
+        continue;
+      }
+      if (npc.hp > 1) npc.refillTick = 0;
+      if (this.currentTick - npc.lastHitTick < delay) continue;
+      npc.hp = Math.min(npc.maxHp, npc.hp + npc.behavior.regenPerSecond * TICK_SECONDS);
     }
     for (const player of this.players.values()) {
       if (player.dead) continue;

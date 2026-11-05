@@ -281,9 +281,20 @@ export interface PlayerSnapshot {
   readonly maxMana?: number;
 }
 
-/** Boneco de treino / monstro: mesmos campos do jogador + nome. Vai em `welcome.npcs` e `snapshot.npcs`. */
+/**
+ * Boneco de treino / NPC: mesmos campos do jogador + nome. Vai em `welcome.npcs` e `snapshot.npcs`.
+ * Campos opcionais dos NPCs de teste ([JOGO-11]); cliente antigo ignora.
+ * ATENÇÃO: lidos em mmo-client/scripts/network/player_state.gd (from_snapshot) e scripts/world/zone.gd.
+ */
 export interface NpcSnapshot extends PlayerSnapshot {
   readonly name: string;
+  /** Corpo humano: desenhar um personagem com esse corpo (em vez do boneco de palha), vestindo `look`. */
+  readonly body?: BodyType;
+  readonly look?: Look;
+  /** Aliado: jogadores podem curar/proteger (saco de pancadas). */
+  readonly ally?: boolean;
+  /** `false`: não serve de alvo de ataque dos jogadores (atirador invulnerável, aliado). Sem campo = serve. */
+  readonly targetable?: boolean;
 }
 
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
