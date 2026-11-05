@@ -61,7 +61,7 @@ export interface ZoneMember {
  * O que um NPC fixo da zona faz ([JOGO-11]):
  * - `dummy`: boneco de treino, parado, morre e reaparece;
  * - `shooter`: humano **invulnerável** (não é alvo de ninguém) que lança as habilidades de `rotation` (ids do
- *   catálogo), uma de cada vez, no NPC `target`, com `pauseSeconds` entre o fim de uma e o começo da próxima. Veste o
+ *   catálogo), uma de cada vez, no NPC `target` (os tiros e áreas também acertam jogadores no caminho), com `pauseSeconds` entre o fim de uma e o começo da próxima. Veste o
  *   conjunto da habilidade da vez (evento `look`);
  * - `punchingBag`: leva dano mas **não morre** (a vida para em 1); conta como **aliado** (os jogadores curam e
  *   protegem, não atacam). Chegou em 1: volta à vida cheia `regenDelaySeconds` depois, mesmo apanhando (o atirador
@@ -1117,13 +1117,14 @@ export class Zone {
   /**
    * `true` se `source` pode atingir `target` (vivo e não é ele mesmo). Atirador de teste é invulnerável (ninguém o
    * atinge). Jogador atinge NPCs (menos o saco de pancadas, que é aliado) e jogadores só com PvP na zona. NPC
-   * atirador só atinge o alvo dele; brigão atinge todos ([JOGO-11]); boneco não ataca.
+   * atirador atinge o alvo dele e jogadores (no caminho/área); brigão atinge todos ([JOGO-11]); boneco não ataca.
    */
   private isEnemy(source: Entity, target: Entity): boolean {
     if (target.dead || target.id === source.id) return false;
     if (target.kind === "dummy" && target.behavior.kind === "shooter") return false;
     if (source.kind === "dummy") {
-      if (source.behavior.kind === "shooter") return target.id === source.behavior.target;
+      // Atirador: o alvo dele e qualquer jogador no caminho/área (dá para desviar e testar defesa); outros NPCs não.
+      if (source.behavior.kind === "shooter") return target.id === source.behavior.target || target.kind === "player";
       return source.behavior.kind === "brawler";
     }
     if (target.kind === "dummy") return target.behavior.kind !== "punchingBag";

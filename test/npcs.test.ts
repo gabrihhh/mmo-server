@@ -79,6 +79,17 @@ describe("NPCs de teste", () => {
     assert.strictEqual(a.field("shooter", "targetable"), false);
   });
 
+  it("tiros e áreas do atirador acertam jogadores no caminho/área (não só o saco)", () => {
+    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["meteor", "fireball"], pauseSeconds: 0.5 } }]);
+    const a = new Member("a");
+    // Em cima do saco (área do meteoro) e na linha da bola de fogo.
+    z.join(a, { x: 0, y: 0, z: -9, rotY: 0 });
+    ticks(z, 6);
+    const hits: unknown[] = a.allEvents.filter((e) => e["type"] === "damage" && e["source"] === "shooter" && e["target"] === "a").map((e) => e["ability"]);
+    assert.ok(hits.includes("meteor"), "meteoro pegou o jogador na área");
+    assert.ok(hits.includes("fireball"), "bola de fogo pegou o jogador no caminho");
+  });
+
   it("atirador é invulnerável e não é alvo de ataque", () => {
     const z = zone([BAG, SHOOTER]);
     const a = new Member("a");
