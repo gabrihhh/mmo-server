@@ -25,6 +25,11 @@ class Member implements ZoneMember {
     const events: unknown = data["events"];
     if (Array.isArray(events)) for (const e of events) if (typeof e === "object" && e !== null) this.allEvents.push({ ...e });
   }
+  /** Eventos do último snapshot. */
+  events(): Array<Record<string, unknown>> {
+    const events: unknown = this.last["events"];
+    return Array.isArray(events) ? events.filter((e): e is Record<string, unknown> => typeof e === "object" && e !== null) : [];
+  }
   /** Campo `field` da entidade `id` no último snapshot. */
   field(id: string, field: string): unknown {
     for (const key of ["players", "npcs"]) {
@@ -104,7 +109,8 @@ describe("NPCs de teste", () => {
   });
 
   it("saco em 1 de vida volta à vida cheia depois do tempo, mesmo apanhando sem parar", () => {
-    const z = zone([{ ...BAG, maxHp: 30 }, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt"], pauseSeconds: 0 } }]);
+    // Três posições de carta diferentes (hand:2, hand:0, hand:1): não esperam a recarga uma da outra.
+    const z = zone([{ ...BAG, maxHp: 30 }, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt", "fireball", "meteor"], pauseSeconds: 0 } }]);
     const a = new Member("a");
     z.join(a, { x: 30, y: 0, z: 30, rotY: 0 });
     const seen: number[] = [];
@@ -128,6 +134,23 @@ describe("NPCs de teste", () => {
     assert.ok(typeof hit === "number" && hit < DUMMY_MAX_HP, "levou o raio");
     ticks(z, 5);
     assert.strictEqual(a.field("bag", "hp"), DUMMY_MAX_HP, "encheu de novo");
+  });
+
+  it("atirador respeita a recarga da POSIÇÃO da carta: habilidade de outro item na mesma posição espera", () => {
+    // Bola de fogo (Treino, hand:0, recarga 4 s) e Lança de gelo (Mago, hand:0): mesma posição.
+    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["fireball", "ice_lance"], pauseSeconds: 0 } }]);
+    const a = new Member("a");
+    z.join(a, { x: 30, y: 0, z: 30, rotY: 0 });
+    const startTicks: number[] = [];
+    for (let i = 0; i < 10 * TICK_RATE_HZ; i++) {
+      z.tick();
+      if (a.events().length === 0) continue;
+      for (const e of a.events()) if (e["type"] === "cast_start" && e["source"] === "shooter") startTicks.push(i);
+    }
+    assert.ok(startTicks.length >= 2);
+    const gap: number = ((startTicks[1] ?? 0) - (startTicks[0] ?? 0)) / TICK_RATE_HZ;
+    const fireball: AbilityDef | undefined = ITEMS["training_staff"]?.abilities[0];
+    assert.ok(fireball !== undefined && gap >= fireball.cooldown - 0.05, `esperou a recarga da bola de fogo (${gap} s)`);
   });
 
   it("brigão bate em quem chega perto (não em quem está longe), morre e reaparece", () => {

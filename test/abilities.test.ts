@@ -120,6 +120,25 @@ describe("habilidades (cast)", () => {
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP);
   });
 
+  it("recarga é da POSIÇÃO da carta: trocar de arma não zera; a nova espera o que faltava e depois usa a dela", () => {
+    const { z } = setup();
+    const meteor: AbilityDef = def("training_staff", "meteor"); // hand:1, recarga 12 s
+    const nova: AbilityDef = def("arcane_staff", "arcane_nova"); // hand:1 do Mago
+    z.setLoadout("a", UNARMED_ATTACK, new Map([[meteor.id, meteor]]));
+    assert.deepStrictEqual(z.castAbility("a", cast("meteor", { x: 0, z: -5 })), { ok: true });
+    for (let i = 0; i < Math.ceil(meteor.castTime * TICK_RATE_HZ) + 1; i++) z.tick();
+    // Troca de arma: a carta da mesma posição agora é a Nova arcana.
+    z.setLoadout("a", UNARMED_ATTACK, new Map([[nova.id, nova]]));
+    const early = z.castAbility("a", cast("arcane_nova"));
+    assert.ok(!early.ok && early.reason === "on_cooldown", "espera o que faltava do meteoro");
+    for (let i = 0; i < meteor.cooldown * TICK_RATE_HZ; i++) z.tick();
+    assert.deepStrictEqual(z.castAbility("a", cast("arcane_nova")), { ok: true }, "depois da recarga do meteoro, pode");
+    for (let i = 0; i < Math.ceil(nova.castTime * TICK_RATE_HZ) + 1; i++) z.tick();
+    // Agora vale a recarga da própria Nova: pronta depois de nova.cooldown, não de meteor.cooldown.
+    for (let i = 0; i < nova.cooldown * TICK_RATE_HZ - Math.ceil(nova.castTime * TICK_RATE_HZ); i++) z.tick();
+    assert.deepStrictEqual(z.castAbility("a", cast("arcane_nova")), { ok: true }, "recarga nova = a da Nova arcana");
+  });
+
   it("andar durante o lançamento cancela a habilidade: sem efeito, mana devolvida, recarga zerada", () => {
     const { z, a } = setup({ x: 50, z: 50 });
     const meteor: AbilityDef = def("training_staff", "meteor");

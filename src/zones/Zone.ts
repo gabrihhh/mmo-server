@@ -158,6 +158,12 @@ interface Combatant {
   lastMoveTick: number;
   /** Lançamento em andamento (`null` = nenhum). O efeito só sai no `endTick`, se o alvo ainda estiver no alcance. */
   cast: Cast | null;
+  /**
+   * Tick em que cada POSIÇÃO de carta fica pronta de novo (recarga), por {@link Zone.cardSlot} ("hand:0".."feet:0").
+   * Por posição, não por habilidade ([JOGO-06]): trocar de item não zera a recarga — a habilidade nova que entrou na
+   * mesma posição espera o que faltava da anterior; depois de usada, vale a recarga dela.
+   */
+  readonly readyTick: Map<string, number>;
 }
 
 /** Jogador dentro da zona (estado interno; o que vai para a rede é {@link PlayerSnapshot}). */
@@ -180,8 +186,6 @@ interface ZonePlayer extends Combatant {
   abilities: ReadonlyMap<string, AbilityDef>;
   /** O que veste (aparência que os outros veem). */
   look: Look;
-  /** Tick em que cada habilidade fica pronta de novo (recarga), por id. */
-  readonly readyTick: Map<string, number>;
 }
 
 /**
@@ -338,6 +342,7 @@ export class Zone {
         attackTarget: null,
         lastMoveTick: Number.NEGATIVE_INFINITY,
         cast: null,
+        readyTick: new Map(),
         rotationIndex: 0,
         // Começa 2 s depois de a zona subir (dá tempo de o cliente desenhar tudo).
         nextActionTick: secondsToTicks(2),
@@ -459,7 +464,7 @@ export class Zone {
 
   /**
    * Troca o ataque simples, as cartas, a aparência e a vida extra dos itens (o inventário mudou). A recarga de cada
-   * habilidade é mantida. Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
+   * POSIÇÃO de carta é mantida ({@link Combatant.readyTick}): a carta nova espera o que faltava da anterior. Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
    * Vida máxima nova: a vida atual acompanha na MESMA proporção (tirar e vestir de novo não cura).
    * Se o alvo fixo não serve mais para o ataque novo (ex.: aliado e agora é uma espada), ele é solto.
    */
@@ -514,7 +519,7 @@ export class Zone {
     const ability: AbilityDef | undefined = player.abilities.get(request.abilityId);
     if (ability === undefined) return Zone.refuse("ability_not_equipped", "Essa habilidade não está vestida.");
     if (!ability.available) return Zone.refuse("ability_unavailable", `${ability.title}: disponível em breve.`);
-    const readyTick: number = player.readyTick.get(ability.id) ?? 0;
+    const readyTick: number = player.readyTick.get(Zone.cardSlot(ability.id)) ?? 0;
     if (this.currentTick < readyTick) {
       const seconds: number = (readyTick - this.currentTick) * TICK_SECONDS;
       return Zone.refuse("on_cooldown", `${ability.title} recarrega em ${seconds.toFixed(1)} s.`);
@@ -566,7 +571,7 @@ export class Zone {
     }
 
     player.mana -= ability.manaCost;
-    player.readyTick.set(ability.id, this.currentTick + secondsToTicks(ability.cooldown));
+    player.readyTick.set(Zone.cardSlot(ability.id), this.currentTick + secondsToTicks(ability.cooldown));
     if (isMovementAbility(ability)) {
       this.applyMovementAbility(player, ability, aimX, aimZ);
       return { ok: true };
@@ -768,7 +773,7 @@ export class Zone {
     player.cast = null;
     if (cast.kind === "ability") {
       player.mana = Math.min(player.maxMana, player.mana + cast.ability.manaCost);
-      player.readyTick.delete(cast.ability.id);
+      player.readyTick.delete(Zone.cardSlot(cast.ability.id));
     }
     this.events.push({ type: "cast_cancel", source: player.id, ability: cast.ability.id });
   }
@@ -831,9 +836,20 @@ export class Zone {
     const target: Entity | undefined = this.entity(behavior.target);
     if (target === undefined || target.dead) return;
     const abilityId: string = behavior.rotation[npc.rotationIndex % behavior.rotation.length] ?? "";
-    npc.rotationIndex++;
     const found: { item: ItemDef; ability: AbilityDef } | undefined = Zone.findAbility(abilityId);
-    if (found === undefined) return;
+    if (found === undefined) {
+      npc.rotationIndex++;
+      return;
+    }
+    // Mesma regra do jogador: a posição da carta ainda recarregando (de outra habilidade) faz esperar.
+    const slot: string = Zone.cardSlot(abilityId);
+    const ready: number = npc.readyTick.get(slot) ?? 0;
+    if (this.currentTick < ready) {
+      npc.nextActionTick = ready;
+      return;
+    }
+    npc.rotationIndex++;
+    npc.readyTick.set(slot, this.currentTick + secondsToTicks(found.ability.cooldown));
     const look: Look = Zone.setLook(found.item);
     if (!Zone.sameLook(look, npc.look)) {
       npc.look = look;
@@ -1151,6 +1167,28 @@ export class Zone {
       const dz: number = cast.aimZ - player.state.z;
       if (dx * dx + dz * dz > 1e-6) player.state = { ...player.state, rotY: Math.atan2(-dx, -dz) };
     }
+  }
+
+  /** Posição de carta de cada habilidade do catálogo (cache de {@link cardSlot}). */
+  private static readonly CARD_SLOTS: Map<string, string> = new Map();
+
+  /**
+   * Posição da carta que a habilidade `abilityId` ocupa: slot do item + ordem dela no item ("hand:0", "hand:2",
+   * "head:0"...). É a chave da recarga ({@link Combatant.readyTick}). Fora do catálogo: o próprio id.
+   */
+  static cardSlot(abilityId: string): string {
+    const cached: string | undefined = Zone.CARD_SLOTS.get(abilityId);
+    if (cached !== undefined) return cached;
+    let slot: string = abilityId;
+    for (const item of Object.values(ITEMS)) {
+      const index: number = item.abilities.findIndex((a) => a.id === abilityId);
+      if (index >= 0) {
+        slot = `${item.slot}:${index}`;
+        break;
+      }
+    }
+    Zone.CARD_SLOTS.set(abilityId, slot);
+    return slot;
   }
 
   /** Habilidade (carta ou ataque simples) `abilityId` do catálogo e o item que a dá, ou `undefined`. */
