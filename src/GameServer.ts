@@ -1,3 +1,4 @@
+import type { Progress } from "./progression/level.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
@@ -540,6 +541,13 @@ export class GameServer {
         body,
         send: (text: string): void => {
           if (socket.readyState === WebSocket.OPEN) socket.send(text);
+        },
+        // Matou um monstro ([JOGO-12]): guarda o nível/XP novo na sessão (próxima entrada) e no banco.
+        onProgress: (progress: Progress): void => {
+          if (session.account !== null) session.account = { ...session.account, progress };
+          this.options.accounts.saveProgress(account.playerId, progress).catch((error: unknown) => {
+            console.error(`[${session.connectionId}] falha ao salvar nível/XP de ${account.username}:`, error);
+          });
         },
       },
       GameServer.spawnFrom(account.lastPosition, zone),

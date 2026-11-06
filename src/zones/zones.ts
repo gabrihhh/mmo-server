@@ -1,4 +1,4 @@
-import type { ZoneConfig } from "./Zone.js";
+import type { DummyConfig, ZoneConfig } from "./Zone.js";
 
 /**
  * Metade do lado da Zone 1 em metros (terreno 300 m × 300 m centrado na origem). Ver mmo-docs [MUN-03].
@@ -6,6 +6,51 @@ import type { ZoneConfig } from "./Zone.js";
  * ATENÇÃO: precisa bater com ZONE_HALF_SIZE em mmo-client/scripts/world/world_constants.gd.
  */
 export const ZONE_HALF_SIZE = 150;
+
+/** Vida (no nível 0), velocidade (m/s), raio de perseguição e de desistência (m) e tempo para reaparecer (s) dos zumbis. */
+const ZOMBIE_FIGHTER_HP = 150;
+const ZOMBIE_SHOOTER_HP = 100;
+const ZOMBIE_SPEED = 3.5;
+const ZOMBIE_AGGRO_RADIUS = 8;
+const ZOMBIE_LEASH_RADIUS = 20;
+const ZOMBIE_RESPAWN_SECONDS = 10;
+/** Dano dos zumbis: metade do da arma (provisório; com a força cheia, um jogador nível 0 não aguenta). */
+const ZOMBIE_DAMAGE_MULTIPLIER = 0.5;
+
+/** Zumbi lutador (espada longa, Corte em linha) ou atirador (besta, Virote certeiro) em (x, z). */
+function zombie(id: string, kind: "fighter" | "shooter", x: number, z: number): DummyConfig {
+  const fighter: boolean = kind === "fighter";
+  const weapon: string = fighter ? "knight_sword" : "ranger_crossbow";
+  return {
+    id,
+    name: fighter ? "Zumbi lutador" : "Zumbi atirador",
+    x,
+    z,
+    level: 1,
+    maxHp: fighter ? ZOMBIE_FIGHTER_HP : ZOMBIE_SHOOTER_HP,
+    respawnSeconds: ZOMBIE_RESPAWN_SECONDS,
+    damageMultiplier: ZOMBIE_DAMAGE_MULTIPLIER,
+    body: "male",
+    // Sem roupa: só a arma na mão.
+    look: { hand: weapon, head: null, chest: null, feet: null },
+    behavior: {
+      kind: "zombie",
+      weapon,
+      ability: fighter ? "line_cleave" : "piercing_bolt",
+      aggroRadius: ZOMBIE_AGGRO_RADIUS,
+      leashRadius: ZOMBIE_LEASH_RADIUS,
+      speed: ZOMBIE_SPEED,
+    },
+  };
+}
+
+const ZOMBIES: readonly DummyConfig[] = [
+  // Espalhados (≥ 25 m um do outro, raio de 8 m): dá para puxar um de cada vez.
+  zombie("zombie_fighter_1", "fighter", 40, -20),
+  zombie("zombie_fighter_2", "fighter", 40, 20),
+  zombie("zombie_shooter_1", "shooter", 65, -20),
+  zombie("zombie_shooter_2", "shooter", 65, 20),
+];
 
 /** Zonas que o servidor cria ao subir. O cliente escolhe uma pelo `id` no `join`. */
 export const ZONE_CONFIGS: readonly ZoneConfig[] = [
@@ -55,6 +100,9 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
         look: { hand: "knight_sword", head: "knight_helm", chest: "knight_plate", feet: "knight_greaves" },
         behavior: { kind: "brawler", weapon: "knight_sword" },
       },
+      // Zumbis de teste ([JOGO-13]), no campo do lado +X da praça: 2 lutadores (espada longa + Corte em linha) mais
+      // perto e 2 atiradores (besta + Virote certeiro) mais longe. Nível 1, corpo de homem sem roupa (só a arma).
+      ...ZOMBIES,
     ],
   },
 ];

@@ -265,6 +265,11 @@ export interface PlayerSnapshot {
   /** Vida atual e máxima (arredondada a 0,1). */
   readonly hp: number;
   readonly maxHp: number;
+  /**
+   * Nível ([JOGO-12]): jogadores (o da conta) e NPCs. Público — os outros veem o nível, mas a XP só vai no `me`.
+   * ATENÇÃO: lido em mmo-client/scripts/network/player_state.gd (apply_snapshot).
+   */
+  readonly level: number;
   /** Morto (esperando renascer). */
   readonly dead: boolean;
   /** Escudo ativo (dano que ainda absorve; 0 = sem escudo). */
@@ -295,6 +300,8 @@ export interface NpcSnapshot extends PlayerSnapshot {
   readonly ally?: boolean;
   /** `false`: não serve de alvo de ataque dos jogadores (atirador invulnerável, aliado). Sem campo = serve. */
   readonly targetable?: boolean;
+  /** Monstro (zumbi, [JOGO-13]): o cliente mostra só vida, nível e barra de lançamento, sem nome. */
+  readonly monster?: boolean;
 }
 
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
@@ -356,6 +363,8 @@ export type CombatEvent =
   | { readonly type: "cast_cancel"; readonly source: string; readonly ability: string }
   | { readonly type: "death"; readonly id: string; readonly killer: string }
   | { readonly type: "respawn"; readonly id: string }
+  /** O jogador `id` subiu para o nível `level` ([JOGO-12]): vida/mana máximas novas já vêm no snapshot. */
+  | { readonly type: "level_up"; readonly id: string; readonly level: number }
   /** O jogador `id` trocou o que veste (aparência nova). */
   | { readonly type: "look"; readonly id: string; readonly look: Look };
 

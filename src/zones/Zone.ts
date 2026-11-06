@@ -24,7 +24,7 @@ import {
   type MoveParams,
   type MoveState,
 } from "../sim/movement.js";
-import { xpToNextLevel, STARTING_PROGRESS, type Progress } from "../progression/level.js";
+import { addXp, levelFactor, xpReward, xpToNextLevel, STARTING_PROGRESS, type Progress } from "../progression/level.js";
 import { ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
@@ -56,6 +56,8 @@ export interface ZoneMember {
   readonly body?: BodyType;
   /** Envia uma mensagem já serializada (JSON). */
   send(text: string): void;
+  /** Nível/XP mudaram (matou um monstro, [JOGO-12]): quem guarda a conta salva. Ausente = não salva (testes). */
+  onProgress?(progress: Progress): void;
 }
 
 /**
@@ -68,13 +70,25 @@ export interface ZoneMember {
  *   protegem, não atacam). Chegou em 1: volta à vida cheia `regenDelaySeconds` depois, mesmo apanhando (o atirador
  *   nunca para). Sem levar dano por `regenDelaySeconds`, também recupera `regenPerSecond` de vida por segundo;
  * - `brawler`: parado, ataca sozinho com o ataque simples da arma `weapon` quem chegar no alcance (jogadores e
- *   NPCs); tem vida e morre como o boneco.
+ *   NPCs); tem vida e morre como o boneco;
+ * - `zombie`: monstro ([JOGO-13]). Parado em casa até um jogador chegar a `aggroRadius` m de casa (ou bater nele);
+ *   aí anda até ele a `speed` m/s e bate com o ataque simples da arma `weapon`, usando também a habilidade `ability`
+ *   da arma quando ela estiver pronta e o alvo no alcance dela. Passou de `leashRadius` m de casa: desiste, volta
+ *   andando (sem atacar) e enche a vida. Só ataca jogadores. Quem o mata ganha XP ({@link xpReward} do nível dele).
  */
 export type NpcBehavior =
   | { readonly kind: "dummy" }
   | { readonly kind: "shooter"; readonly target: string; readonly rotation: readonly string[]; readonly pauseSeconds: number }
   | { readonly kind: "punchingBag"; readonly regenDelaySeconds: number; readonly regenPerSecond: number }
-  | { readonly kind: "brawler"; readonly weapon: string };
+  | { readonly kind: "brawler"; readonly weapon: string }
+  | {
+      readonly kind: "zombie";
+      readonly weapon: string;
+      readonly ability: string;
+      readonly aggroRadius: number;
+      readonly leashRadius: number;
+      readonly speed: number;
+    };
 
 /** NPC fixo na zona (boneco de treino e os de teste, [JOGO-05], [JOGO-11]). Metros. */
 export interface DummyConfig {
@@ -88,8 +102,17 @@ export interface DummyConfig {
   readonly body?: BodyType;
   /** Roupa inicial (humanos). O atirador troca para o conjunto da habilidade da vez. */
   readonly look?: Look;
-  /** Vida máxima (padrão: a do boneco de treino). */
+  /** Vida máxima no nível 0 (padrão: a do boneco de treino); vale × {@link levelFactor} do `level`. */
   readonly maxHp?: number;
+  /** Nível do NPC ([JOGO-12]): força × 1,01 por nível e, monstro, a XP que dá. Padrão 0. */
+  readonly level?: number;
+  /** Segundos até reaparecer depois de morrer (padrão: {@link DUMMY_RESPAWN_SECONDS}). */
+  readonly respawnSeconds?: number;
+  /**
+   * Multiplicador do dano que ele dá (padrão 1): monstros usam os números das armas dos jogadores, mas mais fracos
+   * (provisório, [JOGO-13]). Vale junto com o do nível.
+   */
+  readonly damageMultiplier?: number;
 }
 
 /** Parâmetros de uma zona. */
@@ -138,6 +161,11 @@ export const NO_LOOK: Look = { hand: null, head: null, chest: null, feet: null }
 interface Combatant {
   readonly id: string;
   readonly name: string;
+  /**
+   * Nível ([JOGO-12]): vida/mana máximas, dano, cura e escudo de quem tem × {@link levelFactor}. Jogador: o da conta
+   * (sobe matando monstros); NPC: o da configuração. Público (vai no snapshot).
+   */
+  level: number;
   state: MoveState;
   hp: number;
   /** Vida máxima. Jogador: base + vida extra dos itens vestidos ([JOGO-09]); muda ao trocar de item. */
@@ -172,7 +200,10 @@ interface ZonePlayer extends Combatant {
   readonly kind: "player";
   readonly member: ZoneMember;
   mana: number;
-  readonly maxMana: number;
+  /** Mana máxima: base × {@link levelFactor} do nível. */
+  maxMana: number;
+  /** Vida extra dos itens vestidos ([JOGO-09]); a vida máxima é (base + isto) × {@link levelFactor}. */
+  bonusHp: number;
   /** Inputs recebidos e ainda não simulados, em ordem de seq. */
   readonly inputs: Command[];
   /** Disparada ativa ([JOGO-07]): multiplicador para os próximos `stepsLeft` passos, até `untilTick`. */
@@ -288,6 +319,14 @@ interface ZoneDummy extends Combatant {
   lastHitTick: number;
   /** Saco de pancadas em 1 de vida: tick em que volta à vida cheia (0 = não está esperando). */
   refillTick: number;
+  /** Segundos até reaparecer depois de morrer. */
+  readonly respawnSeconds: number;
+  /** Multiplicador do dano que ele dá ({@link DummyConfig.damageMultiplier}). */
+  readonly damageMultiplier: number;
+  /** Zumbi: a habilidade da arma que ele usa (`null` nos outros). */
+  readonly ability: AbilityDef | null;
+  /** Zumbi: desistiu do alvo e está voltando para casa (não ataca; chegando, enche a vida). */
+  returning: boolean;
 }
 
 type Entity = ZonePlayer | ZoneDummy;
@@ -323,11 +362,14 @@ export class Zone {
     for (const dummy of config.dummies) {
       const home: MoveState = { x: dummy.x, y: 0, z: dummy.z, rotY: 0 };
       const behavior: NpcBehavior = dummy.behavior ?? { kind: "dummy" };
-      const maxHp: number = dummy.maxHp ?? DUMMY_MAX_HP;
+      const level: number = dummy.level ?? 0;
+      const maxHp: number = round1((dummy.maxHp ?? DUMMY_MAX_HP) * levelFactor(level));
+      const weapon: string | null = behavior.kind === "brawler" || behavior.kind === "zombie" ? behavior.weapon : null;
       this.dummies.set(dummy.id, {
         kind: "dummy",
         id: dummy.id,
         name: dummy.name,
+        level,
         state: home,
         home,
         behavior,
@@ -341,7 +383,7 @@ export class Zone {
         shieldUntilTick: 0,
         reduction: 0,
         reductionUntilTick: 0,
-        basicAttack: behavior.kind === "brawler" ? (getItem(behavior.weapon)?.basicAttack ?? UNARMED_ATTACK) : UNARMED_ATTACK,
+        basicAttack: weapon === null ? UNARMED_ATTACK : (getItem(weapon)?.basicAttack ?? UNARMED_ATTACK),
         attackTarget: null,
         lastMoveTick: Number.NEGATIVE_INFINITY,
         cast: null,
@@ -351,6 +393,10 @@ export class Zone {
         nextActionTick: secondsToTicks(2),
         lastHitTick: Number.NEGATIVE_INFINITY,
         refillTick: 0,
+        respawnSeconds: dummy.respawnSeconds ?? DUMMY_RESPAWN_SECONDS,
+        damageMultiplier: dummy.damageMultiplier ?? 1,
+        ability: behavior.kind === "zombie" ? (Zone.findAbility(behavior.ability)?.ability ?? null) : null,
+        returning: false,
       });
     }
   }
@@ -385,6 +431,8 @@ export class Zone {
       // Aliado (saco de pancadas: dá para curar) e quem não serve de alvo de ataque (atirador invulnerável, aliado).
       ...(dummy.behavior.kind === "punchingBag" ? { ally: true } : {}),
       ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" ? { targetable: false } : {}),
+      // Monstro ([JOGO-13]): o cliente mostra só vida, nível e lançamento (sem nome).
+      ...(dummy.behavior.kind === "zombie" ? { monster: true } : {}),
     }));
   }
 
@@ -407,17 +455,20 @@ export class Zone {
     this.leave(member.id);
 
     const start: SpawnPoint = spawn ?? this.randomSpawn();
+    const factor: number = levelFactor(progress.level);
     const limit: number = this.config.halfSize;
     const player: ZonePlayer = {
       kind: "player",
       id: member.id,
       name: member.name,
+      level: progress.level,
       member,
       state: { x: clamp(start.x, -limit, limit), y: start.y, z: clamp(start.z, -limit, limit), rotY: start.rotY },
-      hp: PLAYER_MAX_HP + bonusHp,
-      maxHp: PLAYER_MAX_HP + bonusHp,
-      mana: PLAYER_MAX_MANA,
-      maxMana: PLAYER_MAX_MANA,
+      hp: round1((PLAYER_MAX_HP + bonusHp) * factor),
+      maxHp: round1((PLAYER_MAX_HP + bonusHp) * factor),
+      mana: round1(PLAYER_MAX_MANA * factor),
+      maxMana: round1(PLAYER_MAX_MANA * factor),
+      bonusHp,
       dead: false,
       respawnTick: 0,
       shield: 0,
@@ -484,11 +535,8 @@ export class Zone {
     if (player === undefined) return;
     player.basicAttack = basicAttack;
     player.abilities = abilities;
-    const maxHp: number = PLAYER_MAX_HP + bonusHp;
-    if (maxHp !== player.maxHp) {
-      player.hp = player.dead ? 0 : (player.hp * maxHp) / player.maxHp;
-      player.maxHp = maxHp;
-    }
+    player.bonusHp = bonusHp;
+    this.applyPlayerStats(player);
     const target: Entity | undefined = player.attackTarget === null ? undefined : this.entity(player.attackTarget);
     if (target !== undefined && !this.validAttackTarget(player, basicAttack, target)) {
       player.attackTarget = null;
@@ -708,6 +756,7 @@ export class Zone {
         entity.mana = entity.maxMana;
       } else {
         entity.state = entity.home;
+        entity.returning = false;
       }
       this.events.push({ type: "respawn", id: entity.id });
     }
@@ -833,7 +882,138 @@ export class Zone {
       if (npc.dead) continue;
       if (npc.behavior.kind === "shooter") this.shooterThink(npc, npc.behavior);
       else if (npc.behavior.kind === "brawler") this.brawlerThink(npc);
+      else if (npc.behavior.kind === "zombie") this.zombieThink(npc, npc.behavior);
     }
+  }
+
+  /**
+   * Zumbi ([JOGO-13]), a cada tick: voltando → anda para casa e, chegando, enche a vida; longe demais de casa →
+   * desiste; sem alvo → pega o jogador vivo mais perto dentro do raio de casa; com alvo e sem lançamento em
+   * andamento → usa a habilidade (pronta e no alcance dela), senão anda até o alcance do ataque simples (o golpe é o
+   * mesmo dos jogadores, {@link applyAttack}). Lançando, fica parado.
+   */
+  private zombieThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "zombie" }>): void {
+    if (npc.returning) {
+      if (this.walkToward(npc, npc.home.x, npc.home.z, behavior.speed)) {
+        npc.returning = false;
+        npc.hp = npc.maxHp;
+      }
+      return;
+    }
+    if (Zone.distance(npc.state, npc.home) > behavior.leashRadius) {
+      this.giveUp(npc);
+      return;
+    }
+    let target: Entity | undefined = npc.attackTarget === null ? undefined : this.entity(npc.attackTarget);
+    if (target !== undefined && !this.isEnemy(npc, target)) target = undefined;
+    if (target === undefined) {
+      let nearest: number = Infinity;
+      for (const player of this.players.values()) {
+        if (!this.isEnemy(npc, player) || Zone.distance(player.state, npc.home) > behavior.aggroRadius) continue;
+        const distance: number = Zone.distance(player.state, npc.state);
+        if (distance < nearest) {
+          nearest = distance;
+          target = player;
+        }
+      }
+    }
+    if (target === undefined) {
+      npc.attackTarget = null;
+      // Perdeu o alvo (morreu, saiu) longe de casa: volta.
+      if (Zone.distance(npc.state, npc.home) > 0.5) this.giveUp(npc);
+      return;
+    }
+    npc.attackTarget = target.id;
+    if (npc.cast !== null) return;
+    const ability: AbilityDef | null = npc.ability;
+    const slot: string = ability === null ? "" : Zone.cardSlot(ability.id);
+    if (ability !== null && this.currentTick >= (npc.readyTick.get(slot) ?? 0) && Zone.inRange(npc, target, ability.range)) {
+      npc.readyTick.set(slot, this.currentTick + secondsToTicks(ability.cooldown));
+      const dx: number = target.state.x - npc.state.x;
+      const dz: number = target.state.z - npc.state.z;
+      const length: number = Math.sqrt(dx * dx + dz * dz) || 1;
+      const targetId: string | null = ability.aim === "target" ? target.id : null;
+      const aimX: number = ability.aim === "direction" ? dx / length : target.state.x;
+      const aimZ: number = ability.aim === "direction" ? dz / length : target.state.z;
+      this.beginAbilityCast(npc, ability, targetId, aimX, aimZ);
+      return;
+    }
+    if (Zone.distance(npc.state, target.state) > npc.basicAttack.range) {
+      this.walkToward(npc, target.state.x, target.state.z, behavior.speed);
+      npc.lastMoveTick = this.currentTick;
+    }
+  }
+
+  /** Zumbi desiste: solta o alvo, cancela o que estava lançando e volta para casa ([JOGO-13]). */
+  private giveUp(npc: ZoneDummy): void {
+    npc.attackTarget = null;
+    npc.returning = true;
+    if (npc.cast !== null) {
+      this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
+      npc.cast = null;
+    }
+  }
+
+  /**
+   * Anda um tick (`speed` m/s) em direção a (x, z), virado para lá, sem passar do ponto nem das bordas.
+   * `true` se chegou.
+   */
+  private walkToward(npc: ZoneDummy, x: number, z: number, speed: number): boolean {
+    const dx: number = x - npc.state.x;
+    const dz: number = z - npc.state.z;
+    const distance: number = Math.sqrt(dx * dx + dz * dz);
+    const step: number = speed * TICK_SECONDS;
+    const limit: number = this.config.halfSize;
+    if (distance <= step) {
+      npc.state = { ...npc.state, x: clamp(x, -limit, limit), z: clamp(z, -limit, limit) };
+      return true;
+    }
+    npc.state = {
+      x: clamp(npc.state.x + (dx / distance) * step, -limit, limit),
+      y: npc.state.y,
+      z: clamp(npc.state.z + (dz / distance) * step, -limit, limit),
+      rotY: Math.atan2(-dx, -dz),
+    };
+    return false;
+  }
+
+  /** Distância no plano XZ (m). */
+  private static distance(a: MoveState, b: MoveState): number {
+    return Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2);
+  }
+
+  /**
+   * Vida e mana máximas do jogador pelo nível e pelos itens: (base + vida extra) × {@link levelFactor}. A vida e a
+   * mana atuais acompanham na MESMA proporção (trocar de item ou subir de nível não cura).
+   */
+  private applyPlayerStats(player: ZonePlayer): void {
+    const factor: number = levelFactor(player.level);
+    const maxHp: number = round1((PLAYER_MAX_HP + player.bonusHp) * factor);
+    const maxMana: number = round1(PLAYER_MAX_MANA * factor);
+    if (maxHp !== player.maxHp) {
+      player.hp = player.dead ? 0 : (player.hp * maxHp) / player.maxHp;
+      player.maxHp = maxHp;
+    }
+    if (maxMana !== player.maxMana) {
+      player.mana = (player.mana * maxMana) / player.maxMana;
+      player.maxMana = maxMana;
+    }
+  }
+
+  /**
+   * Dá `amount` de XP ao jogador ([JOGO-12]); subindo de nível, refaz vida/mana máximas e avisa todos (`level_up`).
+   * A XP em si só vai para ele (no `me` do snapshot): os outros veem o nível, não quanto falta.
+   * O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
+   */
+  private grantXp(player: ZonePlayer, amount: number): void {
+    const progress: Progress = addXp(player.progress, amount);
+    player.progress = progress;
+    if (progress.level !== player.level) {
+      player.level = progress.level;
+      this.applyPlayerStats(player);
+      this.events.push({ type: "level_up", id: player.id, level: progress.level });
+    }
+    player.member.onProgress?.(progress);
   }
 
   private shooterThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "shooter" }>): void {
@@ -1097,13 +1277,14 @@ export class Zone {
    */
   private support(source: Entity, target: Entity, ability: AbilityDef): void {
     if (target.dead) return;
+    const factor: number = levelFactor(source.level);
     if (ability.heal > 0) {
-      const healed: number = Math.min(target.maxHp - target.hp, ability.heal);
+      const healed: number = round1(Math.min(target.maxHp - target.hp, ability.heal * factor));
       target.hp += healed;
       this.events.push({ type: "heal", source: source.id, target: target.id, amount: healed, ability: ability.id });
     }
     if (ability.shield > 0) {
-      target.shield = ability.shield;
+      target.shield = round1(ability.shield * factor);
       target.shieldUntilTick = this.currentTick + secondsToTicks(ability.shieldSeconds);
     }
   }
@@ -1130,6 +1311,8 @@ export class Zone {
     if (source.kind === "dummy") {
       // Atirador: o alvo dele e qualquer jogador no caminho/área (dá para desviar e testar defesa); outros NPCs não.
       if (source.behavior.kind === "shooter") return target.id === source.behavior.target || target.kind === "player";
+      // Zumbi: só jogadores ([JOGO-13]).
+      if (source.behavior.kind === "zombie") return target.kind === "player";
       return source.behavior.kind === "brawler";
     }
     if (target.kind === "dummy") return target.behavior.kind !== "punchingBag";
@@ -1247,24 +1430,33 @@ export class Zone {
     // Atirador de teste: invulnerável ([JOGO-11]).
     if (target.kind === "dummy" && target.behavior.kind === "shooter") return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
+    // Nível de quem bate ([JOGO-12]): × 1,01 por nível (1 casa decimal); monstro: × o multiplicador dele.
+    const multiplier: number = source.kind === "dummy" ? source.damageMultiplier : 1;
+    const scaled: number = round1(amount * levelFactor(source.level) * multiplier);
     const reduced: boolean = target.reduction > 0 && this.currentTick < target.reductionUntilTick;
-    let remaining: number = reduced ? Math.round(amount * (1 - target.reduction)) : amount;
+    let remaining: number = reduced ? round1(scaled * (1 - target.reduction)) : scaled;
     let absorbed: number = 0;
     if (target.shield > 0 && this.currentTick < target.shieldUntilTick) {
       absorbed = Math.min(target.shield, remaining);
-      target.shield -= absorbed;
-      remaining -= absorbed;
+      target.shield = round1(target.shield - absorbed);
+      remaining = round1(remaining - absorbed);
     }
     // Saco de pancadas: não morre, a vida para em 1 ([JOGO-11]).
     const unkillable: boolean = target.kind === "dummy" && target.behavior.kind === "punchingBag";
     const dealt: number = Math.min(unkillable ? Math.max(0, target.hp - 1) : target.hp, remaining);
     target.hp -= dealt;
-    if (target.kind === "dummy") target.lastHitTick = this.currentTick;
+    if (target.kind === "dummy") {
+      target.lastHitTick = this.currentTick;
+      // Zumbi atacado de longe (fora do raio): vai atrás de quem bateu.
+      if (target.behavior.kind === "zombie" && !target.returning && target.attackTarget === null && source.kind === "player") {
+        target.attackTarget = source.id;
+      }
+    }
     this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId });
     if (target.hp > 0) return;
     target.hp = 0;
     target.dead = true;
-    const respawnSeconds: number = target.kind === "player" ? PLAYER_RESPAWN_SECONDS : DUMMY_RESPAWN_SECONDS;
+    const respawnSeconds: number = target.kind === "player" ? PLAYER_RESPAWN_SECONDS : target.respawnSeconds;
     target.respawnTick = this.currentTick + secondsToTicks(respawnSeconds);
     target.shield = 0;
     target.reduction = 0;
@@ -1277,6 +1469,10 @@ export class Zone {
     }
     for (const entity of this.entities()) if (entity.attackTarget === target.id) entity.attackTarget = null;
     this.events.push({ type: "death", id: target.id, killer: source.id });
+    // Monstro morto por jogador: XP para quem deu o golpe final ([JOGO-12]).
+    if (target.kind === "dummy" && target.behavior.kind === "zombie" && source.kind === "player") {
+      this.grantXp(source, xpReward(target.level));
+    }
   }
 
   private regenerate(): void {
@@ -1372,6 +1568,7 @@ export class Zone {
       rotY: entity.state.rotY,
       hp: round1(entity.hp),
       maxHp: entity.maxHp,
+      level: entity.level,
       dead: entity.dead,
       shield: round1(entity.shield),
       // Redução de dano ativa (0..1, [JOGO-09]); o cliente desenha um brilho em quem tem.

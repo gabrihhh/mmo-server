@@ -150,6 +150,10 @@ export class MongoAccountStore implements AccountStore {
     await this.accounts.updateOne({ playerId }, { $set: { inventory } });
   }
 
+  async saveProgress(playerId: string, progress: Progress): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { progress } });
+  }
+
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
     // Só grava se ainda não houver corpo: a escolha é para sempre (e duas conexões não brigam).
     const result = await this.accounts.updateOne(

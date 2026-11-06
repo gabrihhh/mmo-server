@@ -1,31 +1,58 @@
 /**
- * Evolução do personagem: nível e experiência (XP). Regras puras (sem banco nem rede). Ver mmo-docs [JOGO-12].
- * O nível é do PERSONAGEM (da conta), não dos itens. Números provisórios.
+ * Evolução: nível e experiência (XP). Regras puras (sem banco nem rede). Ver mmo-docs [JOGO-12].
+ *
+ * Regra do grupo (2026-11-06): tudo cresce **1% por nível, acumulando** (× 1,01 a cada nível):
+ * - força de quem tem o nível (jogador ou NPC): vida, mana, dano, cura e escudo × {@link levelFactor};
+ * - XP para subir: 100 do nível 0 para o 1, e cada nível pede 1% a mais que o anterior ({@link xpToNextLevel});
+ * - XP que um monstro dá: 20 no nível 1, e 1% a mais por nível ({@link xpReward}).
+ * XP é guardada com 1 casa decimal (20,2), para o 1% contar desde os níveis baixos.
  */
 
 /** Nível de um personagem novo. */
-export const STARTING_LEVEL = 1;
+export const STARTING_LEVEL = 0;
 
 /** Nível máximo (provisório): nele a XP para de contar. */
 export const MAX_LEVEL = 50;
 
+/** Crescimento por nível (1%, acumulando). */
+export const LEVEL_GROWTH = 1.01;
+
+/** XP para ir do nível 0 ao 1. */
+export const BASE_XP_TO_LEVEL = 100;
+
+/** XP que um monstro de nível 1 dá. */
+export const BASE_XP_REWARD = 20;
+
 /** Nível e XP guardados na conta. */
 export interface Progress {
-  /** Nível atual (1..{@link MAX_LEVEL}). */
+  /** Nível atual ({@link STARTING_LEVEL}..{@link MAX_LEVEL}). */
   readonly level: number;
-  /** XP juntada DENTRO do nível atual (0..{@link xpToNextLevel}(level) − 1); zera ao subir. */
+  /** XP juntada DENTRO do nível atual (0 até menos que {@link xpToNextLevel}(level)), 1 casa decimal; zera ao subir. */
   readonly xp: number;
 }
 
-/** Personagem novo: nível 1, sem XP. */
+/** Personagem novo: nível 0, sem XP. */
 export const STARTING_PROGRESS: Progress = { level: STARTING_LEVEL, xp: 0 };
 
+/** Arredonda a 1 casa decimal (XP guardada e enviada assim). */
+const round1 = (value: number): number => Math.round(value * 10) / 10;
+
+/** Multiplicador de força de quem está no nível `level` (1,01^nível: nível 0 = 1, nível 3 ≈ 1,0303). */
+export function levelFactor(level: number): number {
+  return LEVEL_GROWTH ** Math.max(0, level);
+}
+
 /**
- * XP que falta juntar no nível `level` para subir ao próximo (provisório: 100 × nível). No nível máximo, 0.
+ * XP que falta juntar no nível `level` para subir ao próximo: 100 × 1,01^nível (1 casa). No nível máximo, 0.
  * ATENÇÃO: o cliente não calcula isso — recebe pronto no snapshot (`me.xpNext`).
  */
 export function xpToNextLevel(level: number): number {
-  return level >= MAX_LEVEL ? 0 : 100 * level;
+  return level >= MAX_LEVEL ? 0 : round1(BASE_XP_TO_LEVEL * levelFactor(level));
+}
+
+/** XP que um monstro de nível `level` dá a quem o mata: 20 no nível 1, × 1,01 por nível acima (1 casa). */
+export function xpReward(level: number): number {
+  return round1(BASE_XP_REWARD * LEVEL_GROWTH ** (Math.max(1, level) - 1));
 }
 
 /**
@@ -34,9 +61,9 @@ export function xpToNextLevel(level: number): number {
  */
 export function addXp(progress: Progress, amount: number): Progress {
   let level: number = progress.level;
-  let xp: number = progress.xp + Math.max(0, Math.floor(amount));
+  let xp: number = round1(progress.xp + Math.max(0, amount));
   while (level < MAX_LEVEL && xp >= xpToNextLevel(level)) {
-    xp -= xpToNextLevel(level);
+    xp = round1(xp - xpToNextLevel(level));
     level += 1;
   }
   return { level, xp: level >= MAX_LEVEL ? 0 : xp };
@@ -49,6 +76,7 @@ export function readProgress(raw: unknown): Progress {
   const xp: unknown = Reflect.get(raw, "xp");
   if (typeof level !== "number" || !Number.isInteger(level) || level < STARTING_LEVEL) return STARTING_PROGRESS;
   const safeLevel: number = Math.min(level, MAX_LEVEL);
-  const safeXp: number = typeof xp === "number" && Number.isFinite(xp) ? Math.floor(xp) : 0;
-  return { level: safeLevel, xp: Math.min(Math.max(0, safeXp), Math.max(0, xpToNextLevel(safeLevel) - 1)) };
+  if (safeLevel >= MAX_LEVEL) return { level: MAX_LEVEL, xp: 0 };
+  const safeXp: number = typeof xp === "number" && Number.isFinite(xp) ? round1(xp) : 0;
+  return { level: safeLevel, xp: Math.min(Math.max(0, safeXp), round1(xpToNextLevel(safeLevel) - 0.1)) };
 }

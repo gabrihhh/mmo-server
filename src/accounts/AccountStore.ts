@@ -72,6 +72,8 @@ export interface AccountStore {
   savePosition(playerId: string, position: SavedPosition): Promise<void>;
   /** Salva o inventário (chamado a cada troca aceita). */
   saveInventory(playerId: string, inventory: Inventory): Promise<void>;
+  /** Salva nível e XP (chamado quando o jogador ganha XP, [JOGO-12]). */
+  saveProgress(playerId: string, progress: Progress): Promise<void>;
   /**
    * Grava o corpo do personagem SE ainda não houver um (a escolha é para sempre). `true` = gravou; `false` = já tinha
    * (ou conta inexistente).
@@ -164,6 +166,11 @@ export class InMemoryAccountStore implements AccountStore {
   async saveInventory(playerId: string, inventory: Inventory): Promise<void> {
     const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
     if (record !== undefined) record.inventory = inventory;
+  }
+
+  async saveProgress(playerId: string, progress: Progress): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.progress = progress;
   }
 
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
