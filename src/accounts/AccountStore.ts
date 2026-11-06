@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
+import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import type { BodyType } from "../net/protocol.js";
 
@@ -36,6 +37,8 @@ export interface Account {
   readonly inventory: Inventory;
   /** Corpo do personagem, escolhido uma vez na primeira entrada; `null` = ainda não escolheu. */
   readonly body: BodyType | null;
+  /** Nível e XP do personagem ([JOGO-12]). Conta nova/antiga: nível 1, sem XP. */
+  readonly progress: Progress;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
@@ -107,6 +110,7 @@ interface MemoryRecord {
   lastPosition: SavedPosition | null;
   inventory: Inventory;
   body: BodyType | null;
+  progress: Progress;
 }
 
 /** Implementação em memória, para testes (não precisa de MongoDB). Mesmas regras da versão Mongo. */
@@ -128,6 +132,7 @@ export class InMemoryAccountStore implements AccountStore {
       lastPosition: null,
       inventory: starterInventory(),
       body: null,
+      progress: STARTING_PROGRESS,
     };
     this.records.push(record);
     return this.openSession(record);
@@ -185,6 +190,7 @@ export class InMemoryAccountStore implements AccountStore {
       lastPosition: record.lastPosition,
       inventory: readInventory(record.inventory),
       body: record.body,
+      progress: readProgress(record.progress),
     };
   }
 }

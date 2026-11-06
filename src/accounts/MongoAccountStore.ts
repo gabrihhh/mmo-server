@@ -2,6 +2,7 @@ import { MongoClient, MongoServerError, type Collection, type Db } from "mongodb
 
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
+import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { isBodyType, type BodyType } from "../net/protocol.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
@@ -40,6 +41,8 @@ interface AccountDocument {
   inventory?: Inventory;
   /** Corpo do personagem ("male" | "female"). Falta/null = ainda não escolheu (conta antiga também). */
   body?: string | null;
+  /** Nível e XP ([JOGO-12]). Pode faltar em conta antiga (vira nível 1 ao ler). Lido sempre por readProgress. */
+  progress?: Progress;
 }
 
 /** Código de erro do MongoDB para violação de índice único. */
@@ -92,6 +95,7 @@ export class MongoAccountStore implements AccountStore {
         lastPosition: null,
         inventory: starterInventory(),
         body: null,
+        progress: STARTING_PROGRESS,
       };
       try {
         await this.accounts.insertOne(doc);
@@ -176,6 +180,7 @@ export class MongoAccountStore implements AccountStore {
       lastPosition: doc.lastPosition,
       inventory: readInventory(doc.inventory),
       body: isBodyType(doc.body) ? doc.body : null,
+      progress: readProgress(doc.progress),
     };
   }
 }

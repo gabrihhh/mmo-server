@@ -369,6 +369,14 @@ export interface OwnStatus {
   readonly target: string | null;
   /** Lançamento em andamento (`null` = nenhum): habilidade, alvo e segundos que faltam. */
   readonly casting: { readonly ability: string; readonly target: string; readonly remaining: number } | null;
+  /**
+   * Nível do personagem, XP juntada dentro dele e XP que o nível pede para subir (0 no nível máximo), [JOGO-12].
+   * O cliente desenha a linha de XP embaixo da vida/mana e o quadrado do nível ([CLI-08]); não calcula nada.
+   * ATENÇÃO: lido em mmo-client/scripts/network/network.gd (snapshot → me) e scripts/world/zone.gd.
+   */
+  readonly level: number;
+  readonly xp: number;
+  readonly xpNext: number;
 }
 
 /** Jogador completo, como vai no `welcome` e no `player_joined`: posição + nome exibido + aparência. */

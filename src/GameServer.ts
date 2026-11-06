@@ -547,6 +547,7 @@ export class GameServer {
       equippedAbilities(account.inventory),
       lookOf(account.inventory),
       bonusHpOf(account.inventory),
+      account.progress,
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");

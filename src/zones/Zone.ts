@@ -24,6 +24,7 @@ import {
   type MoveParams,
   type MoveState,
 } from "../sim/movement.js";
+import { xpToNextLevel, STARTING_PROGRESS, type Progress } from "../progression/level.js";
 import { ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
@@ -186,6 +187,8 @@ interface ZonePlayer extends Combatant {
   abilities: ReadonlyMap<string, AbilityDef>;
   /** O que veste (aparência que os outros veem). */
   look: Look;
+  /** Nível e XP do personagem ([JOGO-12]); vão só para ele, no `me` do snapshot. */
+  progress: Progress;
 }
 
 /**
@@ -398,6 +401,7 @@ export class Zone {
     abilities: ReadonlyMap<string, AbilityDef> = new Map(),
     look: Look = NO_LOOK,
     bonusHp: number = 0,
+    progress: Progress = STARTING_PROGRESS,
   ): JoinResult {
     if (!this.players.has(member.id) && this.players.size >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
@@ -428,6 +432,7 @@ export class Zone {
       basicAttack,
       abilities,
       look,
+      progress,
       readyTick: new Map(),
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
@@ -1326,6 +1331,9 @@ export class Zone {
                 target: player.cast.targetId ?? "",
                 remaining: round1(Math.max(0, player.cast.endTick - this.currentTick) * TICK_SECONDS),
               },
+        level: player.progress.level,
+        xp: player.progress.xp,
+        xpNext: xpToNextLevel(player.progress.level),
       };
       player.member.send(
         `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},${shared},"me":${JSON.stringify(me)}}}`,
