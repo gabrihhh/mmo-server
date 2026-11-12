@@ -18,6 +18,8 @@
     "useUnknownInCatchVariables": true,
 
     "allowJs": false,
+    // Dados das zonas em JSON (monstros postos no editor do Godot, src/zones/monsters/), validados no carregamento.
+    "resolveJsonModule": true,
     "esModuleInterop": true,
     "experimentalDecorators": true,
     "skipLibCheck": true,

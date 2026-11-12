@@ -1,4 +1,8 @@
 import type { DummyConfig, ZoneConfig } from "./Zone.js";
+import { parseMonsterSpawns, type MonsterKind, type MonsterSpawn } from "./monsterSpawns.js";
+// Posições e níveis dos zumbis: escritos pelo editor do Godot ([MUN-05]). Importado (não lido do disco) para o
+// `tsx watch` recarregar o servidor sozinho quando o arquivo muda.
+import zone1Monsters from "./monsters/zone_1.json" with { type: "json" };
 
 /**
  * Metade do lado da Zone 1 em metros (terreno 300 m × 300 m centrado na origem). Ver mmo-docs [MUN-03].
@@ -17,16 +21,20 @@ const ZOMBIE_RESPAWN_SECONDS = 10;
 /** Dano dos zumbis: metade do da arma (provisório; com a força cheia, um jogador nível 0 não aguenta). */
 const ZOMBIE_DAMAGE_MULTIPLIER = 0.5;
 
-/** Zumbi lutador (espada longa, Corte em linha) ou atirador (besta, Virote certeiro) em (x, z). */
-function zombie(id: string, kind: "fighter" | "shooter", x: number, z: number): DummyConfig {
+/**
+ * Zumbi do tipo [spawn.kind] — lutador (espada longa, Corte em linha) ou atirador (besta, Virote certeiro) — no
+ * lugar e no nível de [spawn]. Vida, dano e XP crescem com o nível ([JOGO-12]).
+ */
+function zombie(spawn: MonsterSpawn): DummyConfig {
+  const kind: MonsterKind = spawn.kind;
   const fighter: boolean = kind === "fighter";
   const weapon: string = fighter ? "knight_sword" : "ranger_crossbow";
   return {
-    id,
+    id: spawn.id,
     name: fighter ? "Zumbi lutador" : "Zumbi atirador",
-    x,
-    z,
-    level: 1,
+    x: spawn.x,
+    z: spawn.z,
+    level: spawn.level,
     maxHp: fighter ? ZOMBIE_FIGHTER_HP : ZOMBIE_SHOOTER_HP,
     respawnSeconds: ZOMBIE_RESPAWN_SECONDS,
     damageMultiplier: ZOMBIE_DAMAGE_MULTIPLIER,
@@ -44,13 +52,8 @@ function zombie(id: string, kind: "fighter" | "shooter", x: number, z: number): 
   };
 }
 
-const ZOMBIES: readonly DummyConfig[] = [
-  // Espalhados (≥ 25 m um do outro, raio de 8 m): dá para puxar um de cada vez.
-  zombie("zombie_fighter_1", "fighter", 40, -20),
-  zombie("zombie_fighter_2", "fighter", 40, 20),
-  zombie("zombie_shooter_1", "shooter", 65, -20),
-  zombie("zombie_shooter_2", "shooter", 65, 20),
-];
+/** Zumbis da Zone 1, de `monsters/zone_1.json` (validado: erro ao subir se o arquivo estiver errado). */
+const ZOMBIES: readonly DummyConfig[] = parseMonsterSpawns(zone1Monsters, ZONE_HALF_SIZE).map(zombie);
 
 /** Zonas que o servidor cria ao subir. O cliente escolhe uma pelo `id` no `join`. */
 export const ZONE_CONFIGS: readonly ZoneConfig[] = [
@@ -100,8 +103,8 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
         look: { hand: "knight_sword", head: "knight_helm", chest: "knight_plate", feet: "knight_greaves" },
         behavior: { kind: "brawler", weapon: "knight_sword" },
       },
-      // Zumbis de teste ([JOGO-13]), no campo do lado +X da praça: 2 lutadores (espada longa + Corte em linha) mais
-      // perto e 2 atiradores (besta + Virote certeiro) mais longe. Nível 1, corpo de homem sem roupa (só a arma).
+      // Zumbis de teste ([JOGO-13]): onde e de que nível, no editor do Godot ([MUN-05]). Corpo de homem sem roupa
+      // (só a arma).
       ...ZOMBIES,
     ],
   },

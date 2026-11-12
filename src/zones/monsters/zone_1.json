@@ -1,0 +1,30 @@
+[
+  {
+    "id": "zombie_lutador_1",
+    "kind": "fighter",
+    "level": 0,
+    "x": 24.0,
+    "z": -14.0
+  },
+  {
+    "id": "zombie_lutador_2",
+    "kind": "fighter",
+    "level": 0,
+    "x": 24.0,
+    "z": 14.0
+  },
+  {
+    "id": "zombie_atirador_1",
+    "kind": "shooter",
+    "level": 1,
+    "x": 36.0,
+    "z": -14.0
+  },
+  {
+    "id": "zombie_atirador_2",
+    "kind": "shooter",
+    "level": 1,
+    "x": 36.0,
+    "z": 14.0
+  }
+]
