@@ -172,6 +172,14 @@ export interface ResumeData {
 export const BODY_TYPES = ["male", "female"] as const;
 export type BodyType = (typeof BODY_TYPES)[number];
 
+/**
+ * Corpos que um NPC pode ter: os dos jogadores e os de monstro (que jogador nenhum escolhe, por isso fora de
+ * {@link BODY_TYPES}). `zombie` = modelo do zumbi ([JOGO-13]). ATENÇÃO: espelho em mmo-client/scripts/network/protocol.gd
+ * (BODY_ZOMBIE) e character_bodies.gd.
+ */
+export const NPC_BODY_TYPES = [...BODY_TYPES, "zombie"] as const;
+export type NpcBodyType = (typeof NPC_BODY_TYPES)[number];
+
 /** Payload de `choose_body`. */
 export interface ChooseBodyData {
   readonly body: BodyType;
@@ -293,8 +301,8 @@ export interface PlayerSnapshot {
  */
 export interface NpcSnapshot extends PlayerSnapshot {
   readonly name: string;
-  /** Corpo humano: desenhar um personagem com esse corpo (em vez do boneco de palha), vestindo `look`. */
-  readonly body?: BodyType;
+  /** Corpo: desenhar um personagem com esse corpo (em vez do boneco de palha), vestindo `look`. Pode ser de monstro. */
+  readonly body?: NpcBodyType;
   readonly look?: Look;
   /** Aliado: jogadores podem curar/proteger (saco de pancadas). */
   readonly ally?: boolean;

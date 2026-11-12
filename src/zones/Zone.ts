@@ -7,6 +7,7 @@ import {
   type NpcSnapshot,
   type OwnStatus,
   type BodyType,
+  type NpcBodyType,
   type EquipSlotName,
   type Look,
   type PlayerInfo,
@@ -98,8 +99,8 @@ export interface DummyConfig {
   readonly z: number;
   /** Comportamento; sem = boneco de treino. */
   readonly behavior?: NpcBehavior;
-  /** Corpo humano: o cliente desenha um personagem vestido em vez do boneco de palha. */
-  readonly body?: BodyType;
+  /** Corpo (de jogador ou de monstro, ex. `zombie`): o cliente desenha esse personagem em vez do boneco de palha. */
+  readonly body?: NpcBodyType;
   /** Roupa inicial (humanos). O atirador troca para o conjunto da habilidade da vez. */
   readonly look?: Look;
   /** Vida máxima no nível 0 (padrão: a do boneco de treino); vale × {@link levelFactor} do `level`. */
@@ -310,7 +311,7 @@ interface ZoneDummy extends Combatant {
   readonly home: MoveState;
   readonly behavior: NpcBehavior;
   /** Corpo humano (`null` = boneco de palha) e o que veste. */
-  readonly body: BodyType | null;
+  readonly body: NpcBodyType | null;
   look: Look;
   /** Atirador: próxima habilidade da rotação e o tick em que pode começar. */
   rotationIndex: number;

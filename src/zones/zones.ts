@@ -38,8 +38,8 @@ function zombie(spawn: MonsterSpawn): DummyConfig {
     maxHp: fighter ? ZOMBIE_FIGHTER_HP : ZOMBIE_SHOOTER_HP,
     respawnSeconds: ZOMBIE_RESPAWN_SECONDS,
     damageMultiplier: ZOMBIE_DAMAGE_MULTIPLIER,
-    body: "male",
-    // Sem roupa: só a arma na mão.
+    // Modelo do zumbi (pele verde, roupa rasgada); sem equipamento: só a arma na mão.
+    body: "zombie",
     look: { hand: weapon, head: null, chest: null, feet: null },
     behavior: {
       kind: "zombie",
