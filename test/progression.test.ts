@@ -1,7 +1,6 @@
 import assert from "assert";
 
 import {
-  MAX_LEVEL,
   STARTING_PROGRESS,
   addXp,
   levelFactor,
@@ -85,16 +84,16 @@ describe("evolução (nível e XP)", () => {
     assert.strictEqual(xpToNextLevel(0), 100);
     assert.strictEqual(xpToNextLevel(1), 101);
     assert.strictEqual(xpToNextLevel(10), 110.5); // 100 × 1,01^10 = 110,46 → 110,5
-    assert.strictEqual(xpToNextLevel(MAX_LEVEL), 0);
+    assert.strictEqual(xpToNextLevel(50), 164.5); // sem nível máximo: continua crescendo
     assert.strictEqual(xpReward(1), 20);
     assert.strictEqual(xpReward(3), 20.4); // 20 × 1,01² = 20,402
   });
 
-  it("addXp sobe de nível e passa a sobra adiante (1 casa); no máximo para", () => {
+  it("addXp sobe de nível e passa a sobra adiante (1 casa); não há nível máximo", () => {
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, 99.9), { level: 0, xp: 99.9 });
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, 105.3), { level: 1, xp: 5.3 });
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, 201), { level: 2, xp: 0 });
-    assert.deepStrictEqual(addXp({ level: MAX_LEVEL, xp: 0 }, 1_000_000), { level: MAX_LEVEL, xp: 0 });
+    assert.ok(addXp({ level: 50, xp: 0 }, 1_000_000).level > 50);
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, -50), STARTING_PROGRESS);
     // 5 zumbis de nível 1 (20 cada) = 100: sobe do 0 para o 1.
     let progress: Progress = STARTING_PROGRESS;
@@ -102,13 +101,13 @@ describe("evolução (nível e XP)", () => {
     assert.deepStrictEqual(progress, { level: 1, xp: 0 });
   });
 
-  it("readProgress: conta antiga/estragada vira nível 0; valores fora da faixa são limitados", () => {
+  it("readProgress: conta antiga/estragada vira nível 0; XP fora da faixa é limitada; nível alto vale", () => {
     assert.deepStrictEqual(readProgress(undefined), STARTING_PROGRESS);
     assert.deepStrictEqual(readProgress({ level: "3" }), STARTING_PROGRESS);
     assert.deepStrictEqual(readProgress({ level: -1, xp: 5 }), STARTING_PROGRESS);
     assert.deepStrictEqual(readProgress({ level: 3, xp: 40.25 }), { level: 3, xp: 40.3 });
     assert.deepStrictEqual(readProgress({ level: 0, xp: 999999 }), { level: 0, xp: 99.9 });
-    assert.deepStrictEqual(readProgress({ level: 999, xp: 10 }), { level: MAX_LEVEL, xp: 0 });
+    assert.deepStrictEqual(readProgress({ level: 999, xp: 10 }), { level: 999, xp: 10 });
   });
 
   it("o snapshot leva o nível de todos e a XP só no `me`; vida/mana máximas crescem com o nível", () => {

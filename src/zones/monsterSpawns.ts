@@ -12,8 +12,6 @@
 export const MONSTER_KINDS = ["fighter", "shooter"] as const;
 /** Um dos {@link MONSTER_KINDS}. */
 export type MonsterKind = (typeof MONSTER_KINDS)[number];
-/** Maior nível aceito para um monstro (= nível máximo dos jogadores, [JOGO-12]). */
-export const MONSTER_MAX_LEVEL = 50;
 
 /** Um monstro posto no mapa: id único na zona, tipo, nível e posição no chão (m). */
 export interface MonsterSpawn {
@@ -64,8 +62,9 @@ export function parseMonsterSpawns(data: unknown, halfSize: number): MonsterSpaw
     if (!isKind(kind)) {
       throw new Error(`${where}: tipo desconhecido (${String(kind)})`);
     }
-    if (typeof level !== "number" || !Number.isInteger(level) || level < 0 || level > MONSTER_MAX_LEVEL) {
-      throw new Error(`${where}: nível precisa ser inteiro de 0 a ${MONSTER_MAX_LEVEL} (${String(level)})`);
+    // Sem nível máximo ([JOGO-12]); só inteiro, 0 ou mais.
+    if (typeof level !== "number" || !Number.isSafeInteger(level) || level < 0) {
+      throw new Error(`${where}: nível precisa ser inteiro, 0 ou mais (${String(level)})`);
     }
     const x: number = readCoordinate(entry["x"], "x", where, halfSize);
     const z: number = readCoordinate(entry["z"], "z", where, halfSize);
