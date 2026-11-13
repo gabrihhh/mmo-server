@@ -238,6 +238,29 @@ describe("zumbis", () => {
     assert.strictEqual(a.me()["xp"], 20);
   });
 
+  it("alvo morreu: quem atacava solta o alvo e o golpe em andamento é cancelado (não fica travado no corpo)", () => {
+    const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
+    const a = new Member("a");
+    const b = new Member("b");
+    const staff: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    // b começa a golpear depois (cajado, lançamento mais longo): quando a espada de a mata, o golpe de b está no meio.
+    zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, staff);
+    zone.setAttackTarget("a", "zombie");
+    zone.setAttackTarget("b", "zombie");
+    let died = false;
+    for (let i = 0; i < 60 && !died; i++) {
+      zone.tick();
+      died = a.events("death").some((e) => e["id"] === "zombie");
+    }
+    assert.ok(died, "zumbi morreu");
+    for (const member of [a, b]) {
+      assert.strictEqual(member.me()["target"], null, `${member.id}: alvo solto`);
+      assert.strictEqual(member.me()["casting"], null, `${member.id}: sem golpe preso no corpo`);
+    }
+    assert.ok(b.events("cast_cancel").some((e) => e["source"] === "b"), "o golpe de b foi cancelado (cliente para a animação)");
+  });
+
   it("subir de nível manda `level_up` para todos e aumenta vida/mana máximas", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
     const a = new Member("a");

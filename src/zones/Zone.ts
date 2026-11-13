@@ -1077,7 +1077,11 @@ export class Zone {
   }
 
   private applyAttack(player: Entity): void {
-    if (player.dead || player.attackTarget === null) return;
+    if (player.dead || player.attackTarget === null) {
+      // Golpe órfão (o alvo saiu/morreu e já foi solto): não fica "golpeando" o nada.
+      if (player.cast?.kind === "attack") player.cast = null;
+      return;
+    }
     const target: Entity | undefined = this.entity(player.attackTarget);
     if (target === undefined || target.dead || !this.validAttackTarget(player, player.basicAttack, target)) {
       player.attackTarget = null;
@@ -1096,7 +1100,8 @@ export class Zone {
       }
       else this.events.push({ type: "miss", source: player.id, target: target.id, ability: cast.ability.id });
     }
-    if (player.cast !== null) return;
+    // O golpe que acabou de acertar pode ter matado o alvo (a morte solta o alvo de todos): sem golpe novo no corpo.
+    if (player.cast !== null || target.dead || player.attackTarget === null) return;
     // Andando (ou acabou de andar) não começa golpe: senão cada passo cancelaria e recomeçaria o ataque.
     if (this.currentTick - player.lastMoveTick <= ATTACK_MOVE_GRACE_TICKS) return;
     const attack: AbilityDef = player.basicAttack;
@@ -1468,7 +1473,15 @@ export class Zone {
       target.boost = null;
       target.dash = null;
     }
-    for (const entity of this.entities()) if (entity.attackTarget === target.id) entity.attackTarget = null;
+    // Quem atacava o morto solta o alvo, e o golpe do ataque simples em andamento contra ele é cancelado (senão o
+    // personagem ficava virado para o corpo, "golpeando", e o ataque travava até trocar de alvo).
+    for (const entity of this.entities()) {
+      if (entity.attackTarget === target.id) entity.attackTarget = null;
+      if (entity.cast?.kind === "attack" && entity.cast.targetId === target.id) {
+        this.events.push({ type: "cast_cancel", source: entity.id, ability: entity.cast.ability.id });
+        entity.cast = null;
+      }
+    }
     this.events.push({ type: "death", id: target.id, killer: source.id });
     // Monstro morto por jogador: XP para quem deu o golpe final ([JOGO-12]).
     if (target.kind === "dummy" && target.behavior.kind === "zombie" && source.kind === "player") {
