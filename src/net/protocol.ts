@@ -12,8 +12,11 @@
  * Mudança incompatível → incremente {@link PROTOCOL_VERSION}.
  */
 
-/** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 15;
+/**
+ * Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada
+ * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
+ */
+export const PROTOCOL_VERSION = 16;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -112,6 +115,16 @@ export const ServerMessageType = {
   FriendNotice: "friend_notice",
   /** Configuração social salva (resposta ao `social_settings`). Payload: {@link SocialSettings}. */
   SocialSettings: "social_settings",
+  /**
+   * Há um pacote do jogo mais novo para a plataforma do cliente (mmo-docs [INFRA-08]): vai no lugar do `auth_ok` (cliente
+   * que entra com pacote velho) ou a quem já está jogando quando uma versão nova é publicada. Logo depois o servidor fecha
+   * com {@link CloseCode.UpdateRequired}; o cliente baixa a versão nova sozinho e entra de novo. Payload:
+   * {@link UpdateRequiredData}.
+   *
+   * ATENÇÃO: contrato ESTÁVEL entre versões do protocolo (é o que tira um cliente velho da versão velha): nunca mudar
+   * o nome nem o formato. Lido em mmo-client/scripts/network/network.gd.
+   */
+  UpdateRequired: "update_required",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
 } as const;
@@ -213,12 +226,37 @@ export const CloseCode = {
   Timeout: 4001,
   /** A mesma conta entrou por outra conexão (outro aparelho/janela); esta foi derrubada. */
   Replaced: 4002,
+  /** Pacote do jogo desatualizado (veja o `update_required` enviado antes): o cliente atualiza e volta sozinho. */
+  UpdateRequired: 4003,
 } as const;
+
+/**
+ * Pacote do jogo que o cliente está rodando (mmo-docs [INFRA-08]), enviado na autenticação (v16).
+ * ATENÇÃO: contrato ESTÁVEL entre versões do protocolo (o servidor novo precisa ler o de um cliente velho para mandar
+ * ele atualizar): nunca mudar o formato. Montado em mmo-client/scripts/network/network.gd (`_client_build`).
+ */
+export interface ClientBuild {
+  /** Plataforma do pacote (`android`, `desktop`): a mesma pasta de `updates/` e do `publish_update.sh`. */
+  readonly platform: string;
+  /**
+   * Versão do pacote `.pck` em uso (a do manifesto quando foi baixado). `0` = dev (rodando o projeto do código-fonte,
+   * sem pacote): nunca é mandado atualizar.
+   */
+  readonly pack: number;
+}
+
+/** Payload de `update_required`. */
+export interface UpdateRequiredData {
+  /** Versão do pacote publicada agora para a plataforma do cliente. */
+  readonly version: number;
+}
 
 /** Payload de `register`. Regras em `src/accounts/credentials.ts`. */
 export interface RegisterData {
   /** {@link PROTOCOL_VERSION} do cliente. */
   readonly version: number;
+  /** Pacote do jogo do cliente (v16). Sem o campo = tratado como dev (nunca mandado atualizar). */
+  readonly client?: ClientBuild;
   /** Como o jogador quer aparecer no jogo (é exibido exatamente assim). */
   readonly username: string;
   readonly email: string;
@@ -228,6 +266,8 @@ export interface RegisterData {
 /** Payload de `login`. */
 export interface LoginData {
   readonly version: number;
+  /** Ver {@link RegisterData.client}. */
+  readonly client?: ClientBuild;
   /** Username ou e-mail (sem diferenciar maiúsculas). */
   readonly login: string;
   readonly password: string;
@@ -236,6 +276,8 @@ export interface LoginData {
 /** Payload de `resume`. */
 export interface ResumeData {
   readonly version: number;
+  /** Ver {@link RegisterData.client}. */
+  readonly client?: ClientBuild;
   /** Token recebido no último `auth_ok`. */
   readonly sessionToken: string;
 }
@@ -814,6 +856,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.FriendRequested; readonly data: FriendRequestedData }
   | { readonly type: typeof ServerMessageType.FriendNotice; readonly data: FriendNoticeData }
   | { readonly type: typeof ServerMessageType.SocialSettings; readonly data: SocialSettings }
+  | { readonly type: typeof ServerMessageType.UpdateRequired; readonly data: UpdateRequiredData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
 /** Serializa uma mensagem para enviar pelo WebSocket. */
@@ -841,29 +884,48 @@ const isVersion = (value: unknown): value is number => isFiniteNumber(value) && 
  */
 const MAX_AUTH_FIELD = 256;
 
+/** Nome de plataforma aceito em {@link ClientBuild.platform} (o mesmo das pastas de `updates/`). */
+const CLIENT_PLATFORM = /^[a-z]{1,16}$/;
+
+/**
+ * Lê o `client` opcional da autenticação: `undefined` sem o campo (cliente antigo/dev), `null` se vier fora do formato,
+ * senão o {@link ClientBuild}.
+ */
+export function parseClientBuild(value: unknown): ClientBuild | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return null;
+  const { platform, pack } = value;
+  if (typeof platform !== "string" || !CLIENT_PLATFORM.test(platform)) return null;
+  if (!isVersion(pack) || pack < 0) return null;
+  return { platform, pack };
+}
+
 /** Valida o formato de `register`. */
 export function parseRegisterData(data: unknown): RegisterData | null {
   if (!isRecord(data)) return null;
   const { version, username, email, password } = data;
-  if (!isVersion(version)) return null;
+  const client: ClientBuild | null | undefined = parseClientBuild(data["client"]);
+  if (!isVersion(version) || client === null) return null;
   if (!isStringUpTo(username, MAX_AUTH_FIELD) || !isStringUpTo(email, MAX_AUTH_FIELD) || !isStringUpTo(password, MAX_AUTH_FIELD)) return null;
-  return { version, username, email, password };
+  return { version, username, email, password, ...(client === undefined ? {} : { client }) };
 }
 
 /** Valida o formato de `login`. */
 export function parseLoginData(data: unknown): LoginData | null {
   if (!isRecord(data)) return null;
   const { version, login, password } = data;
-  if (!isVersion(version) || !isStringUpTo(login, MAX_AUTH_FIELD) || !isStringUpTo(password, MAX_AUTH_FIELD)) return null;
-  return { version, login, password };
+  const client: ClientBuild | null | undefined = parseClientBuild(data["client"]);
+  if (!isVersion(version) || client === null || !isStringUpTo(login, MAX_AUTH_FIELD) || !isStringUpTo(password, MAX_AUTH_FIELD)) return null;
+  return { version, login, password, ...(client === undefined ? {} : { client }) };
 }
 
 /** Valida o formato de `resume`. */
 export function parseResumeData(data: unknown): ResumeData | null {
   if (!isRecord(data)) return null;
   const { version, sessionToken } = data;
-  if (!isVersion(version) || !isStringUpTo(sessionToken, 128) || sessionToken.length === 0) return null;
-  return { version, sessionToken };
+  const client: ClientBuild | null | undefined = parseClientBuild(data["client"]);
+  if (!isVersion(version) || client === null || !isStringUpTo(sessionToken, 128) || sessionToken.length === 0) return null;
+  return { version, sessionToken, ...(client === undefined ? {} : { client }) };
 }
 
 /** Valida o payload de `join`. */

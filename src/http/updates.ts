@@ -12,7 +12,8 @@ import type { ServerResponse } from "node:http";
  *   script de publicação do cliente (mmo-client/tools/publish_update.sh);
  * - `game-<versão>.pck` — o pacote do jogo.
  *
- * ATENÇÃO: o formato do manifesto é lido por mmo-client/scripts/boot/updater.gd.
+ * ATENÇÃO: o formato do manifesto é lido por mmo-client/scripts/boot/updater.gd e scripts/boot/live_updater.gd;
+ * a versão também por `src/http/updateWatcher.ts` (manda atualizar quem está na versão velha).
  */
 
 /** Prefixo da rota. */

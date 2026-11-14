@@ -14,6 +14,7 @@ import {
   parseClientMessage,
   type BodyType,
   type AttributesView,
+  type ClientBuild,
   type ClientMessage,
   type JoinData,
   type LoginData,
@@ -34,6 +35,7 @@ import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition 
 import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
+import { DEFAULT_UPDATE_POLL_MS, UpdateWatcher } from "./http/updateWatcher.js";
 import { basicAttackOf, bonusHpOf, equip, equippedAbilities, lookOf, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
 import { inventoryView } from "./items/view.js";
 
@@ -49,10 +51,22 @@ export interface GameServerOptions {
   readonly log?: boolean;
   /** Pasta servida em `/updates/` (manifesto + pacotes do jogo). Padrão: `updates`. Ver mmo-docs [INFRA-08]. */
   readonly updatesDir?: string;
+  /**
+   * De quanto em quanto (ms) conferir se um manifesto de `updatesDir` mudou, além do `fs.watch` (ver
+   * `src/http/updateWatcher.ts`). Padrão: {@link DEFAULT_UPDATE_POLL_MS}.
+   */
+  readonly updatePollIntervalMs?: number;
 }
 
 /** Tamanho máximo de uma mensagem do cliente, em bytes. Maior que isso, o `ws` fecha a conexão (1009). */
 const MAX_MESSAGE_BYTES = 4096;
+
+/**
+ * Espera entre mandar a mensagem que explica um fechamento (`error` da recusa, `update_required`) e fechar a conexão,
+ * em ms. O `WebSocketPeer` do Godot DESCARTA as mensagens que chegam junto com o close (testado em 2026-11-14): sem a
+ * espera o cliente nunca via o motivo. O cliente v16 fecha sozinho ao receber `update_required`; isto é a garantia.
+ */
+export const CLOSE_DELAY_MS = 1000;
 
 /** Falhas de login/sessão aceitas por conexão antes de fechá-la (freio contra adivinhar senha). */
 export const MAX_AUTH_FAILURES = 5;
@@ -78,6 +92,10 @@ interface Session {
   readonly openedAt: number;
   /** Por que o servidor derrubou (heartbeat sem resposta, erro do socket); `null` = o outro lado fechou/caiu. */
   dropReason: string | null;
+  /** Pacote do jogo que o cliente disse rodar na autenticação ([INFRA-08]); `null` = não disse (dev/antigo). */
+  client: ClientBuild | null;
+  /** Já foi recusada/mandada atualizar e vai fechar em {@link CLOSE_DELAY_MS}: as mensagens dela são ignoradas. */
+  closing: boolean;
 }
 
 /** Como a autenticação aconteceu (só para o log). */
@@ -121,6 +139,8 @@ export class GameServer {
   private readonly knownNames: Map<string, string> = new Map();
   private tickTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** Versões publicadas do pacote do jogo por plataforma; versão nova → manda atualizar quem está na velha. */
+  private readonly updates: UpdateWatcher;
 
   constructor(options: GameServerOptions) {
     this.options = {
@@ -129,7 +149,13 @@ export class GameServer {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 10_000,
       log: options.log ?? true,
       updatesDir: options.updatesDir ?? DEFAULT_UPDATES_DIR,
+      updatePollIntervalMs: options.updatePollIntervalMs ?? DEFAULT_UPDATE_POLL_MS,
     };
+    this.updates = new UpdateWatcher({
+      dir: this.options.updatesDir,
+      pollIntervalMs: this.options.updatePollIntervalMs,
+      onVersion: (platform, version): void => this.onPackPublished(platform, version),
+    });
     for (const config of this.options.zones) this.zones.set(config.id, new Zone(config));
     this.friendRequests = new FriendRequests({
       send: (playerId, message): void => this.sendTo(playerId, message),
@@ -148,11 +174,12 @@ export class GameServer {
   }
 
   /**
-   * Começa a escutar e liga os timers de tick e heartbeat.
+   * Lê as versões publicadas do jogo, começa a escutar e liga os timers de tick e heartbeat.
    * @param port porta TCP; `0` escolhe uma livre (útil em testes).
    * @returns a porta efetivamente usada.
    */
-  listen(port: number): Promise<number> {
+  async listen(port: number): Promise<number> {
+    await this.updates.start();
     return new Promise((resolve, reject) => {
       this.http.once("error", reject);
       this.http.listen(port, () => {
@@ -168,6 +195,7 @@ export class GameServer {
   async close(): Promise<void> {
     if (this.tickTimer !== null) clearInterval(this.tickTimer);
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
+    this.updates.stop();
     await Promise.all(Array.from(this.sessions, (session) => this.leaveZone(session)));
     for (const session of this.sessions) session.socket.terminate();
     await new Promise<void>((resolve) => {
@@ -232,6 +260,8 @@ export class GameServer {
       alive: true,
       openedAt: Date.now(),
       dropReason: null,
+      client: null,
+      closing: false,
     };
     this.sessions.add(session);
 
@@ -274,6 +304,7 @@ export class GameServer {
   }
 
   private handleMessage(session: Session, message: ClientMessage): void {
+    if (session.closing) return;
     switch (message.type) {
       case ClientMessageType.Register:
         void this.handleRegister(session, message.data);
@@ -554,15 +585,24 @@ export class GameServer {
 
   /**
    * Checagens comuns antes de autenticar. Devolve `false` (e já respondeu) se não pode seguir.
-   * Versão errada fecha a conexão: um cliente desatualizado não deve nem tentar.
+   * Pacote do jogo desatualizado → `update_required` e fecha (antes da versão do protocolo: um cliente velho com
+   * protocolo velho também é mandado atualizar sozinho, em vez de só ver o erro). Versão do protocolo errada fecha a
+   * conexão: um cliente desatualizado não deve nem tentar.
    */
-  private canAuthenticate(session: Session, version: number): boolean {
+  private canAuthenticate(session: Session, data: { readonly version: number; readonly client?: ClientBuild }): boolean {
+    const version: number = data.version;
     if (session.account !== null) {
       this.sendError(session, ErrorCode.AlreadyAuthenticated, "já autenticado");
       return false;
     }
     if (session.authenticating) {
       this.sendError(session, ErrorCode.BadMessage, "autenticação em andamento");
+      return false;
+    }
+    session.client = data.client ?? null;
+    const published: number | undefined = this.outdatedBy(session.client);
+    if (published !== undefined) {
+      this.requireUpdate(session, published);
       return false;
     }
     if (version !== PROTOCOL_VERSION) {
@@ -573,7 +613,7 @@ export class GameServer {
   }
 
   private async handleRegister(session: Session, data: RegisterData): Promise<void> {
-    if (!this.canAuthenticate(session, data.version)) return;
+    if (!this.canAuthenticate(session, data)) return;
     const username: string = data.username.trim();
     const email: string = data.email.trim();
     if (!isValidUsername(username)) return this.authError(session, ErrorCode.InvalidUsername, false);
@@ -592,7 +632,7 @@ export class GameServer {
   }
 
   private async handleLogin(session: Session, data: LoginData): Promise<void> {
-    if (!this.canAuthenticate(session, data.version)) return;
+    if (!this.canAuthenticate(session, data)) return;
     const result: AuthSuccess | null | undefined = await this.runAuth(session, () =>
       this.options.accounts.login(data.login, data.password),
     );
@@ -602,7 +642,7 @@ export class GameServer {
   }
 
   private async handleResume(session: Session, data: ResumeData): Promise<void> {
-    if (!this.canAuthenticate(session, data.version)) return;
+    if (!this.canAuthenticate(session, data)) return;
     const account: Account | null | undefined = await this.runAuth(session, () =>
       this.options.accounts.resume(data.sessionToken),
     );
@@ -892,10 +932,54 @@ export class GameServer {
     session.socket.send(encodeServerMessage({ type: ServerMessageType.Error, data: { code, message } }));
   }
 
-  /** Envia `error` e fecha a conexão com {@link CloseCode.Rejected}. */
+  /**
+   * Versão publicada do pacote do jogo se `client` está rodando uma MENOR (precisa atualizar); senão `undefined`.
+   * Dev (`pack` 0), cliente que não disse o pacote e plataforma sem manifesto nunca precisam ([INFRA-08]).
+   */
+  private outdatedBy(client: ClientBuild | null): number | undefined {
+    if (client === null || client.pack <= 0) return undefined;
+    const published: number | undefined = this.updates.latestVersion(client.platform);
+    return published !== undefined && client.pack < published ? published : undefined;
+  }
+
+  /**
+   * Manda o cliente atualizar: `update_required { version }`, sai da zona (salvando a posição) e fecha com
+   * {@link CloseCode.UpdateRequired}. O cliente baixa o pacote novo sozinho e entra de novo com a sessão salva.
+   */
+  private requireUpdate(session: Session, version: number): void {
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(encodeServerMessage({ type: ServerMessageType.UpdateRequired, data: { version } }));
+    }
+    void this.leaveZone(session);
+    session.dropReason = `pacote ${session.client?.pack ?? "?"} desatualizado (publicado ${version})`;
+    this.closeSoon(session, CloseCode.UpdateRequired, "update_required");
+    const who: string = session.account?.username ?? session.connectionId;
+    this.log(`[update] ${who} (${session.client?.platform ?? "?"} pacote ${session.client?.pack ?? "?"}) mandado atualizar para ${version}`);
+  }
+
+  /** Versão nova do pacote publicada para `platform`: quem está conectado com uma menor é mandado atualizar. */
+  private onPackPublished(platform: string, version: number): void {
+    this.log(`[update] ${platform}: versão ${version} publicada`);
+    for (const session of this.sessions) {
+      if (!session.closing && session.client?.platform === platform && this.outdatedBy(session.client) !== undefined) {
+        this.requireUpdate(session, version);
+      }
+    }
+  }
+
+  /** Envia `error` e fecha a conexão com {@link CloseCode.Rejected} (depois de {@link CLOSE_DELAY_MS}). */
   private reject(session: Session, code: ErrorCode, message: string): void {
     this.sendError(session, code, message);
-    session.socket.close(CloseCode.Rejected, code);
+    this.closeSoon(session, CloseCode.Rejected, code);
+  }
+
+  /**
+   * Fecha a conexão com `code` daqui a {@link CLOSE_DELAY_MS} (dá tempo de o cliente ler a mensagem que explica o
+   * motivo) e, até lá, ignora o que ela mandar.
+   */
+  private closeSoon(session: Session, code: number, reason: string): void {
+    session.closing = true;
+    setTimeout(() => session.socket.close(code, reason), CLOSE_DELAY_MS).unref();
   }
 
   /** Escreve no console (se `options.log`), com a hora na frente (para ver quanto tempo passou entre eventos). */
