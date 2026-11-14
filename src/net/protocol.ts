@@ -16,8 +16,9 @@
  * Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
+ * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
  */
-export const PROTOCOL_VERSION = 17;
+export const PROTOCOL_VERSION = 18;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -633,6 +634,8 @@ export interface AbilityView {
   /** Redução de dano (0..1) e por quantos segundos ([JOGO-09]). 0 = não tem. */
   readonly damageReduction: number;
   readonly reductionSeconds: number;
+  /** Provocar (Desafio, [JOGO-14]): por quantos segundos os monstros em volta ficam presos em quem lançou. 0 = não tem (v18). */
+  readonly tauntSeconds: number;
 }
 
 /** Perfil do conjunto: cada atributo em "zero" | "low" | "medium" | "high" ([JOGO-09]). Só exibição. */

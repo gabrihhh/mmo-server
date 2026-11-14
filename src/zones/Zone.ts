@@ -53,6 +53,15 @@ import {
   PLAYER_RESPAWN_SECONDS,
   RANGE_TOLERANCE,
 } from "../combat/stats.js";
+import {
+  TAUNT_THREAT_MULTIPLIER,
+  THREAT_INITIAL,
+  THREAT_PER_DAMAGE,
+  THREAT_PER_HEAL,
+  ThreatTable,
+  chooseThreatTarget,
+  type ThreatCandidate,
+} from "../combat/threat.js";
 
 /**
  * Quem está numa zona, do ponto de vista dela: um id e um jeito de receber mensagens.
@@ -98,8 +107,8 @@ export interface ZoneMember {
  *   NPCs); tem vida e morre como o boneco;
  * - `zombie`: monstro ([JOGO-13]). Parado em casa até um jogador chegar a `aggroRadius` m de casa (ou bater nele);
  *   aí anda até ele a `speed` m/s e bate com o ataque simples da arma `weapon`, usando também a habilidade `ability`
- *   da arma quando ela estiver pronta e o alvo no alcance dela. Passou de `leashRadius` m de casa: desiste, volta
- *   andando (sem atacar) e enche a vida. Só ataca jogadores. Quem lutou contra ele ganha XP ({@link xpReward} do nível dele + {@link groupXp}).
+ *   da arma quando ela estiver pronta e o alvo no alcance dela. Quem ele ataca sai da tabela de ameaça ([JOGO-14]).
+ *   Passou de `leashRadius` m de casa: desiste, volta andando (sem atacar) e enche a vida. Só ataca jogadores. Quem lutou contra ele ganha XP ({@link xpReward} do nível dele + {@link groupXp}).
  */
 export type NpcBehavior =
   | { readonly kind: "dummy" }
@@ -416,6 +425,14 @@ interface ZoneDummy extends Combatant {
    * TODOS ganham a XP inteira ([JOGO-12]). Zera quando ele desiste (volta para casa) e quando reaparece.
    */
   readonly contributors: Set<string>;
+  /**
+   * Monstro: tabela de ameaça da luta atual ([JOGO-14]): decide quem ele ataca. Zera quando ele desiste (volta para
+   * casa), morre e reaparece; quem morre ou sai da zona sai dela. Separada dos `contributors` (XP).
+   */
+  readonly threat: ThreatTable;
+  /** Monstro provocado (Desafio, [JOGO-14]): por quem (`null` = ninguém) e até que tick fica preso nele. */
+  tauntedBy: string | null;
+  tauntUntilTick: number;
 }
 
 type Entity = ZonePlayer | ZoneDummy;
@@ -497,6 +514,9 @@ export class Zone {
         ability: behavior.kind === "zombie" ? (Zone.findAbility(behavior.ability)?.ability ?? null) : null,
         returning: false,
         contributors: new Set(),
+        threat: new ThreatTable(),
+        tauntedBy: null,
+        tauntUntilTick: 0,
       });
     }
     for (const fake of config.fakePlayers ?? []) this.addFake(fake);
@@ -743,6 +763,8 @@ export class Zone {
     this.groups.removePlayer(id);
     this.players.delete(id);
     for (const other of this.players.values()) if (other.attackTarget === id) other.attackTarget = null;
+    // Saiu da zona: sai da tabela de ameaça dos monstros ([JOGO-14]).
+    this.forgetThreat(id);
     this.broadcast({ type: ServerMessageType.PlayerLeft, data: { id } });
   }
 
@@ -963,6 +985,19 @@ export class Zone {
     return "ok";
   }
 
+  /**
+   * Tabela de ameaça do monstro `npcId` ([JOGO-14]), cópia só de leitura; `undefined` se o NPC não existe. Não vai para
+   * a rede (não há UI de ameaça): serve aos testes e à depuração.
+   */
+  threatOf(npcId: string): ReadonlyMap<string, number> | undefined {
+    return this.dummies.get(npcId)?.threat.snapshot();
+  }
+
+  /** Alvo atual do NPC `npcId` (`null` = nenhum; `undefined` = NPC não existe). Testes/depuração ([JOGO-14]). */
+  npcTargetOf(npcId: string): string | null | undefined {
+    return this.dummies.get(npcId)?.attackTarget;
+  }
+
   /** Estado atual de um jogador, ou `undefined` se não estiver na zona. */
   getSnapshot(id: string): PlayerSnapshot | undefined {
     const player: ZonePlayer | undefined = this.players.get(id);
@@ -1006,6 +1041,7 @@ export class Zone {
         entity.state = entity.home;
         entity.returning = false;
         entity.contributors.clear();
+        Zone.resetThreat(entity);
       }
       this.events.push({ type: "respawn", id: entity.id });
     }
@@ -1137,9 +1173,10 @@ export class Zone {
 
   /**
    * Zumbi ([JOGO-13]), a cada tick: voltando → anda para casa e, chegando, enche a vida; longe demais de casa →
-   * desiste; sem alvo → pega o jogador vivo mais perto dentro do raio de casa; com alvo e sem lançamento em
-   * andamento → usa a habilidade (pronta e no alcance dela), senão anda até o alcance do ataque simples (o golpe é o
-   * mesmo dos jogadores, {@link applyAttack}). Lançando, fica parado.
+   * desiste; jogador inimigo a até `aggroRadius` m de casa entra na tabela de ameaça com {@link THREAT_INITIAL};
+   * alvo = pela ameaça ({@link chooseZombieTarget}, [JOGO-14]); ninguém na tabela → volta para casa; com alvo e sem
+   * lançamento em andamento → usa a habilidade (pronta e no alcance dela), senão anda até o alcance do ataque simples
+   * (o golpe é o mesmo dos jogadores, {@link applyAttack}). Lançando, fica parado.
    */
   private zombieThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "zombie" }>): void {
     if (npc.returning) {
@@ -1153,26 +1190,20 @@ export class Zone {
       this.giveUp(npc);
       return;
     }
-    let target: Entity | undefined = npc.attackTarget === null ? undefined : this.entity(npc.attackTarget);
-    if (target !== undefined && !this.isEnemy(npc, target)) target = undefined;
-    if (target === undefined) {
-      let nearest: number = Infinity;
-      for (const player of this.players.values()) {
-        if (!this.isEnemy(npc, player) || Zone.distance(player.state, npc.home) > behavior.aggroRadius) continue;
-        const distance: number = Zone.distance(player.state, npc.state);
-        if (distance < nearest) {
-          nearest = distance;
-          target = player;
-        }
+    // Percepção: quem chega perto da casa entra na tabela com uma ameaça pequena, só para ele começar a vir.
+    for (const player of this.players.values()) {
+      if (this.isEnemy(npc, player) && Zone.distance(player.state, npc.home) <= behavior.aggroRadius) {
+        npc.threat.ensure(player.id, THREAT_INITIAL);
       }
     }
+    const target: ZonePlayer | undefined = this.chooseZombieTarget(npc);
     if (target === undefined) {
-      npc.attackTarget = null;
+      this.setNpcTarget(npc, null);
       // Perdeu o alvo (morreu, saiu) longe de casa: volta.
       if (Zone.distance(npc.state, npc.home) > 0.5) this.giveUp(npc);
       return;
     }
-    npc.attackTarget = target.id;
+    this.setNpcTarget(npc, target.id);
     if (npc.cast !== null) return;
     const ability: AbilityDef | null = npc.ability;
     const slot: string = ability === null ? "" : Zone.cardSlot(ability.id);
@@ -1193,12 +1224,86 @@ export class Zone {
     }
   }
 
+  /**
+   * Alvo do zumbi pela ameaça ([JOGO-14]). Provocado (Desafio) e quem provocou ainda é inimigo → ele, sem olhar a
+   * tabela. Senão {@link chooseThreatTarget} entre os jogadores da tabela que ele pode atacar ({@link isEnemy});
+   * corpo a corpo = a até o alcance do ataque simples dele + {@link RANGE_TOLERANCE}. Quem não está mais na zona ou
+   * morreu sai da tabela aqui também (segurança além de {@link forgetThreat}). `undefined` = ninguém.
+   */
+  private chooseZombieTarget(npc: ZoneDummy): ZonePlayer | undefined {
+    if (npc.tauntedBy !== null) {
+      const taunter: ZonePlayer | undefined = this.players.get(npc.tauntedBy);
+      if (this.currentTick < npc.tauntUntilTick && taunter !== undefined && this.isEnemy(npc, taunter)) return taunter;
+      npc.tauntedBy = null;
+    }
+    const candidates: ThreatCandidate[] = [];
+    for (const [id, threat] of Array.from(npc.threat.entries())) {
+      const player: ZonePlayer | undefined = this.players.get(id);
+      if (player === undefined || player.dead) {
+        npc.threat.remove(id);
+        continue;
+      }
+      if (!this.isEnemy(npc, player)) continue;
+      const distance: number = Zone.distance(npc.state, player.state);
+      candidates.push({ id, threat, distance, melee: distance <= npc.basicAttack.range + RANGE_TOLERANCE });
+    }
+    const chosen: string | null = chooseThreatTarget(candidates, npc.attackTarget);
+    return chosen === null ? undefined : this.players.get(chosen);
+  }
+
+  /**
+   * Troca o alvo do NPC. Mudou de alvo: o golpe do ataque simples em andamento contra o anterior é cancelado
+   * (`cast_cancel`), como quando o jogador troca de alvo; habilidade em andamento continua.
+   */
+  private setNpcTarget(npc: ZoneDummy, targetId: string | null): void {
+    if (npc.attackTarget === targetId) return;
+    npc.attackTarget = targetId;
+    if (npc.cast !== null && npc.cast.kind === "attack" && npc.cast.targetId !== targetId) {
+      this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
+      npc.cast = null;
+    }
+  }
+
+  /** Esvazia a tabela de ameaça e solta a provocação do monstro ([JOGO-14]). */
+  private static resetThreat(npc: ZoneDummy): void {
+    npc.threat.clear();
+    npc.tauntedBy = null;
+    npc.tauntUntilTick = 0;
+  }
+
+  /** Tira o jogador `id` da tabela de ameaça (e da provocação) de todos os monstros: morreu ou saiu da zona. */
+  private forgetThreat(id: string): void {
+    for (const npc of this.dummies.values()) {
+      npc.threat.remove(id);
+      if (npc.tauntedBy === id) npc.tauntedBy = null;
+    }
+  }
+
+  /**
+   * Desafio ([JOGO-14]): todo monstro vivo, inimigo de `caster` e não voltando para casa, a até `radius` (+ corpo) de
+   * quem lançou, é provocado por `tauntSeconds`: vira o alvo na hora (golpe contra outro é cancelado) e a ameaça de
+   * `caster` nele sobe para {@link TAUNT_THREAT_MULTIPLIER} × a maior dos outros (no mínimo {@link THREAT_INITIAL};
+   * se já for maior, mantém). Só jogadores provocam.
+   */
+  private taunt(caster: Entity, ability: AbilityDef): void {
+    if (caster.kind !== "player") return;
+    for (const npc of this.dummies.values()) {
+      if (!Zone.isMonster(npc) || npc.dead || npc.returning || !this.isEnemy(npc, caster)) continue;
+      if (Zone.distance(npc.state, caster.state) > ability.radius + BODY_RADIUS) continue;
+      npc.threat.raiseTo(caster.id, Math.max(THREAT_INITIAL, npc.threat.maxExcept(caster.id) * TAUNT_THREAT_MULTIPLIER));
+      npc.tauntedBy = caster.id;
+      npc.tauntUntilTick = this.currentTick + secondsToTicks(ability.tauntSeconds);
+      this.setNpcTarget(npc, caster.id);
+    }
+  }
+
   /** Zumbi desiste: solta o alvo, cancela o que estava lançando e volta para casa ([JOGO-13]). */
   private giveUp(npc: ZoneDummy): void {
     npc.attackTarget = null;
     npc.returning = true;
-    // Desistiu: a luta acabou sem morte, ninguém leva XP dela.
+    // Desistiu: a luta acabou sem morte, ninguém leva XP dela, e a ameaça zera ([JOGO-14]).
     npc.contributors.clear();
+    Zone.resetThreat(npc);
     if (npc.cast !== null) {
       this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
       npc.cast = null;
@@ -1370,7 +1475,7 @@ export class Zone {
    * - target: dano se o alvo ainda estiver vivo e no alcance; senão erra;
    * - direction: dano no PRIMEIRO inimigo na linha (alcance × largura); ninguém = erra;
    * - area: dano em todos no círculo do ponto; ponto fora do alcance (você se afastou) = erra;
-   * - area_self: dano em todos ao redor;
+   * - area_self: dano em todos ao redor (e provoca os monstros em volta, se `tauntSeconds`);
    * - self: cura e/ou escudo em quem lançou.
    */
   private resolveAbility(player: Entity, cast: Cast): void {
@@ -1423,6 +1528,8 @@ export class Zone {
       }
       case "area_self":
         this.areaDamage(player, ability, player.state.x, player.state.z);
+        // Provocar (Desafio, [JOGO-14]).
+        if (ability.tauntSeconds > 0) this.taunt(player, ability);
         // Cura/escudo em área: em você e nos aliados em volta ([JOGO-09]).
         if (ability.heal > 0 || ability.shield > 0) {
           for (const ally of this.entities()) {
@@ -1531,7 +1638,9 @@ export class Zone {
 
   /**
    * Cura e/ou escudo de `ability` em `target` (você mesmo ou um aliado, [JOGO-09]). A cura não passa da vida
-   * máxima (o evento `heal` leva quanto curou de fato); o escudo substitui o anterior.
+   * máxima (o evento `heal` leva quanto curou de fato); o escudo substitui o anterior. Jogador curando/protegendo
+   * jogador: ganha ameaça ({@link THREAT_PER_HEAL} × cura efetiva + escudo dado) em cada monstro que tem o curado na
+   * tabela ([JOGO-14]).
    */
   private support(source: Entity, target: Entity, ability: AbilityDef): void {
     if (target.dead) return;
@@ -1542,14 +1651,23 @@ export class Zone {
         if (!npc.dead && npc.contributors.has(target.id)) npc.contributors.add(source.id);
       }
     }
+    let supported: number = 0;
     if (ability.heal > 0) {
       const healed: number = round1(Math.min(target.maxHp - target.hp, ability.heal * factor));
       target.hp += healed;
+      supported += healed;
       this.events.push({ type: "heal", source: source.id, target: target.id, amount: healed, ability: ability.id });
     }
     if (ability.shield > 0) {
       target.shield = round1(ability.shield * factor);
       target.shieldUntilTick = this.currentTick + secondsToTicks(ability.shieldSeconds);
+      supported += target.shield;
+    }
+    // Ameaça da cura/escudo ([JOGO-14]): nos monstros que estão lutando com o curado.
+    if (supported > 0 && source.kind === "player" && target.kind === "player") {
+      for (const npc of this.dummies.values()) {
+        if (!npc.dead && !npc.returning && npc.threat.has(target.id)) npc.threat.add(source.id, supported * THREAT_PER_HEAL);
+      }
     }
   }
 
@@ -1721,9 +1839,10 @@ export class Zone {
     if (target.kind === "dummy") {
       target.lastHitTick = this.currentTick;
       if (source.kind === "player" && Zone.isMonster(target)) target.contributors.add(source.id);
-      // Zumbi atacado de longe (fora do raio): vai atrás de quem bateu.
-      if (target.behavior.kind === "zombie" && !target.returning && target.attackTarget === null && source.kind === "player") {
-        target.attackTarget = source.id;
+      // Ameaça do dano ([JOGO-14]): conta o que tirou da vida e do escudo dele. Quem bate de longe (fora da
+      // percepção) entra na tabela por aqui e o zumbi vai atrás. Voltando para casa, não ouve ninguém.
+      if (source.kind === "player" && Zone.isMonster(target) && !target.returning) {
+        target.threat.add(source.id, (dealt + absorbed) * THREAT_PER_DAMAGE);
       }
     }
     this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId });
@@ -1740,6 +1859,10 @@ export class Zone {
       target.inputs.length = 0;
       target.boost = null;
       target.dash = null;
+      // Morreu: sai da tabela de ameaça dos monstros ([JOGO-14]).
+      this.forgetThreat(target.id);
+    } else {
+      Zone.resetThreat(target);
     }
     // Quem atacava o morto solta o alvo, e o golpe do ataque simples em andamento contra ele é cancelado (senão o
     // personagem ficava virado para o corpo, "golpeando", e o ataque travava até trocar de alvo).

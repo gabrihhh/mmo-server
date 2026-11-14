@@ -44,6 +44,7 @@ O número de habilidades tem que bater com o slot; o `test/inventory.test.ts` co
 - `damageReduction` (0..1) + `reductionSeconds` — recebe menos dano por um tempo (só `"self"`, [JOGO-09]).
 - `dashDistance` — investida (desloca em metros, [JOGO-07]).
 - `speedMultiplier` + `speedSeconds` — corrida (multiplica a velocidade, [JOGO-07]).
+- `tauntSeconds` — provoca: os monstros no `radius` atacam só você por esse tempo (só `"area_self"`, ex. Desafio, [JOGO-14]).
 - Sempre: `cooldown` (s), `castTime` (s, 0 = instantânea), `manaCost`.
 - `available: false` — a carta aparece, mas o servidor responde "disponível em breve" (útil para rascunho).
 

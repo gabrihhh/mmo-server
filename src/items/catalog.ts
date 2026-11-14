@@ -105,6 +105,13 @@ export interface AbilityDef {
   /** Disparada: multiplicador de velocidade e por quantos segundos / passos de movimento ([JOGO-07]). */
   readonly speedMultiplier: number;
   readonly speedSeconds: number;
+  /**
+   * Provocar ([JOGO-14]), em segundos (0 = não provoca). Hoje só na mira "area_self": no fim do lançamento, todo
+   * monstro inimigo a até `radius` (+ corpo) passa a atacar quem lançou NA HORA e fica preso nele por esse tempo
+   * (ignora a regra de troca de alvo), e a ameaça de quem lançou nele vira 110% da maior dos outros (se já for maior,
+   * mantém). Monstro voltando para casa não é provocado.
+   */
+  readonly tauntSeconds: number;
   /** `false` = ainda não implementada no servidor; ele recusa com "disponível em breve". */
   readonly available: boolean;
 }
@@ -148,6 +155,7 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   dashSeconds: 0,
   speedMultiplier: 0,
   speedSeconds: 0,
+  tauntSeconds: 0,
   available: true,
   ...spec,
 });
@@ -308,7 +316,8 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
       // Sem projétil: acerta na hora o primeiro inimigo na faixa larga à frente.
       ability({ id: "line_cleave", title: "Corte em linha", description: "Corte largo à frente que acerta o primeiro inimigo.", aim: "direction", range: 4, radius: 1.2, cooldown: 7, castTime: 0.5, manaCost: 12, damage: 14 }),
       ability({ id: "heroic_charge", title: "Avanço heroico", description: "Avança longe na direção escolhida.", aim: "direction", range: 8, radius: 1, cooldown: 10, castTime: 0, manaCost: 12, dashDistance: 8, dashSeconds: 0.4 }),
-      ability({ id: "ground_slam", title: "Terremoto", description: "Crava a espada no chão e acerta todos em volta.", aim: "area_self", radius: 3.5, cooldown: 12, castTime: 0.8, manaCost: 20, damage: 12 }),
+      // Tanque ([JOGO-14]): sem dano; provoca todo monstro em volta (vira o alvo dele por 4 s). Era o Terremoto.
+      ability({ id: "challenge", title: "Desafio", description: "Desafia os monstros em volta: eles atacam só você por um tempo.", aim: "area_self", radius: 6, cooldown: 12, castTime: 0.5, manaCost: 20, tauntSeconds: 4 }),
     ],
   },
   knight_helm: {

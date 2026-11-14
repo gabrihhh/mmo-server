@@ -30,6 +30,7 @@ function abilityView(def: AbilityDef): AbilityView {
     projectileSpeed: def.projectileSpeed,
     damageReduction: def.damageReduction,
     reductionSeconds: def.reductionSeconds,
+    tauntSeconds: def.tauntSeconds,
   };
 }
 
