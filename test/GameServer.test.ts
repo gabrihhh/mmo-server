@@ -318,10 +318,10 @@ describe("GameServer", () => {
       assert.ok(players.length >= 1);
       a.client.send("attack", { targetId: "nao-existe" });
       assert.strictEqual((await a.client.next("error")).data["code"], "invalid_target");
-      a.client.send("attack", { targetId: "dummy_1" });
+      a.client.send("attack", { targetId: "dummy_2" });
       const snap: ReceivedMessage = await a.client.nextMatching("snapshot", (m) => {
         const me: unknown = m.data["me"];
-        return typeof me === "object" && me !== null && "target" in me && me.target === "dummy_1";
+        return typeof me === "object" && me !== null && "target" in me && me.target === "dummy_2";
       });
       const npcs: unknown = snap.data["npcs"];
       assert.ok(Array.isArray(npcs) && npcs.length === (ZONE_CONFIGS[0]?.dummies.length ?? -1), "bonecos e NPCs de teste no snapshot");

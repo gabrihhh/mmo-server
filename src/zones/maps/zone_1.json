@@ -1,0 +1,219 @@
+{
+  "monsters": [
+    {
+      "id": "zombie_0_1",
+      "kind": "fighter",
+      "level": 0,
+      "x": -4.97,
+      "z": 15.03,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_0_2",
+      "kind": "fighter",
+      "level": 0,
+      "x": 5.14,
+      "z": 15.04,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_1_1",
+      "kind": "fighter",
+      "level": 1,
+      "x": -4.99,
+      "z": 24.94,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_1_2",
+      "kind": "fighter",
+      "level": 1,
+      "x": 5.04,
+      "z": 25.19,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_2_1",
+      "kind": "fighter",
+      "level": 2,
+      "x": -5.0,
+      "z": 35.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_2_2",
+      "kind": "fighter",
+      "level": 2,
+      "x": 5.0,
+      "z": 35.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_3_1",
+      "kind": "fighter",
+      "level": 3,
+      "x": -5.0,
+      "z": 45.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_3_2",
+      "kind": "fighter",
+      "level": 3,
+      "x": 5.0,
+      "z": 45.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_4_1",
+      "kind": "fighter",
+      "level": 4,
+      "x": -5.0,
+      "z": 55.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_4_2",
+      "kind": "fighter",
+      "level": 4,
+      "x": 5.0,
+      "z": 55.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_5_1",
+      "kind": "fighter",
+      "level": 5,
+      "x": -5.0,
+      "z": 65.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_5_2",
+      "kind": "fighter",
+      "level": 5,
+      "x": 5.0,
+      "z": 65.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_6_1",
+      "kind": "fighter",
+      "level": 6,
+      "x": -5.0,
+      "z": 75.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_6_2",
+      "kind": "fighter",
+      "level": 6,
+      "x": 5.0,
+      "z": 75.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_7_1",
+      "kind": "fighter",
+      "level": 7,
+      "x": -5.0,
+      "z": 85.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_7_2",
+      "kind": "fighter",
+      "level": 7,
+      "x": 5.0,
+      "z": 85.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_8_1",
+      "kind": "fighter",
+      "level": 8,
+      "x": -5.0,
+      "z": 95.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_8_2",
+      "kind": "fighter",
+      "level": 8,
+      "x": 5.0,
+      "z": 95.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_9_1",
+      "kind": "fighter",
+      "level": 9,
+      "x": -5.0,
+      "z": 105.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_9_2",
+      "kind": "fighter",
+      "level": 9,
+      "x": 5.0,
+      "z": 105.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_10_1",
+      "kind": "fighter",
+      "level": 10,
+      "x": -5.0,
+      "z": 115.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    },
+    {
+      "id": "zombie_10_2",
+      "kind": "fighter",
+      "level": 10,
+      "x": 5.0,
+      "z": 115.0,
+      "resetRange": 20.0,
+      "perception": 5.0
+    }
+  ],
+  "npcs": [
+    {
+      "id": "dummy_2",
+      "x": -0.15,
+      "z": -6.83
+    },
+    {
+      "id": "test_bag",
+      "x": -8.15,
+      "z": -1.11
+    },
+    {
+      "id": "test_shooter",
+      "x": -8.15,
+      "z": -9.11
+    }
+  ]
+}

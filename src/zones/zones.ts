@@ -1,8 +1,8 @@
 import type { DummyConfig, ZoneConfig } from "./Zone.js";
-import { parseMonsterSpawns, type MonsterKind, type MonsterSpawn } from "./monsterSpawns.js";
-// Posições e níveis dos zumbis: escritos pelo editor do Godot ([MUN-05]). Importado (não lido do disco) para o
+import { parseZoneMap, type MonsterKind, type MonsterSpawn, type ZoneMapData } from "./zoneMap.js";
+// Monstros e lugar dos NPCs de teste: exportados do spawn.blend ([ART-10]). Importado (não lido do disco) para o
 // `tsx watch` recarregar o servidor sozinho quando o arquivo muda.
-import zone1Monsters from "./monsters/zone_1.json" with { type: "json" };
+import zone1MapFile from "./maps/zone_1.json" with { type: "json" };
 
 /**
  * Metade do lado da Zone 1 em metros (terreno 300 m × 300 m centrado na origem). Ver mmo-docs [MUN-03].
@@ -11,12 +11,13 @@ import zone1Monsters from "./monsters/zone_1.json" with { type: "json" };
  */
 export const ZONE_HALF_SIZE = 150;
 
-/** Vida (no nível 0), velocidade (m/s), raio de perseguição e de desistência (m) e tempo para reaparecer (s) dos zumbis. */
+/**
+ * Vida (no nível 0), velocidade (m/s) e tempo para reaparecer (s) dos zumbis. Percepção e desistência são de cada
+ * zumbi (Custom Properties no Blender, [ART-10]).
+ */
 const ZOMBIE_FIGHTER_HP = 150;
 const ZOMBIE_SHOOTER_HP = 100;
 const ZOMBIE_SPEED = 3.5;
-const ZOMBIE_AGGRO_RADIUS = 8;
-const ZOMBIE_LEASH_RADIUS = 20;
 const ZOMBIE_RESPAWN_SECONDS = 10;
 /** Dano dos zumbis: metade do da arma (provisório; com a força cheia, um jogador nível 0 não aguenta). */
 const ZOMBIE_DAMAGE_MULTIPLIER = 0.5;
@@ -45,15 +46,58 @@ function zombie(spawn: MonsterSpawn): DummyConfig {
       kind: "zombie",
       weapon,
       ability: fighter ? "line_cleave" : "piercing_bolt",
-      aggroRadius: ZOMBIE_AGGRO_RADIUS,
-      leashRadius: ZOMBIE_LEASH_RADIUS,
+      aggroRadius: spawn.perception,
+      leashRadius: spawn.resetRange,
       speed: ZOMBIE_SPEED,
     },
   };
 }
 
-/** Zumbis da Zone 1, de `monsters/zone_1.json` (validado: erro ao subir se o arquivo estiver errado). */
-const ZOMBIES: readonly DummyConfig[] = parseMonsterSpawns(zone1Monsters, ZONE_HALF_SIZE).map(zombie);
+/** Mapa da Zone 1 (validado: erro ao subir se o arquivo estiver errado). */
+const ZONE_1_MAP: ZoneMapData = parseZoneMap(zone1MapFile, ZONE_HALF_SIZE);
+
+/**
+ * Bonecos de treino e NPCs de teste que existem ([JOGO-05], [JOGO-11]), sem lugar: entram na zona só os que estão no
+ * mapa do Blender (cilindro com `(id)` no nome), na posição de lá. Os que não estão no mapa ficam de fora.
+ */
+const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
+  { id: "dummy_1", name: "Boneco de treino" },
+  { id: "dummy_2", name: "Boneco de treino" },
+  { id: "dummy_3", name: "Boneco de treino" },
+  // Saco de pancadas: leva os tiros do atirador, não morre, dá para curar.
+  { id: "test_bag", name: "Saco de pancadas", behavior: { kind: "punchingBag", regenDelaySeconds: 5, regenPerSecond: 40 } },
+  // Atirador: humano invulnerável, alterna habilidades de longe de três conjuntos no saco de pancadas.
+  {
+    id: "test_shooter",
+    name: "Atirador de treino",
+    body: "male",
+    behavior: {
+      kind: "shooter",
+      target: "test_bag",
+      rotation: ["fireball", "meteor", "ice_lance", "starfall", "piercing_bolt", "bolt_rain", "bolt", "quick_shot"],
+      pauseSeconds: 2,
+    },
+  },
+  // Brigão: parado, bate com o ataque da espada longa em quem chegar perto; tem vida e morre.
+  {
+    id: "test_brawler",
+    name: "Brigão",
+    body: "male",
+    look: { hand: "knight_sword", head: "knight_helm", chest: "knight_plate", feet: "knight_greaves" },
+    behavior: { kind: "brawler", weapon: "knight_sword" },
+  },
+];
+
+/** Os NPCs de teste que o mapa [map] põe na zona, cada um no seu lugar. Id que não existe em {@link TEST_NPCS} → erro. */
+export function placeTestNpcs(map: ZoneMapData): DummyConfig[] {
+  return map.npcs.map((placement): DummyConfig => {
+    const npc = TEST_NPCS.find((candidate) => candidate.id === placement.id);
+    if (npc === undefined) {
+      throw new Error(`mapa: NPC ${placement.id} não existe em zones.ts (TEST_NPCS)`);
+    }
+    return { ...npc, x: placement.x, z: placement.z };
+  });
+}
 
 /** Zonas que o servidor cria ao subir. O cliente escolhe uma pelo `id` no `join`. */
 export const ZONE_CONFIGS: readonly ZoneConfig[] = [
@@ -66,46 +110,7 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     spawnRadius: 3.5,
     // PvP ligado: é assim que testamos ([JOGO-02]). Zonas seguras virão com `pvp: false`.
     pvp: true,
-    // Bonecos de treino e NPCs de teste no campo, logo depois da escada do lado −Z da praça ([JOGO-05], [JOGO-11], [MUN-03]).
-    dummies: [
-      { id: "dummy_1", name: "Boneco de treino", x: 0, z: -18 },
-      { id: "dummy_2", name: "Boneco de treino", x: -6, z: -21 },
-      { id: "dummy_3", name: "Boneco de treino", x: 6, z: -21 },
-      // NPCs de teste ([JOGO-11]). Saco de pancadas: leva os tiros do atirador, não morre, dá para curar.
-      {
-        id: "test_bag",
-        name: "Saco de pancadas",
-        x: -14,
-        z: -20,
-        behavior: { kind: "punchingBag", regenDelaySeconds: 5, regenPerSecond: 40 },
-      },
-      // Atirador: humano invulnerável, 8 m atrás do saco, alterna habilidades de longe de três conjuntos.
-      {
-        id: "test_shooter",
-        name: "Atirador de treino",
-        x: -14,
-        z: -28,
-        body: "male",
-        behavior: {
-          kind: "shooter",
-          target: "test_bag",
-          rotation: ["fireball", "meteor", "ice_lance", "starfall", "piercing_bolt", "bolt_rain", "bolt", "quick_shot"],
-          pauseSeconds: 2,
-        },
-      },
-      // Brigão: parado, bate com o ataque da espada longa em quem chegar perto; tem vida e morre.
-      {
-        id: "test_brawler",
-        name: "Brigão",
-        x: 14,
-        z: -20,
-        body: "male",
-        look: { hand: "knight_sword", head: "knight_helm", chest: "knight_plate", feet: "knight_greaves" },
-        behavior: { kind: "brawler", weapon: "knight_sword" },
-      },
-      // Zumbis de teste ([JOGO-13]): onde e de que nível, no editor do Godot ([MUN-05]). Corpo de homem sem roupa
-      // (só a arma).
-      ...ZOMBIES,
-    ],
+    // NPCs de teste e zumbis ([JOGO-13]) onde estão no mapa do Blender ([ART-10]).
+    dummies: [...placeTestNpcs(ZONE_1_MAP), ...ZONE_1_MAP.monsters.map(zombie)],
   },
 ];
