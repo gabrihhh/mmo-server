@@ -1,4 +1,4 @@
-import type { DummyConfig, ZoneConfig } from "./Zone.js";
+import type { DummyConfig, FakePlayerConfig, ZoneConfig } from "./Zone.js";
 import { parseZoneMap, type MonsterKind, type MonsterSpawn, type ZoneMapData } from "./zoneMap.js";
 // Monstros e lugar dos NPCs de teste: exportados do spawn.blend ([ART-10]). Importado (não lido do disco) para o
 // `tsx watch` recarregar o servidor sozinho quando o arquivo muda.
@@ -88,9 +88,50 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
   },
 ];
 
-/** Os NPCs de teste que o mapa [map] põe na zona, cada um no seu lugar. Id que não existe em {@link TEST_NPCS} → erro. */
+/**
+ * Jogadores fake de teste ([SOC-01]), parados perto do spawn, para testar Jogadores Próximos, Atributos e (próximas
+ * etapas) grupo e amizade sem um segundo aparelho. Entram SEMPRE na zona: no lugar do cilindro com `(id)` no nome do
+ * `spawn.blend`, se houver ("Fake Aceita (fake_accept)"), senão na posição padrão daqui (a ~7 m do centro da praça,
+ * fora do círculo de spawn e longe dos zumbis).
+ */
+export const TEST_FAKE_PLAYERS: readonly FakePlayerConfig[] = [
+  {
+    id: "fake_accept",
+    name: "Fake Aceita",
+    x: 7,
+    z: -2,
+    body: "female",
+    level: 3,
+    look: { hand: "healer_tome", head: "healer_circlet", chest: "healer_robe", feet: "healer_sandals" },
+    autoReply: "accept",
+  },
+  {
+    id: "fake_reject",
+    name: "Fake Recusa",
+    x: 7,
+    z: 2,
+    body: "male",
+    level: 5,
+    look: { hand: "knight_sword", head: "knight_helm", chest: "knight_plate", feet: "knight_greaves" },
+    autoReply: "reject",
+  },
+];
+
+/** Os jogadores fake ({@link TEST_FAKE_PLAYERS}), cada um no lugar que o mapa [map] der para ele (ou no padrão). */
+export function placeFakePlayers(map: ZoneMapData): FakePlayerConfig[] {
+  return TEST_FAKE_PLAYERS.map((fake): FakePlayerConfig => {
+    const placement = map.npcs.find((candidate) => candidate.id === fake.id);
+    return placement === undefined ? fake : { ...fake, x: placement.x, z: placement.z };
+  });
+}
+
+/**
+ * Os NPCs de teste que o mapa [map] põe na zona, cada um no seu lugar. Ids de jogador fake ({@link TEST_FAKE_PLAYERS})
+ * são pulados (entram por {@link placeFakePlayers}); qualquer outro id que não existe em {@link TEST_NPCS} → erro.
+ */
 export function placeTestNpcs(map: ZoneMapData): DummyConfig[] {
-  return map.npcs.map((placement): DummyConfig => {
+  const placements = map.npcs.filter((placement) => !TEST_FAKE_PLAYERS.some((fake) => fake.id === placement.id));
+  return placements.map((placement): DummyConfig => {
     const npc = TEST_NPCS.find((candidate) => candidate.id === placement.id);
     if (npc === undefined) {
       throw new Error(`mapa: NPC ${placement.id} não existe em zones.ts (TEST_NPCS)`);
@@ -112,5 +153,7 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     pvp: true,
     // NPCs de teste e zumbis ([JOGO-13]) onde estão no mapa do Blender ([ART-10]).
     dummies: [...placeTestNpcs(ZONE_1_MAP), ...ZONE_1_MAP.monsters.map(zombie)],
+    // Jogadores fake de teste ([SOC-01]): "Fake Aceita" e "Fake Recusa", parados perto do spawn.
+    fakePlayers: placeFakePlayers(ZONE_1_MAP),
   },
 ];

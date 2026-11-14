@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -45,6 +45,11 @@ export const ClientMessageType = {
   Attack: "attack",
   /** Lança uma habilidade (carta) vestida. Payload: {@link CastData}. Ver mmo-docs [JOGO-06]. */
   Cast: "cast",
+  /**
+   * Pede os atributos de outro jogador da zona (Menu → Jogadores Próximos → Atributos, mmo-docs [SOC-02]).
+   * Payload: {@link InspectData}. Resposta: {@link ServerMessageType.Attributes} ou erro `player_not_found`.
+   */
+  Inspect: "inspect",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -63,6 +68,8 @@ export const ServerMessageType = {
   Snapshot: "snapshot",
   /** Inventário completo (vestido + mochila) com o que cada item faz. Vem após o `auth_ok` e a cada troca. */
   Inventory: "inventory",
+  /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
+  Attributes: "attributes",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
 } as const;
@@ -123,6 +130,8 @@ export const ErrorCode = {
   BodyNotChosen: "body_not_chosen",
   /** `choose_body` numa conta que já escolheu (a escolha é para sempre). A conexão continua. */
   BodyAlreadyChosen: "body_already_chosen",
+  /** `inspect` de quem não está (mais) na zona. A conexão continua. */
+  PlayerNotFound: "player_not_found",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -248,6 +257,12 @@ export interface AttackData {
   readonly targetId: string | null;
 }
 
+/** Payload de `inspect`. */
+export interface InspectData {
+  /** Id do jogador cujos atributos se quer ver (pode ser você mesmo). */
+  readonly playerId: string;
+}
+
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Register; readonly data: RegisterData }
@@ -260,7 +275,8 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
-  | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData };
+  | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
+  | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -487,6 +503,41 @@ export interface InventoryView {
   readonly unarmedAttack: AbilityView;
 }
 
+/** Item vestido como aparece nos Atributos de um jogador: só o que se mostra (sem uid nem habilidades). */
+export interface EquippedItemSummary {
+  readonly itemId: string;
+  readonly name: string;
+  /** Conjunto ("Treino", "Mago"...): cor da moldura do ícone no cliente. */
+  readonly set: string;
+}
+
+/**
+ * Força do jogador pelo nível ([JOGO-12]): multiplicadores (1 = nível 0) do dano, da cura e do escudo que ele dá.
+ * Hoje os três são iguais (1 + 1% por nível); separados para poderem divergir sem mudar o protocolo.
+ */
+export interface PowerView {
+  readonly damage: number;
+  readonly healing: number;
+  readonly shield: number;
+}
+
+/**
+ * Payload de `attributes` (resposta ao `inspect`, mmo-docs [SOC-02]): o que a tela de Atributos mostra.
+ * ATENÇÃO: lido em mmo-client/scripts/ui/attributes_panel.gd (AttributesPanel.show_attributes).
+ */
+export interface AttributesView {
+  /** Id do jogador. */
+  readonly id: string;
+  readonly name: string;
+  readonly level: number;
+  /** Vida e mana máximas (com a vida extra dos itens e o nível; 1 casa decimal). */
+  readonly maxHp: number;
+  readonly maxMana: number;
+  readonly power: PowerView;
+  /** O que veste em cada slot (`null` = vazio). */
+  readonly equipped: Readonly<Record<EquipSlotName, EquippedItemSummary | null>>;
+}
+
 /** Payload de `snapshot`. */
 export interface SnapshotData {
   /** Número do tick do servidor que gerou este estado. */
@@ -542,6 +593,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.PlayerLeft; readonly data: { readonly id: string } }
   | { readonly type: typeof ServerMessageType.Snapshot; readonly data: SnapshotData }
   | { readonly type: typeof ServerMessageType.Inventory; readonly data: InventoryView }
+  | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
 /** Serializa uma mensagem para enviar pelo WebSocket. */
@@ -674,6 +726,14 @@ export function parseAttackData(data: unknown): AttackData | null {
   return { targetId };
 }
 
+/** Valida o payload de `inspect`. */
+export function parseInspectData(data: unknown): InspectData | null {
+  if (!isRecord(data)) return null;
+  const { playerId } = data;
+  if (typeof playerId !== "string" || playerId.length === 0 || playerId.length > 64) return null;
+  return { playerId };
+}
+
 /**
  * Decodifica e valida uma mensagem de texto vinda da rede (não confiável).
  * @returns a mensagem tipada, ou `null` se o JSON, o tipo ou o payload forem inválidos.
@@ -730,6 +790,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Cast: {
       const data = parseCastData(raw);
       return data === null ? null : { type: ClientMessageType.Cast, data };
+    }
+    case ClientMessageType.Inspect: {
+      const data = parseInspectData(raw);
+      return data === null ? null : { type: ClientMessageType.Inspect, data };
     }
     default:
       return null;

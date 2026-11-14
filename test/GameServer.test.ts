@@ -5,7 +5,7 @@ import { InMemoryAccountStore } from "../src/accounts/AccountStore.js";
 import { CloseCode, PROTOCOL_VERSION } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 import { TestClient, sleep, type ReceivedMessage } from "./helpers.js";
-import { ZONE_CONFIGS } from "../src/zones/zones.js";
+import { TEST_FAKE_PLAYERS, ZONE_CONFIGS } from "../src/zones/zones.js";
 import { VIEW_RADIUS } from "../src/zones/Zone.js";
 
 const ZONE = "zone_1";
@@ -254,6 +254,25 @@ describe("GameServer", () => {
     });
   });
 
+  describe("atributos (inspect)", () => {
+    it("responde os atributos de um jogador da zona; quem não está → player_not_found", async () => {
+      const a: Player = await registered("Inspetor");
+      a.client.send("inspect", { playerId: "fake_accept" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "not_authenticated", "antes de entrar na zona");
+      await join(a);
+      a.client.send("inspect", { playerId: "fake_accept" });
+      const attributes: ReceivedMessage = await a.client.next("attributes");
+      assert.strictEqual(attributes.data["name"], "Fake Aceita");
+      assert.strictEqual(attributes.data["level"], TEST_FAKE_PLAYERS[0]?.level);
+      const equipped: unknown = attributes.data["equipped"];
+      assert.ok(typeof equipped === "object" && equipped !== null && "hand" in equipped);
+      a.client.send("inspect", { playerId: a.playerId });
+      assert.strictEqual((await a.client.next("attributes")).data["name"], "Inspetor", "dá para ver os próprios");
+      a.client.send("inspect", { playerId: "ninguem" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "player_not_found");
+    });
+  });
+
   describe("zona", () => {
     it("entra na zona e avisa os outros, com o nome de cada um", async () => {
       const a: Player = await registered("Alice");
@@ -261,8 +280,10 @@ describe("GameServer", () => {
 
       const b: Player = await registered("Bob_2");
       const players: unknown[] = await join(b);
-      assert.strictEqual(players.length, 2);
+      // Os dois jogadores + os jogadores fake de teste ([SOC-01]), que vêm como jogadores.
+      assert.strictEqual(players.length, 2 + TEST_FAKE_PLAYERS.length);
       assert.strictEqual(entryOf(players, a.playerId)?.["name"], "Alice");
+      assert.strictEqual(entryOf(players, "fake_accept")?.["name"], "Fake Aceita");
       const joinedMsg: ReceivedMessage = await a.client.next("player_joined");
       assert.strictEqual(entryOf([joinedMsg.data["player"]], b.playerId)?.["name"], "Bob_2");
 

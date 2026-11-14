@@ -14,6 +14,8 @@ import {
   type PlayerSnapshot,
   type ServerMessage,
   type SimParams,
+  type AttributesView,
+  type EquippedItemSummary,
 } from "../net/protocol.js";
 import {
   MOVE_SPEED,
@@ -36,7 +38,7 @@ import {
   STARTING_PROGRESS,
   type Progress,
 } from "../progression/level.js";
-import { ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
+import { EQUIP_SLOTS, ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
   DUMMY_RESPAWN_SECONDS,
@@ -126,6 +128,32 @@ export interface DummyConfig {
   readonly damageMultiplier?: number;
 }
 
+/**
+ * Como um jogador fake responde a convites de grupo e pedidos de amizade (mmo-docs [SOC-01]): `accept` aceita
+ * sempre, `reject` recusa sempre. A resposta chega a quem pediu como se viesse de um jogador de verdade.
+ * Hoje só fica guardado ({@link Zone.autoReplyOf}): grupo e amizade entram nas próximas etapas e leem daqui.
+ */
+export type AutoReply = "accept" | "reject";
+
+/**
+ * Jogador fake de teste ([SOC-01]): para o jogo é um jogador (vem no `welcome`/`snapshot` como jogador, com nome,
+ * nível, roupa e corpo), mas não tem conexão nem anda. Monstros e NPCs não o atacam (para não sumir no teste);
+ * jogadores com PvP podem. Morto, renasce no mesmo lugar. Metros.
+ */
+export interface FakePlayerConfig {
+  /** Id de jogador (não pode colidir com um `playerId` de conta; usamos o prefixo `fake_`). */
+  readonly id: string;
+  readonly name: string;
+  readonly x: number;
+  readonly z: number;
+  readonly body: BodyType;
+  /** Nível ([JOGO-12]): vida/mana máximas e força como as de um jogador desse nível. */
+  readonly level: number;
+  /** O que veste (vida extra dos itens conta na vida máxima, como no jogador). */
+  readonly look: Look;
+  readonly autoReply: AutoReply;
+}
+
 /** Parâmetros de uma zona. */
 export interface ZoneConfig {
   /** Id usado pelo cliente no `join` (ex.: `"zone_1"`). */
@@ -140,6 +168,8 @@ export interface ZoneConfig {
   readonly pvp: boolean;
   /** Bonecos de treino da zona. */
   readonly dummies: readonly DummyConfig[];
+  /** Jogadores fake de teste ([SOC-01]); ausente = nenhum. Não contam em `maxPlayers` nem no "online". */
+  readonly fakePlayers?: readonly FakePlayerConfig[];
 }
 
 /** Onde e virado para onde o jogador aparece. Metros e radianos. */
@@ -240,6 +270,15 @@ interface ZonePlayer extends Combatant {
   look: Look;
   /** Nível e XP do personagem ([JOGO-12]); vão só para ele, no `me` do snapshot. */
   progress: Progress;
+  /** Jogador fake de teste ([SOC-01]): como responde e onde renasce. `null` = jogador de verdade. */
+  readonly fake: FakeState | null;
+}
+
+/** O que só o jogador fake tem ([SOC-01]). */
+interface FakeState {
+  readonly autoReply: AutoReply;
+  /** Onde fica parado (e renasce). */
+  readonly home: MoveState;
 }
 
 /**
@@ -428,11 +467,104 @@ export class Zone {
         contributors: new Set(),
       });
     }
+    for (const fake of config.fakePlayers ?? []) this.addFake(fake);
   }
 
-  /** Número de jogadores na zona. */
+  /**
+   * Põe o jogador fake [fake] na zona ([SOC-01]): um {@link ZonePlayer} cujo `send` não faz nada (não tem conexão)
+   * e que nunca manda input. A vida extra dos itens vestidos conta como no jogador de verdade.
+   */
+  private addFake(fake: FakePlayerConfig): void {
+    const factor: number = playerFactor(fake.level);
+    let bonusHp: number = 0;
+    for (const slot of EQUIP_SLOTS) {
+      const itemId: string | null = fake.look[slot];
+      if (itemId !== null) bonusHp += getItem(itemId)?.bonusHp ?? 0;
+    }
+    const home: MoveState = { x: fake.x, y: 0, z: fake.z, rotY: 0 };
+    const maxHp: number = round1((PLAYER_MAX_HP + bonusHp) * factor);
+    const maxMana: number = round1(PLAYER_MAX_MANA * factor);
+    this.players.set(fake.id, {
+      kind: "player",
+      id: fake.id,
+      name: fake.name,
+      level: fake.level,
+      member: { id: fake.id, name: fake.name, body: fake.body, send: (): void => {} },
+      state: home,
+      hp: maxHp,
+      maxHp,
+      mana: maxMana,
+      maxMana,
+      bonusHp,
+      dead: false,
+      respawnTick: 0,
+      shield: 0,
+      shieldUntilTick: 0,
+      reduction: 0,
+      reductionUntilTick: 0,
+      inputs: [],
+      boost: null,
+      dash: null,
+      lastReceivedSeq: 0,
+      lastAppliedSeq: 0,
+      basicAttack: UNARMED_ATTACK,
+      abilities: new Map(),
+      look: fake.look,
+      progress: { level: fake.level, xp: 0 },
+      readyTick: new Map(),
+      attackTarget: null,
+      lastMoveTick: Number.NEGATIVE_INFINITY,
+      cast: null,
+      fake: { autoReply: fake.autoReply, home },
+    });
+  }
+
+  /** Jogadores de verdade (com conexão) na zona: sem os fakes de teste ([SOC-01]). */
+  private realPlayerCount(): number {
+    let count: number = 0;
+    for (const player of this.players.values()) if (player.fake === null) count++;
+    return count;
+  }
+
+  /**
+   * Como o jogador `id` responde sozinho a convites/pedidos ([SOC-01]): `accept`/`reject` se for um fake de teste,
+   * `null` se for um jogador de verdade (ou não estiver na zona). Grupo e amizade (próximas etapas) usam isto.
+   */
+  autoReplyOf(id: string): AutoReply | null {
+    return this.players.get(id)?.fake?.autoReply ?? null;
+  }
+
+  /**
+   * Atributos do jogador `id` para a tela de Atributos ([SOC-02]; resposta ao `inspect`), ou `undefined` se ele não
+   * está na zona. Sem limite de distância: a lista do grupo (etapa 2) também abre os Atributos de quem está longe.
+   */
+  attributes(id: string): AttributesView | undefined {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return undefined;
+    const power: number = Zone.strength(player);
+    const summary = (itemId: string | null): EquippedItemSummary | null => {
+      const item: ItemDef | undefined = itemId === null ? undefined : getItem(itemId);
+      return item === undefined ? null : { itemId: item.id, name: item.name, set: item.set };
+    };
+    return {
+      id: player.id,
+      name: player.name,
+      level: player.level,
+      maxHp: player.maxHp,
+      maxMana: player.maxMana,
+      power: { damage: power, healing: power, shield: power },
+      equipped: {
+        hand: summary(player.look.hand),
+        head: summary(player.look.head),
+        chest: summary(player.look.chest),
+        feet: summary(player.look.feet),
+      },
+    };
+  }
+
+  /** Número de jogadores de verdade na zona (os fakes de teste não contam, [SOC-01]). */
   get size(): number {
-    return this.players.size;
+    return this.realPlayerCount();
   }
 
   /** Tick atual da simulação (cresce 1 a cada {@link tick}). */
@@ -480,7 +612,7 @@ export class Zone {
     bonusHp: number = 0,
     progress: Progress = STARTING_PROGRESS,
   ): JoinResult {
-    if (!this.players.has(member.id) && this.players.size >= this.config.maxPlayers) return { status: "full" };
+    if (!this.players.has(member.id) && this.realPlayerCount() >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
 
     const start: SpawnPoint = spawn ?? this.randomSpawn();
@@ -517,6 +649,7 @@ export class Zone {
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
       cast: null,
+      fake: null,
     };
     this.players.set(member.id, player);
 
@@ -780,7 +913,8 @@ export class Zone {
       entity.hp = entity.maxHp;
       entity.shield = 0;
       if (entity.kind === "player") {
-        const spawn: SpawnPoint = this.randomSpawn();
+        // Fake de teste ([SOC-01]) renasce no lugar dele; jogador, no círculo do spawn.
+        const spawn: SpawnPoint = entity.fake?.home ?? this.randomSpawn();
         entity.state = { x: spawn.x, y: spawn.y, z: spawn.z, rotY: spawn.rotY };
         entity.mana = entity.maxMana;
       } else {
@@ -1351,6 +1485,8 @@ export class Zone {
   private isEnemy(source: Entity, target: Entity): boolean {
     if (target.dead || target.id === source.id) return false;
     if (target.kind === "dummy" && target.behavior.kind === "shooter") return false;
+    // Jogador fake de teste: NPCs e monstros não o atacam (senão ele sumia no meio do teste, [SOC-01]).
+    if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return false;
     if (source.kind === "dummy") {
       // Atirador: o alvo dele e qualquer jogador no caminho/área (dá para desviar e testar defesa); outros NPCs não.
       if (source.behavior.kind === "shooter") return target.id === source.behavior.target || target.kind === "player";
@@ -1472,6 +1608,8 @@ export class Zone {
     if (target.dead || amount <= 0) return;
     // Atirador de teste: invulnerável ([JOGO-11]).
     if (target.kind === "dummy" && target.behavior.kind === "shooter") return;
+    // Fake de teste não leva dano de NPC/monstro, nem de área/projétil que passe por ele ([SOC-01]).
+    if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
     // Nível de quem bate ([JOGO-12]): jogador × (1 + 1% por nível), monstro × 1,02^nível × o multiplicador dele.
     const multiplier: number = source.kind === "dummy" ? source.damageMultiplier : 1;
@@ -1581,7 +1719,7 @@ export class Zone {
    * destinatário só se escolhe quais entram e se montam `ack` e `me`. Eventos vão para todos.
    */
   private sendSnapshots(): void {
-    if (this.players.size === 0) return;
+    if (this.realPlayerCount() === 0) return;
     const players: Array<[Entity, string]> = Array.from(this.players.values(), (p): [Entity, string] => [p, JSON.stringify(Zone.snapshot(p))]);
     const npcs: Array<[Entity, string]> = this.npcSnapshots().flatMap((snap): Array<[Entity, string]> => {
       const dummy: ZoneDummy | undefined = this.dummies.get(snap.id);
@@ -1589,6 +1727,8 @@ export class Zone {
     });
     const events: string = JSON.stringify(this.events);
     for (const player of this.players.values()) {
+      // Fake de teste não tem conexão: não precisa de snapshot.
+      if (player.fake !== null) continue;
       const near = ([entity]: [Entity, string]): boolean =>
         entity.id === player.id || entity.id === player.attackTarget || Zone.distance(entity.state, player.state) <= VIEW_RADIUS;
       const shared: string = [

@@ -46,6 +46,10 @@ describe("parseClientMessage", () => {
       type: ClientMessageType.Input,
       data: { seq: 7, x: 0.5, z: -1 },
     });
+    assert.deepStrictEqual(parseClientMessage('{"type":"inspect","data":{"playerId":"fake_accept"}}'), {
+      type: ClientMessageType.Inspect,
+      data: { playerId: "fake_accept" },
+    });
   });
 
   it("rejeita JSON inválido, tipo desconhecido e payload fora do formato", () => {
@@ -69,6 +73,9 @@ describe("parseClientMessage", () => {
       '{"type":"unequip","data":{"slot":"mochila"}}',
       '{"type":"cast","data":{"abilityId":""}}',
       '{"type":"cast","data":{"abilityId":"meteor","x":"1"}}',
+      '{"type":"inspect","data":{}}',
+      '{"type":"inspect","data":{"playerId":""}}',
+      '{"type":"inspect","data":{"playerId":42}}',
     ];
     for (const text of bad) assert.strictEqual(parseClientMessage(text), null, text);
   });

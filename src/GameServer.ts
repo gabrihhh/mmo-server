@@ -13,6 +13,7 @@ import {
   encodeServerMessage,
   parseClientMessage,
   type BodyType,
+  type AttributesView,
   type ClientMessage,
   type JoinData,
   type LoginData,
@@ -289,6 +290,22 @@ export class GameServer {
         }
         const result: CastResult = session.zone.castAbility(session.account.playerId, message.data);
         if (!result.ok) this.sendError(session, GameServer.CAST_ERRORS[result.reason], result.message);
+        return;
+      }
+      case ClientMessageType.Inspect: {
+        // Atributos de um jogador da mesma zona ([SOC-02]); o snapshot não leva isso.
+        if (session.zone === null || session.account === null) {
+          this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+          return;
+        }
+        const attributes: AttributesView | undefined = session.zone.attributes(message.data.playerId);
+        if (attributes === undefined) {
+          this.sendError(session, ErrorCode.PlayerNotFound, "Esse jogador não está mais por perto.");
+          return;
+        }
+        if (session.socket.readyState === WebSocket.OPEN) {
+          session.socket.send(encodeServerMessage({ type: ServerMessageType.Attributes, data: attributes }));
+        }
         return;
       }
     }
