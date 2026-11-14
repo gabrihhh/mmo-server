@@ -1,14 +1,16 @@
 /**
  * Evolução: nível e experiência (XP). Regras puras (sem banco nem rede). Ver mmo-docs [JOGO-12].
  *
- * Regras (2026-11-14; antes tudo era 1% acumulando):
+ * Regras (2026-11-14; antes tudo era 1% acumulando, inclusive a XP):
  * - **jogador**: vida, mana, dano, cura e escudo ganham **1% da base do nível 0 por nível, SEM acumular**
  *   ({@link playerFactor}: nível 100 = × 2);
  * - **monstro**: vida e dano crescem **2% por nível, acumulando** ({@link monsterFactor}), e a vida dele ainda tem
  *   +20% ({@link MONSTER_EDGE}). A diferença para o jogador aumenta com o nível: no alto, só em grupo;
- * - XP para subir: 100 do nível 0 para o 1, e cada nível pede 1% a mais que o anterior ({@link xpToNextLevel});
- * - XP que um monstro dá: 20 no nível 1, e 1% a mais por nível ({@link xpReward}). Como as duas crescem igual, são
- *   sempre ~5 monstros do seu nível para subir um nível.
+ * - XP para subir: 100 do nível 0 para o 1, e cada nível pede **2% a mais** que o anterior ({@link xpToNextLevel});
+ * - XP que um monstro dá: 20 no nível 1, e **2% a mais por nível** ({@link xpReward}), o mesmo ritmo da força dele.
+ *   Como as duas crescem igual, são sempre ~5 monstros do seu nível para subir um nível; monstro fraco rende cada vez
+ *   menos (nível 60: 16 zumbis de nível 1 por nível), então no alto compensa caçar no seu nível, em grupo;
+ * - **bônus de grupo**: cada jogador a mais na luta dá +10% de XP a todos ({@link groupXp}; 2026-11-14).
  * XP é guardada com 1 casa decimal (20,2), para o 1% contar desde os níveis baixos.
  * **Sem nível máximo** (decisão 2026-11-13: o jogo ainda não definiu se terá um).
  */
@@ -16,8 +18,11 @@
 /** Nível de um personagem novo. */
 export const STARTING_LEVEL = 0;
 
-/** Crescimento da XP por nível (1%, acumulando): XP para subir e XP que o monstro dá. */
-export const LEVEL_GROWTH = 1.01;
+/**
+ * Crescimento da XP por nível (2%, acumulando): XP para subir e XP que o monstro dá. Igual ao
+ * {@link MONSTER_GROWTH} de propósito: a recompensa acompanha a dificuldade do monstro. Antes (até 2026-11-14): 1%.
+ */
+export const XP_GROWTH = 1.02;
 
 /** Quanto o jogador ganha por nível: 1% da força do nível 0 (soma, não acumula). */
 export const PLAYER_GROWTH_PER_LEVEL = 0.01;
@@ -34,6 +39,9 @@ export const BASE_XP_TO_LEVEL = 100;
 /** XP que um monstro de nível 1 dá. */
 export const BASE_XP_REWARD = 20;
 
+/** Bônus de grupo: +10% da XP do monstro para cada jogador a mais que participou da luta (soma, sem teto). */
+export const GROUP_XP_BONUS = 0.1;
+
 /** Nível e XP guardados na conta. */
 export interface Progress {
   /** Nível atual ({@link STARTING_LEVEL} ou mais; sem teto). */
@@ -48,9 +56,9 @@ export const STARTING_PROGRESS: Progress = { level: STARTING_LEVEL, xp: 0 };
 /** Arredonda a 1 casa decimal (XP guardada e enviada assim). */
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 
-/** Multiplicador da XP no nível `level` (1,01^nível: nível 0 = 1, nível 3 ≈ 1,0303). */
+/** Multiplicador da XP no nível `level` (1,02^nível: nível 0 = 1, nível 3 ≈ 1,0612). */
 export function xpFactor(level: number): number {
-  return LEVEL_GROWTH ** Math.max(0, level);
+  return XP_GROWTH ** Math.max(0, level);
 }
 
 /** Força do jogador no nível `level`: 1 + 1% por nível (nível 0 = 1, nível 50 = 1,5, nível 100 = 2). */
@@ -64,16 +72,24 @@ export function monsterFactor(level: number): number {
 }
 
 /**
- * XP que falta juntar no nível `level` para subir ao próximo: 100 × 1,01^nível (1 casa).
+ * XP que falta juntar no nível `level` para subir ao próximo: 100 × 1,02^nível (1 casa).
  * ATENÇÃO: o cliente não calcula isso — recebe pronto no snapshot (`me.xpNext`).
  */
 export function xpToNextLevel(level: number): number {
   return round1(BASE_XP_TO_LEVEL * xpFactor(level));
 }
 
-/** XP que um monstro de nível `level` dá a quem o mata: 20 no nível 1, × 1,01 por nível acima (1 casa). */
+/** XP que um monstro de nível `level` dá a cada participante: 20 no nível 1, × 1,02 por nível acima (1 casa). */
 export function xpReward(level: number): number {
-  return round1(BASE_XP_REWARD * LEVEL_GROWTH ** (Math.max(1, level) - 1));
+  return round1(BASE_XP_REWARD * XP_GROWTH ** (Math.max(1, level) - 1));
+}
+
+/**
+ * XP que CADA participante ganha quando `players` jogadores lutaram juntos: a recompensa inteira + 10% por jogador a
+ * mais (sozinho = × 1; 3 jogadores = × 1,2; 5 = × 1,4), 1 casa. Ninguém divide: o grupo só soma.
+ */
+export function groupXp(reward: number, players: number): number {
+  return round1(reward * (1 + GROUP_XP_BONUS * Math.max(0, Math.floor(players) - 1)));
 }
 
 /**

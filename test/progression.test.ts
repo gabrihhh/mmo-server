@@ -8,6 +8,7 @@ import {
   xpFactor,
   MONSTER_EDGE,
   readProgress,
+  groupXp,
   xpReward,
   xpToNextLevel,
 } from "../src/progression/level.js";
@@ -80,10 +81,10 @@ function ticks(zone: Zone, count: number): void {
 }
 
 describe("evolução (nível e XP)", () => {
-  it("começa no nível 0; XP 1% acumulando, jogador +1% por nível, monstro 2% acumulando", () => {
+  it("começa no nível 0; XP 2% acumulando, jogador +1% por nível, monstro 2% acumulando", () => {
     assert.deepStrictEqual(STARTING_PROGRESS, { level: 0, xp: 0 });
     assert.strictEqual(xpFactor(0), 1);
-    assert.ok(Math.abs(xpFactor(3) - 1.01 ** 3) < 1e-12);
+    assert.ok(Math.abs(xpFactor(3) - 1.02 ** 3) < 1e-12);
     // Jogador: 1% da base por nível, sem acumular; monstro: 2% acumulando (e vida +20%).
     assert.strictEqual(playerFactor(0), 1);
     assert.strictEqual(playerFactor(50), 1.5);
@@ -92,17 +93,27 @@ describe("evolução (nível e XP)", () => {
     assert.ok(monsterFactor(100) / playerFactor(100) > 3.5, "no nível 100 o monstro já passou muito do jogador");
     assert.strictEqual(MONSTER_EDGE, 1.2);
     assert.strictEqual(xpToNextLevel(0), 100);
-    assert.strictEqual(xpToNextLevel(1), 101);
-    assert.strictEqual(xpToNextLevel(10), 110.5); // 100 × 1,01^10 = 110,46 → 110,5
-    assert.strictEqual(xpToNextLevel(50), 164.5); // sem nível máximo: continua crescendo
+    assert.strictEqual(xpToNextLevel(1), 102);
+    assert.strictEqual(xpToNextLevel(10), 121.9); // 100 × 1,02^10 = 121,90
+    assert.strictEqual(xpToNextLevel(50), 269.2); // sem nível máximo: continua crescendo
     assert.strictEqual(xpReward(1), 20);
-    assert.strictEqual(xpReward(3), 20.4); // 20 × 1,01² = 20,402
+    assert.strictEqual(xpReward(3), 20.8); // 20 × 1,02² = 20,808
+    // A XP cresce no mesmo ritmo da força do monstro: sempre ~5 do seu nível por nível; os fracos rendem menos.
+    assert.ok(Math.abs(xpToNextLevel(60) / xpReward(60) - 5) < 0.2);
+    assert.ok(xpToNextLevel(60) / xpReward(1) > 16, "no nível 60, zumbi de nível 1 rende pouco");
+  });
+
+  it("bônus de grupo: +10% por jogador a mais, para cada um (não divide)", () => {
+    assert.strictEqual(groupXp(20, 1), 20);
+    assert.strictEqual(groupXp(20, 2), 22);
+    assert.strictEqual(groupXp(20, 5), 28);
+    assert.strictEqual(groupXp(20, 0), 20, "sem ninguém na lista não tira XP");
   });
 
   it("addXp sobe de nível e passa a sobra adiante (1 casa); não há nível máximo", () => {
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, 99.9), { level: 0, xp: 99.9 });
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, 105.3), { level: 1, xp: 5.3 });
-    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 201), { level: 2, xp: 0 });
+    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 202), { level: 2, xp: 0 }); // 100 + 102
     assert.ok(addXp({ level: 50, xp: 0 }, 1_000_000).level > 50);
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, -50), STARTING_PROGRESS);
     // 5 zumbis de nível 1 (20 cada) = 100: sobe do 0 para o 1.
@@ -248,7 +259,7 @@ describe("zumbis", () => {
     assert.strictEqual(a.me()["xp"], 20);
   });
 
-  it("todos que bateram no monstro ganham a XP inteira quando ele morre (não divide)", () => {
+  it("todos que bateram no monstro ganham a XP inteira + bônus de grupo quando ele morre (não divide)", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 40 }]);
     const a = new Member("a");
     const b = new Member("b");
@@ -263,8 +274,8 @@ describe("zumbis", () => {
       died = a.events("death").some((e) => e["id"] === "zombie");
     }
     assert.ok(died, "zumbi morreu");
-    assert.deepStrictEqual(a.saved, { level: 0, xp: xpReward(1) });
-    assert.deepStrictEqual(b.saved, { level: 0, xp: xpReward(1) });
+    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 2) }, "XP inteira + 10% do grupo");
+    assert.deepStrictEqual(b.saved, { level: 0, xp: groupXp(xpReward(1), 2) });
   });
 
   it("quem curou quem lutava também ganha a XP; quem só estava perto não", () => {
@@ -285,8 +296,8 @@ describe("zumbis", () => {
       died = a.events("death").some((e) => e["id"] === "zombie");
     }
     assert.ok(died, "zumbi morreu");
-    assert.deepStrictEqual(a.saved, { level: 0, xp: xpReward(1) });
-    assert.deepStrictEqual(healer.saved, { level: 0, xp: xpReward(1) }, "curou quem batia: ganhou");
+    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 2) });
+    assert.deepStrictEqual(healer.saved, { level: 0, xp: groupXp(xpReward(1), 2) }, "curou quem batia: ganhou");
     assert.strictEqual(idle.saved, null, "só estava perto: não ganhou");
   });
 

@@ -29,6 +29,7 @@ import {
   addXp,
   monsterFactor,
   playerFactor,
+  groupXp,
   xpReward,
   xpToNextLevel,
   MONSTER_EDGE,
@@ -84,7 +85,7 @@ export interface ZoneMember {
  * - `zombie`: monstro ([JOGO-13]). Parado em casa até um jogador chegar a `aggroRadius` m de casa (ou bater nele);
  *   aí anda até ele a `speed` m/s e bate com o ataque simples da arma `weapon`, usando também a habilidade `ability`
  *   da arma quando ela estiver pronta e o alvo no alcance dela. Passou de `leashRadius` m de casa: desiste, volta
- *   andando (sem atacar) e enche a vida. Só ataca jogadores. Quem o mata ganha XP ({@link xpReward} do nível dele).
+ *   andando (sem atacar) e enche a vida. Só ataca jogadores. Quem lutou contra ele ganha XP ({@link xpReward} do nível dele + {@link groupXp}).
  */
 export type NpcBehavior =
   | { readonly kind: "dummy" }
@@ -1520,13 +1521,16 @@ export class Zone {
       }
     }
     this.events.push({ type: "death", id: target.id, killer: source.id });
-    // Monstro morto: XP inteira para cada jogador que participou da luta (bateu, curou ou protegeu), [JOGO-12].
+    // Monstro morto: XP inteira + bônus de grupo (+10% por jogador a mais) para cada jogador que participou da luta
+    // (bateu, curou ou protegeu) e ainda está na zona, [JOGO-12].
     if (target.kind === "dummy" && Zone.isMonster(target)) {
-      const reward: number = xpReward(target.level);
+      const fighters: ZonePlayer[] = [];
       for (const id of target.contributors) {
         const player: ZonePlayer | undefined = this.players.get(id);
-        if (player !== undefined) this.grantXp(player, reward);
+        if (player !== undefined) fighters.push(player);
       }
+      const reward: number = groupXp(xpReward(target.level), fighters.length);
+      for (const player of fighters) this.grantXp(player, reward);
       target.contributors.clear();
     }
   }
