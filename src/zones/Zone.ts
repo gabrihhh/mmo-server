@@ -25,7 +25,16 @@ import {
   type MoveParams,
   type MoveState,
 } from "../sim/movement.js";
-import { addXp, levelFactor, xpReward, xpToNextLevel, STARTING_PROGRESS, type Progress } from "../progression/level.js";
+import {
+  addXp,
+  monsterFactor,
+  playerFactor,
+  xpReward,
+  xpToNextLevel,
+  MONSTER_EDGE,
+  STARTING_PROGRESS,
+  type Progress,
+} from "../progression/level.js";
 import { ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
@@ -103,7 +112,7 @@ export interface DummyConfig {
   readonly body?: NpcBodyType;
   /** Roupa inicial (humanos). O atirador troca para o conjunto da habilidade da vez. */
   readonly look?: Look;
-  /** Vida máxima no nível 0 (padrão: a do boneco de treino); vale × {@link levelFactor} do `level`. */
+  /** Vida máxima no nível 0 (padrão: a do boneco de treino); monstro: × 1,2 × {@link monsterFactor}, outros: × {@link playerFactor} do `level`. */
   readonly maxHp?: number;
   /** Nível do NPC ([JOGO-12]): força × 1,01 por nível e, monstro, a XP que dá. Padrão 0. */
   readonly level?: number;
@@ -163,7 +172,7 @@ interface Combatant {
   readonly id: string;
   readonly name: string;
   /**
-   * Nível ([JOGO-12]): vida/mana máximas, dano, cura e escudo de quem tem × {@link levelFactor}. Jogador: o da conta
+   * Nível ([JOGO-12]): vida/mana máximas, dano, cura e escudo de quem tem × o fator do nível (Zone.strength). Jogador: o da conta
    * (sobe matando monstros); NPC: o da configuração. Público (vai no snapshot).
    */
   level: number;
@@ -201,9 +210,9 @@ interface ZonePlayer extends Combatant {
   readonly kind: "player";
   readonly member: ZoneMember;
   mana: number;
-  /** Mana máxima: base × {@link levelFactor} do nível. */
+  /** Mana máxima: base × {@link playerFactor} do nível. */
   maxMana: number;
-  /** Vida extra dos itens vestidos ([JOGO-09]); a vida máxima é (base + isto) × {@link levelFactor}. */
+  /** Vida extra dos itens vestidos ([JOGO-09]); a vida máxima é (base + isto) × {@link playerFactor}. */
   bonusHp: number;
   /** Inputs recebidos e ainda não simulados, em ordem de seq. */
   readonly inputs: Command[];
@@ -328,6 +337,11 @@ interface ZoneDummy extends Combatant {
   readonly ability: AbilityDef | null;
   /** Zumbi: desistiu do alvo e está voltando para casa (não ataca; chegando, enche a vida). */
   returning: boolean;
+  /**
+   * Monstro: jogadores que participaram da luta atual (bateram nele, ou curaram/protegeram quem bateu). Na morte,
+   * TODOS ganham a XP inteira ([JOGO-12]). Zera quando ele desiste (volta para casa) e quando reaparece.
+   */
+  readonly contributors: Set<string>;
 }
 
 type Entity = ZonePlayer | ZoneDummy;
@@ -364,7 +378,10 @@ export class Zone {
       const home: MoveState = { x: dummy.x, y: 0, z: dummy.z, rotY: 0 };
       const behavior: NpcBehavior = dummy.behavior ?? { kind: "dummy" };
       const level: number = dummy.level ?? 0;
-      const maxHp: number = round1((dummy.maxHp ?? DUMMY_MAX_HP) * levelFactor(level));
+      // Monstro: vida × 1,2 × 1,02^nível; os outros NPCs (treino) seguem a curva do jogador ([JOGO-12]).
+      const monster: boolean = behavior.kind === "zombie";
+      const growth: number = monster ? MONSTER_EDGE * monsterFactor(level) : playerFactor(level);
+      const maxHp: number = round1((dummy.maxHp ?? DUMMY_MAX_HP) * growth);
       const weapon: string | null = behavior.kind === "brawler" || behavior.kind === "zombie" ? behavior.weapon : null;
       this.dummies.set(dummy.id, {
         kind: "dummy",
@@ -398,6 +415,7 @@ export class Zone {
         damageMultiplier: dummy.damageMultiplier ?? 1,
         ability: behavior.kind === "zombie" ? (Zone.findAbility(behavior.ability)?.ability ?? null) : null,
         returning: false,
+        contributors: new Set(),
       });
     }
   }
@@ -456,7 +474,7 @@ export class Zone {
     this.leave(member.id);
 
     const start: SpawnPoint = spawn ?? this.randomSpawn();
-    const factor: number = levelFactor(progress.level);
+    const factor: number = playerFactor(progress.level);
     const limit: number = this.config.halfSize;
     const player: ZonePlayer = {
       kind: "player",
@@ -758,6 +776,7 @@ export class Zone {
       } else {
         entity.state = entity.home;
         entity.returning = false;
+        entity.contributors.clear();
       }
       this.events.push({ type: "respawn", id: entity.id });
     }
@@ -949,6 +968,8 @@ export class Zone {
   private giveUp(npc: ZoneDummy): void {
     npc.attackTarget = null;
     npc.returning = true;
+    // Desistiu: a luta acabou sem morte, ninguém leva XP dela.
+    npc.contributors.clear();
     if (npc.cast !== null) {
       this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
       npc.cast = null;
@@ -984,11 +1005,11 @@ export class Zone {
   }
 
   /**
-   * Vida e mana máximas do jogador pelo nível e pelos itens: (base + vida extra) × {@link levelFactor}. A vida e a
+   * Vida e mana máximas do jogador pelo nível e pelos itens: (base + vida extra) × {@link playerFactor}. A vida e a
    * mana atuais acompanham na MESMA proporção (trocar de item ou subir de nível não cura).
    */
   private applyPlayerStats(player: ZonePlayer): void {
-    const factor: number = levelFactor(player.level);
+    const factor: number = playerFactor(player.level);
     const maxHp: number = round1((PLAYER_MAX_HP + player.bonusHp) * factor);
     const maxMana: number = round1(PLAYER_MAX_MANA * factor);
     if (maxHp !== player.maxHp) {
@@ -1283,7 +1304,13 @@ export class Zone {
    */
   private support(source: Entity, target: Entity, ability: AbilityDef): void {
     if (target.dead) return;
-    const factor: number = levelFactor(source.level);
+    const factor: number = Zone.strength(source);
+    // Curou/protegeu quem está lutando com um monstro: participa da luta (ganha a XP dele, [JOGO-12]).
+    if (source.kind === "player" && target.kind === "player") {
+      for (const npc of this.dummies.values()) {
+        if (!npc.dead && npc.contributors.has(target.id)) npc.contributors.add(source.id);
+      }
+    }
     if (ability.heal > 0) {
       const healed: number = round1(Math.min(target.maxHp - target.hp, ability.heal * factor));
       target.hp += healed;
@@ -1436,9 +1463,9 @@ export class Zone {
     // Atirador de teste: invulnerável ([JOGO-11]).
     if (target.kind === "dummy" && target.behavior.kind === "shooter") return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
-    // Nível de quem bate ([JOGO-12]): × 1,01 por nível (1 casa decimal); monstro: × o multiplicador dele.
+    // Nível de quem bate ([JOGO-12]): jogador × (1 + 1% por nível), monstro × 1,02^nível × o multiplicador dele.
     const multiplier: number = source.kind === "dummy" ? source.damageMultiplier : 1;
-    const scaled: number = round1(amount * levelFactor(source.level) * multiplier);
+    const scaled: number = round1(amount * Zone.strength(source) * multiplier);
     const reduced: boolean = target.reduction > 0 && this.currentTick < target.reductionUntilTick;
     let remaining: number = reduced ? round1(scaled * (1 - target.reduction)) : scaled;
     let absorbed: number = 0;
@@ -1453,6 +1480,7 @@ export class Zone {
     target.hp -= dealt;
     if (target.kind === "dummy") {
       target.lastHitTick = this.currentTick;
+      if (source.kind === "player" && Zone.isMonster(target)) target.contributors.add(source.id);
       // Zumbi atacado de longe (fora do raio): vai atrás de quem bateu.
       if (target.behavior.kind === "zombie" && !target.returning && target.attackTarget === null && source.kind === "player") {
         target.attackTarget = source.id;
@@ -1483,10 +1511,28 @@ export class Zone {
       }
     }
     this.events.push({ type: "death", id: target.id, killer: source.id });
-    // Monstro morto por jogador: XP para quem deu o golpe final ([JOGO-12]).
-    if (target.kind === "dummy" && target.behavior.kind === "zombie" && source.kind === "player") {
-      this.grantXp(source, xpReward(target.level));
+    // Monstro morto: XP inteira para cada jogador que participou da luta (bateu, curou ou protegeu), [JOGO-12].
+    if (target.kind === "dummy" && Zone.isMonster(target)) {
+      const reward: number = xpReward(target.level);
+      for (const id of target.contributors) {
+        const player: ZonePlayer | undefined = this.players.get(id);
+        if (player !== undefined) this.grantXp(player, reward);
+      }
+      target.contributors.clear();
     }
+  }
+
+  /** Monstro: NPC que luta e dá XP (hoje, o zumbi, [JOGO-13]). */
+  private static isMonster(entity: ZoneDummy): boolean {
+    return entity.behavior.kind === "zombie";
+  }
+
+  /**
+   * Multiplicador da força (vida, dano, cura, escudo) de quem tem o nível ([JOGO-12]): monstro pela curva dos
+   * monstros (2% acumulando), jogador e os outros NPCs pela do jogador (1% por nível, sem acumular).
+   */
+  private static strength(entity: Entity): number {
+    return entity.kind === "dummy" && Zone.isMonster(entity) ? monsterFactor(entity.level) : playerFactor(entity.level);
   }
 
   private regenerate(): void {

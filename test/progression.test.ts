@@ -3,7 +3,10 @@ import assert from "assert";
 import {
   STARTING_PROGRESS,
   addXp,
-  levelFactor,
+  monsterFactor,
+  playerFactor,
+  xpFactor,
+  MONSTER_EDGE,
   readProgress,
   xpReward,
   xpToNextLevel,
@@ -77,10 +80,17 @@ function ticks(zone: Zone, count: number): void {
 }
 
 describe("evolução (nível e XP)", () => {
-  it("começa no nível 0; tudo cresce 1% por nível, acumulando", () => {
+  it("começa no nível 0; XP 1% acumulando, jogador +1% por nível, monstro 2% acumulando", () => {
     assert.deepStrictEqual(STARTING_PROGRESS, { level: 0, xp: 0 });
-    assert.strictEqual(levelFactor(0), 1);
-    assert.ok(Math.abs(levelFactor(3) - 1.01 ** 3) < 1e-12);
+    assert.strictEqual(xpFactor(0), 1);
+    assert.ok(Math.abs(xpFactor(3) - 1.01 ** 3) < 1e-12);
+    // Jogador: 1% da base por nível, sem acumular; monstro: 2% acumulando (e vida +20%).
+    assert.strictEqual(playerFactor(0), 1);
+    assert.strictEqual(playerFactor(50), 1.5);
+    assert.strictEqual(playerFactor(100), 2);
+    assert.ok(Math.abs(monsterFactor(10) - 1.02 ** 10) < 1e-12);
+    assert.ok(monsterFactor(100) / playerFactor(100) > 3.5, "no nível 100 o monstro já passou muito do jogador");
+    assert.strictEqual(MONSTER_EDGE, 1.2);
     assert.strictEqual(xpToNextLevel(0), 100);
     assert.strictEqual(xpToNextLevel(1), 101);
     assert.strictEqual(xpToNextLevel(10), 110.5); // 100 × 1,01^10 = 110,46 → 110,5
@@ -120,8 +130,9 @@ describe("evolução (nível e XP)", () => {
     assert.strictEqual(a.me()["xpNext"], xpToNextLevel(10));
     assert.strictEqual(a.field("a", "level"), 10);
     assert.strictEqual(a.field("a", "xp"), undefined);
-    assert.strictEqual(a.field("a", "maxHp"), Math.round(PLAYER_MAX_HP * 1.01 ** 10 * 10) / 10);
-    assert.strictEqual(a.field("a", "maxMana"), Math.round(PLAYER_MAX_MANA * 1.01 ** 10 * 10) / 10);
+    // Jogador nível 10: +1% da base por nível, sem acumular → × 1,1.
+    assert.strictEqual(a.field("a", "maxHp"), Math.round(PLAYER_MAX_HP * 1.1 * 10) / 10);
+    assert.strictEqual(a.field("a", "maxMana"), Math.round(PLAYER_MAX_MANA * 1.1 * 10) / 10);
   });
 
   it("multiplicador de dano do monstro vale junto com o nível", () => {
@@ -136,7 +147,7 @@ describe("evolução (nível e XP)", () => {
     assert.strictEqual(damage?.["amount"], 7); // Corte em linha 14 × 0,5
   });
 
-  it("dano cresce com o nível de quem bate (zumbi nível 3 bate 3% acumulado a mais)", () => {
+  it("monstro cresce 2% acumulando: zumbi nível 3 bate × 1,02³ e tem vida × 1,2 × 1,02³", () => {
     const zone = zoneWith([zombieConfig("fighter", 0, -2, 3)]);
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 });
@@ -146,9 +157,9 @@ describe("evolução (nível e XP)", () => {
       damage = a.events("damage").find((e) => e["target"] === "a");
     }
     assert.ok(damage !== undefined);
-    // Primeiro golpe: Corte em linha (14) × 1,01³ = 14,42 → 14,4.
-    assert.strictEqual(damage["amount"], 14.4);
-    assert.strictEqual(a.field("zombie", "maxHp"), Math.round(100 * 1.01 ** 3 * 10) / 10);
+    // Primeiro golpe: Corte em linha (14) × 1,02³ = 14,86 → 14,9.
+    assert.strictEqual(damage["amount"], 14.9);
+    assert.strictEqual(a.field("zombie", "maxHp"), Math.round(100 * 1.2 * 1.02 ** 3 * 10) / 10);
   });
 });
 
@@ -235,6 +246,80 @@ describe("zumbis", () => {
     assert.ok(died);
     assert.deepStrictEqual(a.saved, { level: 0, xp: 20 });
     assert.strictEqual(a.me()["xp"], 20);
+  });
+
+  it("todos que bateram no monstro ganham a XP inteira quando ele morre (não divide)", () => {
+    const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 40 }]);
+    const a = new Member("a");
+    const b = new Member("b");
+    const staff: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, staff);
+    zone.setAttackTarget("a", "zombie");
+    zone.setAttackTarget("b", "zombie");
+    let died = false;
+    for (let i = 0; i < 600 && !died; i++) {
+      zone.tick();
+      died = a.events("death").some((e) => e["id"] === "zombie");
+    }
+    assert.ok(died, "zumbi morreu");
+    assert.deepStrictEqual(a.saved, { level: 0, xp: xpReward(1) });
+    assert.deepStrictEqual(b.saved, { level: 0, xp: xpReward(1) });
+  });
+
+  it("quem curou quem lutava também ganha a XP; quem só estava perto não", () => {
+    const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 40 }]);
+    const a = new Member("a");
+    const healer = new Member("healer");
+    const idle = new Member("idle");
+    const tome: AbilityDef = ITEMS["healer_tome"]?.basicAttack ?? UNARMED_ATTACK;
+    assert.ok(tome.heal > 0 && tome.aim === "ally", "o ataque do livro cura um aliado");
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    zone.join(healer, { x: 3, y: 0, z: 0, rotY: 0 }, tome);
+    zone.join(idle, { x: -3, y: 0, z: 0, rotY: 0 }, SWORD);
+    zone.setAttackTarget("a", "zombie");
+    zone.setAttackTarget("healer", "a");
+    let died = false;
+    for (let i = 0; i < 600 && !died; i++) {
+      zone.tick();
+      died = a.events("death").some((e) => e["id"] === "zombie");
+    }
+    assert.ok(died, "zumbi morreu");
+    assert.deepStrictEqual(a.saved, { level: 0, xp: xpReward(1) });
+    assert.deepStrictEqual(healer.saved, { level: 0, xp: xpReward(1) }, "curou quem batia: ganhou");
+    assert.strictEqual(idle.saved, null, "só estava perto: não ganhou");
+  });
+
+  it("monstro desistiu e voltou para casa: quem bateu antes não ganha a XP de uma morte depois", () => {
+    const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 40 }]);
+    const a = new Member("a");
+    const b = new Member("b");
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    // a bate uma vez e foge para longe (o zumbi vai atrás, passa de 20 m de casa e desiste).
+    zone.setAttackTarget("a", "zombie");
+    let hit = false;
+    for (let i = 0; i < 100 && !hit; i++) {
+      zone.tick();
+      hit = a.events("damage").some((e) => e["target"] === "zombie" && e["source"] === "a");
+    }
+    assert.ok(hit, "a bateu");
+    zone.setAttackTarget("a", null);
+    let seq = 0;
+    for (let i = 0; i < 200; i++) {
+      zone.queueInput("a", { seq: ++seq, x: 1, z: 0 });
+      zone.tick();
+    }
+    ticks(zone, 300); // volta para casa e enche a vida
+    zone.join(b, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    zone.setAttackTarget("b", "zombie");
+    let died = false;
+    for (let i = 0; i < 600 && !died; i++) {
+      zone.tick();
+      died = b.events("death").some((e) => e["id"] === "zombie");
+    }
+    assert.ok(died, "b matou");
+    assert.deepStrictEqual(b.saved, { level: 0, xp: xpReward(1) });
+    assert.strictEqual(a.saved, null, "a lutou antes da desistência: não ganha");
   });
 
   it("alvo morreu: quem atacava solta o alvo e o golpe em andamento é cancelado (não fica travado no corpo)", () => {
