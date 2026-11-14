@@ -16,7 +16,9 @@ import {
   type SimParams,
   type AttributesView,
   type EquippedItemSummary,
+  type GroupView,
 } from "../net/protocol.js";
+import { Groups, type GroupResult } from "./groups.js";
 import {
   MOVE_SPEED,
   TICK_RATE_HZ,
@@ -71,6 +73,13 @@ export interface ZoneMember {
   send(text: string): void;
   /** Nível/XP mudaram (matou um monstro, [JOGO-12]): quem guarda a conta salva. Ausente = não salva (testes). */
   onProgress?(progress: Progress): void;
+  /**
+   * `true` = este jogador oculta convites de grupo: todo convite é recusado sozinho, sem aparecer para ele, e quem
+   * convidou recebe o aviso "X recusou o convite" ([SOC-03]). Ausente = mostra os convites.
+   * ETAPA 3 (Configuração → "Convites de grupo: Sempre / Ocultar", salvo na conta): o GameServer preenche isto no
+   * `join` lendo a conta; a zona já consulta em {@link Zone.groupInviteAutoAnswer}.
+   */
+  hidesGroupInvites?(): boolean;
 }
 
 /**
@@ -131,7 +140,8 @@ export interface DummyConfig {
 /**
  * Como um jogador fake responde a convites de grupo e pedidos de amizade (mmo-docs [SOC-01]): `accept` aceita
  * sempre, `reject` recusa sempre. A resposta chega a quem pediu como se viesse de um jogador de verdade.
- * Hoje só fica guardado ({@link Zone.autoReplyOf}): grupo e amizade entram nas próximas etapas e leem daqui.
+ * Lido por {@link Zone.autoReplyOf} e, no grupo ([SOC-03]), por {@link Zone.groupInviteAutoAnswer}; amizade
+ * (etapa 3) também lê daqui.
  */
 export type AutoReply = "accept" | "reject";
 
@@ -197,6 +207,12 @@ export const MAX_INPUTS_PER_TICK = 2;
  * ATENÇÃO: quem some do snapshot o cliente esconde e congela (mmo-client/scripts/network/network.gd, `in_view`).
  */
 export const VIEW_RADIUS = 45;
+
+/**
+ * Distância (m) do monstro, na hora da morte, até onde um membro do grupo de quem lutou ganha a XP mesmo sem ter batido
+ * nem curado ([JOGO-12], [SOC-03]): a mesma da área de interesse (quem está vendo a luta).
+ */
+export const GROUP_XP_RADIUS = VIEW_RADIUS;
 
 /** Tamanho máximo da fila de inputs por jogador. Excesso descarta os mais antigos (anti-speedhack/flood). */
 export const MAX_INPUT_QUEUE = 4;
@@ -421,6 +437,13 @@ export class Zone {
   private currentTick = 0;
   /** Eventos acumulados no tick em andamento (vão no próximo snapshot). */
   private events: CombatEvent[] = [];
+  /** Grupos e convites de grupo desta zona ([SOC-03]). */
+  private readonly groups: Groups = new Groups({
+    send: (playerId, message): void => this.players.get(playerId)?.member.send(encodeServerMessage(message)),
+    nameOf: (playerId): string | undefined => this.players.get(playerId)?.name,
+    levelOf: (playerId): number => this.players.get(playerId)?.level ?? 0,
+    autoAnswer: (playerId): "accept" | "reject" | null => this.groupInviteAutoAnswer(playerId),
+  });
 
   constructor(readonly config: ZoneConfig) {
     for (const dummy of config.dummies) {
@@ -532,6 +555,46 @@ export class Zone {
    */
   autoReplyOf(id: string): AutoReply | null {
     return this.players.get(id)?.fake?.autoReply ?? null;
+  }
+
+  /**
+   * Resposta automática do jogador `id` a um convite de grupo ([SOC-03]), ou `null` = mostrar o convite para ele:
+   * - jogador fake de teste ([SOC-01]): a resposta configurada dele (`accept`/`reject`);
+   * - **jogador que oculta convites de grupo** ({@link ZoneMember.hidesGroupInvites}, etapa 3 / Configuração):
+   *   `reject` — recusa sozinho, sem mostrar nada; quem convidou vê "X recusou o convite".
+   * É o ÚNICO ponto onde a zona decide isso: a etapa 3 só precisa preencher `hidesGroupInvites` no `ZoneMember`.
+   */
+  groupInviteAutoAnswer(id: string): AutoReply | null {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return null;
+    if (player.fake !== null) return player.fake.autoReply;
+    if (player.member.hidesGroupInvites?.() === true) return "reject";
+    return null;
+  }
+
+  /** `from` convida `to` para o grupo ([SOC-03]; regras em {@link Groups.invite}). */
+  inviteToGroup(from: string, to: string): GroupResult {
+    return this.groups.invite(from, to, this.currentTick);
+  }
+
+  /** `to` aceita (`accept`) ou recusa o convite de grupo de `from` ({@link Groups.answer}). */
+  answerGroupInvite(to: string, from: string, accept: boolean): GroupResult {
+    return this.groups.answer(to, from, accept);
+  }
+
+  /** O líder `leader` expulsa `target` do grupo ({@link Groups.kick}). */
+  kickFromGroup(leader: string, target: string): GroupResult {
+    return this.groups.kick(leader, target);
+  }
+
+  /** `id` sai do grupo ({@link Groups.leave}). */
+  leaveGroup(id: string): GroupResult {
+    return this.groups.leave(id);
+  }
+
+  /** O grupo de `id` (líder e membros), ou `null` sem grupo. */
+  groupOf(id: string): GroupView | null {
+    return this.groups.view(id);
   }
 
   /**
@@ -657,9 +720,12 @@ export class Zone {
     return { status: "joined", players: Array.from(this.players.values(), (p) => Zone.info(p)) };
   }
 
-  /** Remove o jogador e avisa os demais com `player_left`. Ignora ids que não estão na zona. */
+  /** Remove o jogador (e do grupo dele, [SOC-03]) e avisa os demais com `player_left`. Ignora ids que não estão na zona. */
   leave(id: string): void {
-    if (!this.players.delete(id)) return;
+    if (!this.players.has(id)) return;
+    // Sai do grupo e os convites somem ([SOC-03]); antes de sair da lista (os avisos usam o nome).
+    this.groups.removePlayer(id);
+    this.players.delete(id);
     for (const other of this.players.values()) if (other.attackTarget === id) other.attackTarget = null;
     this.broadcast({ type: ServerMessageType.PlayerLeft, data: { id } });
   }
@@ -895,6 +961,7 @@ export class Zone {
    */
   tick(): void {
     this.currentTick++;
+    this.groups.expire(this.currentTick);
     this.respawnDue();
     this.applyMovement();
     // Antes dos lançamentos: o projétil que sai neste tick começa a andar só no próximo (o cliente desenha igual).
@@ -1178,6 +1245,8 @@ export class Zone {
       player.level = progress.level;
       this.applyPlayerStats(player);
       this.events.push({ type: "level_up", id: player.id, level: progress.level });
+      // A lista do grupo mostra o nível de cada membro ([SOC-03]).
+      this.groups.refresh(player.id);
     }
     player.member.onProgress?.(progress);
   }
@@ -1479,7 +1548,8 @@ export class Zone {
 
   /**
    * `true` se `source` pode atingir `target` (vivo e não é ele mesmo). Atirador de teste é invulnerável (ninguém o
-   * atinge). Jogador atinge NPCs (menos o saco de pancadas, que é aliado) e jogadores só com PvP na zona. NPC
+   * atinge). Jogador atinge NPCs (menos o saco de pancadas, que é aliado) e jogadores só com PvP na zona e fora do
+   * grupo dele ([SOC-03]). NPC
    * atirador atinge o alvo dele e jogadores (no caminho/área); brigão atinge todos ([JOGO-11]); boneco não ataca.
    */
   private isEnemy(source: Entity, target: Entity): boolean {
@@ -1495,13 +1565,15 @@ export class Zone {
       return source.behavior.kind === "brawler";
     }
     if (target.kind === "dummy") return target.behavior.kind !== "punchingBag";
+    // Membros do mesmo grupo nunca se atingem, mesmo com PvP ([SOC-03]): vale para alvo, linha, área e projétil.
+    if (this.groups.sameGroup(source.id, target.id)) return false;
     return this.config.pvp;
   }
 
   /**
    * `true` se um jogador pode curar/proteger `target` ([JOGO-09]): jogador vivo — você mesmo ou outro — ou o saco de
-   * pancadas de teste ([JOGO-11]). Ainda não há grupos, então todo jogador conta como aliado, mesmo numa zona com PvP
-   * (onde ele também é inimigo). ATENÇÃO: mesma regra em mmo-client/scripts/world/zone.gd (get_allies).
+   * pancadas de teste ([JOGO-11]). Todo jogador conta como aliado (do grupo ou não, [SOC-03]), mesmo numa zona com PvP
+   * (onde quem não é do seu grupo também é inimigo). ATENÇÃO: mesma regra em mmo-client/scripts/world/zone.gd (get_allies).
    */
   private static isAlly(target: Entity): boolean {
     if (target.dead) return false;
@@ -1610,6 +1682,8 @@ export class Zone {
     if (target.kind === "dummy" && target.behavior.kind === "shooter") return;
     // Fake de teste não leva dano de NPC/monstro, nem de área/projétil que passe por ele ([SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return;
+    // Membro do grupo não leva dano de outro membro ([SOC-03]; segurança além do isEnemy).
+    if (source.kind === "player" && target.kind === "player" && this.groups.sameGroup(source.id, target.id)) return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
     // Nível de quem bate ([JOGO-12]): jogador × (1 + 1% por nível), monstro × 1,02^nível × o multiplicador dele.
     const multiplier: number = source.kind === "dummy" ? source.damageMultiplier : 1;
@@ -1660,15 +1734,21 @@ export class Zone {
     }
     this.events.push({ type: "death", id: target.id, killer: source.id });
     // Monstro morto: XP inteira + bônus de grupo (+10% por jogador a mais) para cada jogador que participou da luta
-    // (bateu, curou ou protegeu) e ainda está na zona, [JOGO-12].
+    // (bateu, curou ou protegeu) e ainda está na zona, [JOGO-12] — e para cada membro do grupo de um deles que esteja
+    // na zona a até GROUP_XP_RADIUS do monstro, mesmo sem ter lutado ([SOC-03]). Cada um conta e ganha uma vez só.
     if (target.kind === "dummy" && Zone.isMonster(target)) {
-      const fighters: ZonePlayer[] = [];
+      const winners: Set<ZonePlayer> = new Set();
       for (const id of target.contributors) {
         const player: ZonePlayer | undefined = this.players.get(id);
-        if (player !== undefined) fighters.push(player);
+        if (player === undefined) continue;
+        winners.add(player);
+        for (const memberId of this.groups.membersOf(id)) {
+          const member: ZonePlayer | undefined = this.players.get(memberId);
+          if (member !== undefined && Zone.distance(member.state, target.state) <= GROUP_XP_RADIUS) winners.add(member);
+        }
       }
-      const reward: number = groupXp(xpReward(target.level), fighters.length);
-      for (const player of fighters) this.grantXp(player, reward);
+      const reward: number = groupXp(xpReward(target.level), winners.size);
+      for (const player of winners) this.grantXp(player, reward);
       target.contributors.clear();
     }
   }

@@ -273,6 +273,41 @@ describe("GameServer", () => {
     });
   });
 
+  describe("grupo (group_*)", () => {
+    it("convite pela rede: fake aceita, jogador recebe group_invited, aceita; desconectar tira do grupo", async () => {
+      const a: Player = await registered("Lider");
+      a.client.send("group_invite", { playerId: "fake_accept" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "not_authenticated", "antes de entrar na zona");
+      await join(a);
+      a.client.send("group_invite", { playerId: "fake_accept" });
+      assert.strictEqual((await a.client.next("group_notice")).data["code"], "accepted");
+      const group: unknown = (await a.client.next("group")).data["group"];
+      assert.ok(typeof group === "object" && group !== null && "leaderId" in group);
+      assert.strictEqual(group.leaderId, a.playerId);
+
+      const b: Player = await registered("Convidado");
+      await join(b);
+      a.client.send("group_invite", { playerId: b.playerId });
+      const invited: ReceivedMessage = await b.client.next("group_invited");
+      assert.strictEqual(invited.data["fromName"], "Lider");
+      b.client.send("group_answer", { fromId: a.playerId, accept: true });
+      assert.strictEqual((await a.client.next("group_notice")).data["code"], "accepted");
+      b.client.send("group_kick", { playerId: a.playerId });
+      assert.strictEqual((await b.client.next("error")).data["code"], "not_group_leader");
+
+      await a.client.close();
+      // A saiu: o próximo que entrou (o fake) vira líder; sobram o fake e B.
+      const after: ReceivedMessage = await b.client.nextMatching("group", (m) => {
+        const g: unknown = m.data["group"];
+        return typeof g === "object" && g !== null && "leaderId" in g && g.leaderId === "fake_accept";
+      });
+      assert.ok(after !== undefined);
+      b.client.send("group_leave", {});
+      const left: unknown = (await b.client.nextMatching("group", (m) => m.data["group"] === null)).data["group"];
+      assert.strictEqual(left, null);
+    });
+  });
+
   describe("zona", () => {
     it("entra na zona e avisa os outros, com o nome de cada um", async () => {
       const a: Player = await registered("Alice");

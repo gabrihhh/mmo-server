@@ -10,7 +10,8 @@
  * - XP que um monstro dá: 20 no nível 1, e **2% a mais por nível** ({@link xpReward}), o mesmo ritmo da força dele.
  *   Como as duas crescem igual, são sempre ~5 monstros do seu nível para subir um nível; monstro fraco rende cada vez
  *   menos (nível 60: 16 zumbis de nível 1 por nível), então no alto compensa caçar no seu nível, em grupo;
- * - **bônus de grupo**: cada jogador a mais na luta dá +10% de XP a todos ({@link groupXp}; 2026-11-14).
+ * - **bônus de grupo**: cada jogador a mais na luta dá +10% de XP a todos ({@link groupXp}; 2026-11-14). Contam (e
+ *   ganham) também os membros do grupo de quem lutou que estão a até 45 m do monstro (`Zone.ts`, mmo-docs [SOC-03]).
  * XP é guardada com 1 casa decimal (20,2), para o 1% contar desde os níveis baixos.
  * **Sem nível máximo** (decisão 2026-11-13: o jogo ainda não definiu se terá um).
  */
@@ -39,7 +40,10 @@ export const BASE_XP_TO_LEVEL = 100;
 /** XP que um monstro de nível 1 dá. */
 export const BASE_XP_REWARD = 20;
 
-/** Bônus de grupo: +10% da XP do monstro para cada jogador a mais que participou da luta (soma, sem teto). */
+/**
+ * Bônus de grupo: +10% da XP do monstro para cada jogador a mais que ganha a XP — participou da luta ou é membro do
+ * grupo de quem participou e estava a até 45 m (mmo-docs [SOC-03]) — soma, sem teto.
+ */
 export const GROUP_XP_BONUS = 0.1;
 
 /** Nível e XP guardados na conta. */

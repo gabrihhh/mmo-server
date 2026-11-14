@@ -50,6 +50,20 @@ describe("parseClientMessage", () => {
       type: ClientMessageType.Inspect,
       data: { playerId: "fake_accept" },
     });
+    // Grupo ([SOC-03]).
+    assert.deepStrictEqual(parseClientMessage('{"type":"group_invite","data":{"playerId":"fake_accept"}}'), {
+      type: ClientMessageType.GroupInvite,
+      data: { playerId: "fake_accept" },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"group_answer","data":{"fromId":"a","accept":false}}'), {
+      type: ClientMessageType.GroupAnswer,
+      data: { fromId: "a", accept: false },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"group_kick","data":{"playerId":"b"}}'), {
+      type: ClientMessageType.GroupKick,
+      data: { playerId: "b" },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"group_leave","data":{}}'), { type: ClientMessageType.GroupLeave, data: {} });
   });
 
   it("rejeita JSON inválido, tipo desconhecido e payload fora do formato", () => {
@@ -76,6 +90,10 @@ describe("parseClientMessage", () => {
       '{"type":"inspect","data":{}}',
       '{"type":"inspect","data":{"playerId":""}}',
       '{"type":"inspect","data":{"playerId":42}}',
+      '{"type":"group_invite","data":{}}',
+      '{"type":"group_kick","data":{"playerId":""}}',
+      '{"type":"group_answer","data":{"fromId":"a"}}',
+      '{"type":"group_answer","data":{"fromId":"a","accept":"sim"}}',
     ];
     for (const text of bad) assert.strictEqual(parseClientMessage(text), null, text);
   });

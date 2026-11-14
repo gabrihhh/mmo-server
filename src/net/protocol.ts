@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 13;
+export const PROTOCOL_VERSION = 14;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -50,6 +50,17 @@ export const ClientMessageType = {
    * Payload: {@link InspectData}. Resposta: {@link ServerMessageType.Attributes} ou erro `player_not_found`.
    */
   Inspect: "inspect",
+  /**
+   * Convida um jogador da zona para o seu grupo (mmo-docs [SOC-03]). Sem grupo, o grupo nasce quando ele aceitar
+   * (você é o líder); com grupo, só o líder convida. Payload: {@link GroupTargetData}.
+   */
+  GroupInvite: "group_invite",
+  /** Responde a um convite de grupo recebido ({@link ServerMessageType.GroupInvited}). Payload: {@link GroupAnswerData}. */
+  GroupAnswer: "group_answer",
+  /** Líder expulsa um membro do grupo. Payload: {@link GroupTargetData}. */
+  GroupKick: "group_kick",
+  /** Sai do grupo em que está. Payload: `{}`. */
+  GroupLeave: "group_leave",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -70,6 +81,15 @@ export const ServerMessageType = {
   Inventory: "inventory",
   /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
   Attributes: "attributes",
+  /**
+   * Estado do SEU grupo (mmo-docs [SOC-03]): vai a todos os membros a cada mudança (entrou, saiu, líder novo, alguém
+   * subiu de nível); `group: null` = você não está (mais) em grupo. Payload: {@link GroupData}.
+   */
+  Group: "group",
+  /** Alguém convidou você para o grupo dele (janela Aceitar/Recusar). Payload: {@link GroupInvitedData}. */
+  GroupInvited: "group_invited",
+  /** Aviso pequeno sobre o grupo ("X aceitou o convite", "X saiu do grupo"...). Payload: {@link GroupNoticeData}. */
+  GroupNotice: "group_notice",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
 } as const;
@@ -132,6 +152,18 @@ export const ErrorCode = {
   BodyAlreadyChosen: "body_already_chosen",
   /** `inspect` de quem não está (mais) na zona. A conexão continua. */
   PlayerNotFound: "player_not_found",
+  /** Grupo ([SOC-03]): convidar/expulsar sem ser o líder. A conexão continua. */
+  NotGroupLeader: "not_group_leader",
+  /** Grupo já tem o máximo de membros ({@link GROUP_MAX_MEMBERS}). A conexão continua. */
+  GroupFull: "group_full",
+  /** Convite inválido: você mesmo ou alguém que já está no seu grupo. A conexão continua. */
+  InvalidInvite: "invalid_invite",
+  /** Resposta a um convite que não existe mais (expirou, quem convidou saiu ou deixou de ser líder). A conexão continua. */
+  InviteNotFound: "invite_not_found",
+  /** Aceitar um convite estando já num grupo. A conexão continua. */
+  AlreadyInGroup: "already_in_group",
+  /** Sair/expulsar sem estar num grupo, ou expulsar quem não é do seu grupo. A conexão continua. */
+  NotInGroup: "not_in_group",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -263,6 +295,19 @@ export interface InspectData {
   readonly playerId: string;
 }
 
+/** Payload de `group_invite` e `group_kick`: o jogador convidado/expulso. */
+export interface GroupTargetData {
+  readonly playerId: string;
+}
+
+/** Payload de `group_answer`. */
+export interface GroupAnswerData {
+  /** Quem convidou (o `fromId` do {@link GroupInvitedData}). */
+  readonly fromId: string;
+  /** `true` = aceitar, `false` = recusar. */
+  readonly accept: boolean;
+}
+
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Register; readonly data: RegisterData }
@@ -276,7 +321,11 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
-  | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData };
+  | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData }
+  | { readonly type: typeof ClientMessageType.GroupInvite; readonly data: GroupTargetData }
+  | { readonly type: typeof ClientMessageType.GroupAnswer; readonly data: GroupAnswerData }
+  | { readonly type: typeof ClientMessageType.GroupKick; readonly data: GroupTargetData }
+  | { readonly type: typeof ClientMessageType.GroupLeave; readonly data: Record<string, never> };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -538,6 +587,57 @@ export interface AttributesView {
   readonly equipped: Readonly<Record<EquipSlotName, EquippedItemSummary | null>>;
 }
 
+/** Máximo de jogadores num grupo (mmo-docs [SOC-03]). ATENÇÃO: mmo-client/scripts/network/group_state.gd (MAX_MEMBERS). */
+export const GROUP_MAX_MEMBERS = 5;
+
+/** Segundos que um convite de grupo espera resposta; depois expira (quem convidou recebe o aviso `expired`). */
+export const GROUP_INVITE_SECONDS = 30;
+
+/** Um membro do grupo como vai na mensagem `group`. */
+export interface GroupMemberView {
+  readonly id: string;
+  readonly name: string;
+  readonly level: number;
+}
+
+/**
+ * Grupo de quem recebe ([SOC-03]): o líder e os membros na ordem em que entraram (o líder é o primeiro; se ele sai,
+ * o seguinte vira líder). ATENÇÃO: lido em mmo-client/scripts/network/group_state.gd (GroupState.from_dict).
+ */
+export interface GroupView {
+  readonly leaderId: string;
+  readonly members: readonly GroupMemberView[];
+}
+
+/** Payload de `group`: o seu grupo, ou `null` = sem grupo. */
+export interface GroupData {
+  readonly group: GroupView | null;
+}
+
+/** Payload de `group_invited`. */
+export interface GroupInvitedData {
+  /** Quem convidou (responder com `group_answer { fromId }`). */
+  readonly fromId: string;
+  readonly fromName: string;
+  /** Segundos até o convite expirar ({@link GROUP_INVITE_SECONDS}). */
+  readonly expiresIn: number;
+}
+
+/**
+ * Tipos de aviso de grupo (`group_notice.code`): `accepted`/`rejected`/`expired`/`in_group` = resposta ao SEU convite
+ * (o convidado aceitou, recusou, não respondeu a tempo, já tem grupo); `joined` = alguém entrou (ou você entrou);
+ * `left` = alguém saiu; `kicked` = alguém foi expulso (ou você); `leader` = líder novo; `disbanded` = o grupo acabou.
+ */
+export type GroupNoticeCode = "accepted" | "rejected" | "expired" | "in_group" | "joined" | "left" | "kicked" | "leader" | "disbanded";
+
+/** Payload de `group_notice`: o aviso pronto para mostrar (`message`, em português) e de quem se trata. */
+export interface GroupNoticeData {
+  readonly code: GroupNoticeCode;
+  /** Nome do jogador de quem o aviso fala (pode ser você). */
+  readonly name: string;
+  readonly message: string;
+}
+
 /** Payload de `snapshot`. */
 export interface SnapshotData {
   /** Número do tick do servidor que gerou este estado. */
@@ -594,6 +694,9 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Snapshot; readonly data: SnapshotData }
   | { readonly type: typeof ServerMessageType.Inventory; readonly data: InventoryView }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
+  | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
+  | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
+  | { readonly type: typeof ServerMessageType.GroupNotice; readonly data: GroupNoticeData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
 /** Serializa uma mensagem para enviar pelo WebSocket. */
@@ -734,6 +837,22 @@ export function parseInspectData(data: unknown): InspectData | null {
   return { playerId };
 }
 
+/** Valida o payload de `group_invite`/`group_kick`. */
+export function parseGroupTargetData(data: unknown): GroupTargetData | null {
+  if (!isRecord(data)) return null;
+  const { playerId } = data;
+  if (typeof playerId !== "string" || playerId.length === 0 || playerId.length > 64) return null;
+  return { playerId };
+}
+
+/** Valida o payload de `group_answer`. */
+export function parseGroupAnswerData(data: unknown): GroupAnswerData | null {
+  if (!isRecord(data)) return null;
+  const { fromId, accept } = data;
+  if (typeof fromId !== "string" || fromId.length === 0 || fromId.length > 64 || typeof accept !== "boolean") return null;
+  return { fromId, accept };
+}
+
 /**
  * Decodifica e valida uma mensagem de texto vinda da rede (não confiável).
  * @returns a mensagem tipada, ou `null` se o JSON, o tipo ou o payload forem inválidos.
@@ -795,6 +914,20 @@ export function parseClientMessage(text: string): ClientMessage | null {
       const data = parseInspectData(raw);
       return data === null ? null : { type: ClientMessageType.Inspect, data };
     }
+    case ClientMessageType.GroupInvite: {
+      const data = parseGroupTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.GroupInvite, data };
+    }
+    case ClientMessageType.GroupAnswer: {
+      const data = parseGroupAnswerData(raw);
+      return data === null ? null : { type: ClientMessageType.GroupAnswer, data };
+    }
+    case ClientMessageType.GroupKick: {
+      const data = parseGroupTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.GroupKick, data };
+    }
+    case ClientMessageType.GroupLeave:
+      return { type: ClientMessageType.GroupLeave, data: {} };
     default:
       return null;
   }

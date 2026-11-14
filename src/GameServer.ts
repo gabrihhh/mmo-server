@@ -24,6 +24,7 @@ import {
 } from "./net/protocol.js";
 import { Zone, type CastFailure, type CastResult, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
+import type { GroupFailure, GroupResult } from "./zones/groups.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
 import type { EquipSlot } from "./items/catalog.js";
@@ -308,8 +309,42 @@ export class GameServer {
         }
         return;
       }
+      // Grupo ([SOC-03]): as regras ficam na zona (src/zones/groups.ts); aqui só repassa e devolve a recusa.
+      case ClientMessageType.GroupInvite:
+        this.groupRequest(session, (zone, id) => zone.inviteToGroup(id, message.data.playerId));
+        return;
+      case ClientMessageType.GroupAnswer:
+        this.groupRequest(session, (zone, id) => zone.answerGroupInvite(id, message.data.fromId, message.data.accept));
+        return;
+      case ClientMessageType.GroupKick:
+        this.groupRequest(session, (zone, id) => zone.kickFromGroup(id, message.data.playerId));
+        return;
+      case ClientMessageType.GroupLeave:
+        this.groupRequest(session, (zone, id) => zone.leaveGroup(id));
+        return;
     }
   }
+
+  /** Pedido de grupo de quem está numa zona; recusado vira `error` só para ele ([SOC-03]). */
+  private groupRequest(session: Session, request: (zone: Zone, playerId: string) => GroupResult): void {
+    if (session.zone === null || session.account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const result: GroupResult = request(session.zone, session.account.playerId);
+    if (!result.ok) this.sendError(session, GameServer.GROUP_ERRORS[result.reason], result.message);
+  }
+
+  /** Código do protocolo para cada recusa de pedido de grupo (mesmos nomes). */
+  private static readonly GROUP_ERRORS: Readonly<Record<GroupFailure, ErrorCode>> = {
+    player_not_found: ErrorCode.PlayerNotFound,
+    not_group_leader: ErrorCode.NotGroupLeader,
+    group_full: ErrorCode.GroupFull,
+    invalid_invite: ErrorCode.InvalidInvite,
+    invite_not_found: ErrorCode.InviteNotFound,
+    already_in_group: ErrorCode.AlreadyInGroup,
+    not_in_group: ErrorCode.NotInGroup,
+  };
 
   /**
    * Checagens comuns antes de autenticar. Devolve `false` (e já respondeu) se não pode seguir.
