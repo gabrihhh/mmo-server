@@ -1,4 +1,6 @@
 import { WebSocket, type RawData } from "ws";
+import type { ZoneConfig } from "../src/zones/Zone.js";
+import { TEST_FAKE_PLAYERS, ZONE_CONFIGS } from "../src/zones/zones.js";
 
 /** Mensagem recebida do servidor, decodificada mas sem validação (só para testes). */
 export interface ReceivedMessage {
@@ -107,3 +109,11 @@ export class TestClient {
 
 /** Espera `ms` milissegundos. */
 export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * As zonas do jogo COM os jogadores fake de teste ([SOC-01]): no jogo eles estão desligados (2026-11-14), mas os testes
+ * pela rede (inspect, grupo, amizade) usam o "Fake Aceita"/"Fake Recusa" como segundo jogador que responde sozinho.
+ */
+export const ZONES_WITH_FAKES: readonly ZoneConfig[] = ZONE_CONFIGS.map(
+  (zone: ZoneConfig): ZoneConfig => ({ ...zone, fakePlayers: TEST_FAKE_PLAYERS }),
+);

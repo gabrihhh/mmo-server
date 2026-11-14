@@ -89,10 +89,11 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
 ];
 
 /**
- * Jogadores fake de teste ([SOC-01]), parados perto do spawn, para testar Jogadores Próximos, Atributos e (próximas
- * etapas) grupo e amizade sem um segundo aparelho. Entram SEMPRE na zona: no lugar do cilindro com `(id)` no nome do
- * `spawn.blend`, se houver ("Fake Aceita (fake_accept)"), senão na posição padrão daqui (a ~7 m do centro da praça,
- * fora do círculo de spawn e longe dos zumbis).
+ * Jogadores fake de teste ([SOC-01]), parados perto do spawn, para testar Jogadores Próximos, Atributos, grupo e
+ * amizade sem um segundo aparelho. **Fora do jogo desde 2026-11-14** (o usuário aprovou o teste e pediu para tirar):
+ * nenhuma zona os usa; ficam aqui para os testes automáticos e para voltar com uma linha
+ * (`fakePlayers: placeFakePlayers(ZONE_1_MAP)` na zona). Ligados, entram no lugar do cilindro com `(id)` no nome do
+ * `spawn.blend`, se houver ("Fake Aceita (fake_accept)"), senão na posição padrão daqui.
  */
 export const TEST_FAKE_PLAYERS: readonly FakePlayerConfig[] = [
   {
@@ -153,7 +154,6 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     pvp: true,
     // NPCs de teste e zumbis ([JOGO-13]) onde estão no mapa do Blender ([ART-10]).
     dummies: [...placeTestNpcs(ZONE_1_MAP), ...ZONE_1_MAP.monsters.map(zombie)],
-    // Jogadores fake de teste ([SOC-01]): "Fake Aceita" e "Fake Recusa", parados perto do spawn.
-    fakePlayers: placeFakePlayers(ZONE_1_MAP),
+    // Sem jogadores fake (tirados em 2026-11-14, [SOC-01]); para voltar: fakePlayers: placeFakePlayers(ZONE_1_MAP).
   },
 ];

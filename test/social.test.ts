@@ -140,9 +140,9 @@ describe("jogadores fake de teste", () => {
     assert.strictEqual(z.autoReplyOf("ninguem"), null);
   });
 
-  it("Zone 1: os dois fakes entram, no lugar do mapa ou no padrão; o id do fake no mapa não vira NPC", () => {
-    const fakes = ZONE_CONFIGS[0]?.fakePlayers ?? [];
-    assert.deepStrictEqual(fakes.map((f) => [f.name, f.autoReply]), [["Fake Aceita", "accept"], ["Fake Recusa", "reject"]]);
+  it("Zone 1 sem fakes (tirados); placeFakePlayers usa o lugar do mapa ou o padrão; o id do fake no mapa não vira NPC", () => {
+    assert.deepStrictEqual(ZONE_CONFIGS[0]?.fakePlayers ?? [], [], "fakes fora do jogo");
+    assert.deepStrictEqual(TEST_FAKE_PLAYERS.map((f) => [f.name, f.autoReply]), [["Fake Aceita", "accept"], ["Fake Recusa", "reject"]]);
     const placed = placeFakePlayers({ monsters: [], npcs: [{ id: "fake_reject", x: -3, z: 9 }] });
     assert.deepStrictEqual([placed[0]?.x, placed[0]?.z], [TEST_FAKE_PLAYERS[0]?.x, TEST_FAKE_PLAYERS[0]?.z]);
     assert.deepStrictEqual([placed[1]?.x, placed[1]?.z], [-3, 9]);

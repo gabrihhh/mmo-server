@@ -4,7 +4,7 @@ import { GameServer } from "../src/GameServer.js";
 import { InMemoryAccountStore, type Account } from "../src/accounts/AccountStore.js";
 import { FRIEND_REQUEST_SECONDS, PROTOCOL_VERSION, ServerMessageType, type ServerMessage } from "../src/net/protocol.js";
 import { FRIEND_REQUEST_MS, FriendRequests, readFriendIds } from "../src/social/friends.js";
-import { TestClient, sleep, type ReceivedMessage } from "./helpers.js";
+import { TestClient, sleep, type ReceivedMessage, ZONES_WITH_FAKES } from "./helpers.js";
 
 const ZONE = "zone_1";
 const PASSWORD = "senha-forte-123";
@@ -58,7 +58,7 @@ describe("amizade e configuração social (friend_*, social_settings)", () => {
 
   beforeEach(async () => {
     store = new InMemoryAccountStore();
-    server = new GameServer({ accounts: store, heartbeatIntervalMs: 100, log: false });
+    server = new GameServer({ accounts: store, heartbeatIntervalMs: 100, log: false, zones: ZONES_WITH_FAKES });
     port = await server.listen(0);
   });
 

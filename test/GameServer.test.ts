@@ -4,7 +4,7 @@ import { GameServer, MAX_AUTH_FAILURES } from "../src/GameServer.js";
 import { InMemoryAccountStore } from "../src/accounts/AccountStore.js";
 import { CloseCode, PROTOCOL_VERSION } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
-import { TestClient, sleep, type ReceivedMessage } from "./helpers.js";
+import { TestClient, sleep, type ReceivedMessage, ZONES_WITH_FAKES } from "./helpers.js";
 import { TEST_FAKE_PLAYERS, ZONE_CONFIGS } from "../src/zones/zones.js";
 import { VIEW_RADIUS } from "../src/zones/Zone.js";
 
@@ -86,7 +86,7 @@ describe("GameServer", () => {
   }
 
   beforeEach(async () => {
-    server = new GameServer({ accounts: new InMemoryAccountStore(), heartbeatIntervalMs: 100, log: false });
+    server = new GameServer({ accounts: new InMemoryAccountStore(), heartbeatIntervalMs: 100, log: false, zones: ZONES_WITH_FAKES });
     port = await server.listen(0);
   });
 
