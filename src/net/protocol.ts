@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 12;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -493,9 +493,12 @@ export interface SnapshotData {
   readonly tick: number;
   /** Último `input.seq` de QUEM RECEBE que já foi aplicado (0 = nenhum). Base da reconciliação. */
   readonly ack: number;
-  /** Todos os jogadores da zona (inclusive quem recebe). */
+  /**
+   * Jogadores na área de interesse de quem recebe (até `VIEW_RADIUS` m, `Zone.ts`), inclusive ele e o alvo dele.
+   * Quem não vem está longe: o cliente esconde e congela até voltar (desde a versão 12).
+   */
   readonly players: readonly PlayerSnapshot[];
-  /** Bonecos/monstros da zona. */
+  /** Bonecos/monstros na área de interesse de quem recebe (mesma regra de `players`). */
   readonly npcs: readonly NpcSnapshot[];
   /** O que aconteceu neste tick (dano, mortes, renascimentos). */
   readonly events: readonly CombatEvent[];

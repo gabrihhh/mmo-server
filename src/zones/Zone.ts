@@ -158,6 +158,15 @@ export type JoinResult = { readonly status: "full" } | { readonly status: "joine
  */
 export const MAX_INPUTS_PER_TICK = 2;
 
+/**
+ * Área de interesse (m): cada jogador recebe no snapshot só os jogadores e NPCs a esta distância dele (mais ele
+ * mesmo e o alvo dele), como nos MMOs. A câmera mostra ~25 m em volta ([CLI-02]); a folga evita que alguém "pisque"
+ * na borda da tela. Menos dados por segundo e o cliente só desenha/anima quem está perto. Ver mmo-docs [INFRA-04].
+ *
+ * ATENÇÃO: quem some do snapshot o cliente esconde e congela (mmo-client/scripts/network/network.gd, `in_view`).
+ */
+export const VIEW_RADIUS = 45;
+
 /** Tamanho máximo da fila de inputs por jogador. Excesso descarta os mais antigos (anti-speedhack/flood). */
 export const MAX_INPUT_QUEUE = 4;
 
@@ -1563,17 +1572,26 @@ export class Zone {
   }
 
   /**
-   * Manda a cada jogador o snapshot do tick. A parte comum (jogadores, bonecos, eventos) é
-   * serializada uma vez; só `ack` e `me` mudam por destinatário.
+   * Manda a cada jogador o snapshot do tick, só com quem está na área de interesse dele ({@link VIEW_RADIUS}): ele
+   * mesmo, o alvo dele e os jogadores/NPCs até essa distância. O JSON de cada entidade é montado uma vez por tick; por
+   * destinatário só se escolhe quais entram e se montam `ack` e `me`. Eventos vão para todos.
    */
   private sendSnapshots(): void {
     if (this.players.size === 0) return;
-    const shared: string = [
-      `"players":${JSON.stringify(Array.from(this.players.values(), (p) => Zone.snapshot(p)))}`,
-      `"npcs":${JSON.stringify(this.npcSnapshots())}`,
-      `"events":${JSON.stringify(this.events)}`,
-    ].join(",");
+    const players: Array<[Entity, string]> = Array.from(this.players.values(), (p): [Entity, string] => [p, JSON.stringify(Zone.snapshot(p))]);
+    const npcs: Array<[Entity, string]> = this.npcSnapshots().flatMap((snap): Array<[Entity, string]> => {
+      const dummy: ZoneDummy | undefined = this.dummies.get(snap.id);
+      return dummy === undefined ? [] : [[dummy, JSON.stringify(snap)]];
+    });
+    const events: string = JSON.stringify(this.events);
     for (const player of this.players.values()) {
+      const near = ([entity]: [Entity, string]): boolean =>
+        entity.id === player.id || entity.id === player.attackTarget || Zone.distance(entity.state, player.state) <= VIEW_RADIUS;
+      const shared: string = [
+        `"players":[${players.filter(near).map(([, json]) => json).join(",")}]`,
+        `"npcs":[${npcs.filter(near).map(([, json]) => json).join(",")}]`,
+        `"events":${events}`,
+      ].join(",");
       const me: OwnStatus = {
         mana: round1(player.mana),
         maxMana: player.maxMana,

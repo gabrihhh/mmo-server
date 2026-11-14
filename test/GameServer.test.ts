@@ -6,6 +6,7 @@ import { CloseCode, PROTOCOL_VERSION } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 import { TestClient, sleep, type ReceivedMessage } from "./helpers.js";
 import { ZONE_CONFIGS } from "../src/zones/zones.js";
+import { VIEW_RADIUS } from "../src/zones/Zone.js";
 
 const ZONE = "zone_1";
 const PASSWORD = "senha-forte-123";
@@ -324,7 +325,9 @@ describe("GameServer", () => {
         return typeof me === "object" && me !== null && "target" in me && me.target === "dummy_2";
       });
       const npcs: unknown = snap.data["npcs"];
-      assert.ok(Array.isArray(npcs) && npcs.length === (ZONE_CONFIGS[0]?.dummies.length ?? -1), "bonecos e NPCs de teste no snapshot");
+      // Só os NPCs perto (área de interesse, VIEW_RADIUS) vêm no snapshot.
+      const near: number = (ZONE_CONFIGS[0]?.dummies ?? []).filter((d) => Math.hypot(d.x, d.z) <= VIEW_RADIUS + 4).length;
+      assert.ok(Array.isArray(npcs) && npcs.length > 0 && npcs.length <= near, "só NPCs da área de interesse no snapshot");
     });
 
     it("cast: aceito vira cast_start; durante o lançamento = busy; depois, antes da recarga = on_cooldown", async () => {

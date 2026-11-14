@@ -67,7 +67,7 @@ describe("NPCs de teste", () => {
   it("atirador lança a rotação no saco de pancadas e veste o conjunto da habilidade da vez", () => {
     const z = zone([BAG, SHOOTER]);
     const a = new Member("a");
-    z.join(a, { x: 30, y: 0, z: 30, rotY: 0 });
+    z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     ticks(z, 12);
     const casts: unknown[] = a.allEvents.filter((e) => e["type"] === "cast_start" && e["source"] === "shooter").map((e) => e["ability"]);
     assert.deepStrictEqual(casts.slice(0, 3), ["bolt", "fireball", "meteor"], "segue a rotação");
@@ -123,7 +123,7 @@ describe("NPCs de teste", () => {
     // Três posições de carta diferentes (hand:2, hand:0, hand:1): não esperam a recarga uma da outra.
     const z = zone([{ ...BAG, maxHp: 30 }, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt", "fireball", "meteor"], pauseSeconds: 0 } }]);
     const a = new Member("a");
-    z.join(a, { x: 30, y: 0, z: 30, rotY: 0 });
+    z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     const seen: number[] = [];
     for (let i = 0; i < 8 * TICK_RATE_HZ; i++) {
       z.tick();
@@ -139,7 +139,7 @@ describe("NPCs de teste", () => {
   it("saco recupera vida depois de um tempo sem apanhar", () => {
     const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt"], pauseSeconds: 100 } }]);
     const a = new Member("a");
-    z.join(a, { x: 30, y: 0, z: 30, rotY: 0 });
+    z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     ticks(z, 3);
     const hit: unknown = a.field("bag", "hp");
     assert.ok(typeof hit === "number" && hit < DUMMY_MAX_HP, "levou o raio");
@@ -151,7 +151,7 @@ describe("NPCs de teste", () => {
     // Bola de fogo (Treino, hand:0, recarga 4 s) e Lança de gelo (Mago, hand:0): mesma posição.
     const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["fireball", "ice_lance"], pauseSeconds: 0 } }]);
     const a = new Member("a");
-    z.join(a, { x: 30, y: 0, z: 30, rotY: 0 });
+    z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     const startTicks: number[] = [];
     for (let i = 0; i < 10 * TICK_RATE_HZ; i++) {
       z.tick();
