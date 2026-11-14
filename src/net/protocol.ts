@@ -13,7 +13,7 @@
  */
 
 /** Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada. */
-export const PROTOCOL_VERSION = 14;
+export const PROTOCOL_VERSION = 15;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -61,6 +61,17 @@ export const ClientMessageType = {
   GroupKick: "group_kick",
   /** Sai do grupo em que está. Payload: `{}`. */
   GroupLeave: "group_leave",
+  /**
+   * Pede amizade a um jogador online (ou fake de teste), mmo-docs [SOC-04]. Payload: {@link FriendTargetData}.
+   * Resposta: o pedido chega ao outro ({@link ServerMessageType.FriendRequested}), ou recusa (`error`).
+   */
+  FriendRequest: "friend_request",
+  /** Responde a um pedido de amizade recebido ({@link ServerMessageType.FriendRequested}). Payload: {@link FriendAnswerData}. */
+  FriendAnswer: "friend_answer",
+  /** Desfaz uma amizade (dos dois lados). Payload: {@link FriendTargetData}. */
+  FriendRemove: "friend_remove",
+  /** Muda a Configuração social (salva na conta, vale na hora). Payload: {@link SocialSettings}. */
+  SocialSettings: "social_settings",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -90,6 +101,17 @@ export const ServerMessageType = {
   GroupInvited: "group_invited",
   /** Aviso pequeno sobre o grupo ("X aceitou o convite", "X saiu do grupo"...). Payload: {@link GroupNoticeData}. */
   GroupNotice: "group_notice",
+  /**
+   * Sua lista de amigos com online/offline (mmo-docs [SOC-04]): após o `auth_ok`, no `join` e a cada mudança (amigo
+   * novo, removido, entrou ou saiu do servidor). Payload: {@link FriendsData}.
+   */
+  Friends: "friends",
+  /** Alguém pediu sua amizade (janela Aceitar/Recusar). Payload: {@link FriendRequestedData}. */
+  FriendRequested: "friend_requested",
+  /** Aviso pequeno sobre amizade ("X aceitou o pedido de amizade"...). Payload: {@link FriendNoticeData}. */
+  FriendNotice: "friend_notice",
+  /** Configuração social salva (resposta ao `social_settings`). Payload: {@link SocialSettings}. */
+  SocialSettings: "social_settings",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
 } as const;
@@ -164,6 +186,18 @@ export const ErrorCode = {
   AlreadyInGroup: "already_in_group",
   /** Sair/expulsar sem estar num grupo, ou expulsar quem não é do seu grupo. A conexão continua. */
   NotInGroup: "not_in_group",
+  /** Amizade ([SOC-04]): pedir a si mesmo ou a quem não aceita pedidos (NPC). A conexão continua. */
+  InvalidFriendRequest: "invalid_friend_request",
+  /** Pedido de amizade a quem já é seu amigo. A conexão continua. */
+  AlreadyFriends: "already_friends",
+  /** Pedido de amizade repetido: o anterior ainda espera resposta. A conexão continua. */
+  FriendRequestPending: "friend_request_pending",
+  /** Resposta a um pedido de amizade que não existe mais (expirou, quem pediu saiu). A conexão continua. */
+  FriendRequestNotFound: "friend_request_not_found",
+  /** Lista de amigos cheia ({@link MAX_FRIENDS}), a sua ou a do outro. A conexão continua. */
+  FriendListFull: "friend_list_full",
+  /** Remover quem não é seu amigo. A conexão continua. */
+  NotFriends: "not_friends",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -308,6 +342,37 @@ export interface GroupAnswerData {
   readonly accept: boolean;
 }
 
+/** Payload de `friend_request` e `friend_remove`: o outro jogador. */
+export interface FriendTargetData {
+  readonly playerId: string;
+}
+
+/** Payload de `friend_answer`. */
+export interface FriendAnswerData {
+  /** Quem pediu (o `fromId` do {@link FriendRequestedData}). */
+  readonly fromId: string;
+  /** `true` = aceitar, `false` = recusar. */
+  readonly accept: boolean;
+}
+
+/**
+ * Opção da Configuração social: `always` = mostra os pedidos/convites; `hide` = recusa sozinho, sem mostrar nada (quem
+ * pediu vê "X recusou"). ATENÇÃO: mmo-client/scripts/network/protocol.gd (SOCIAL_*).
+ */
+export const SOCIAL_VISIBILITIES = ["always", "hide"] as const;
+export type SocialVisibility = (typeof SOCIAL_VISIBILITIES)[number];
+
+/** Configuração social da conta (mmo-docs [SOC-04], [INFRA-07]). Vai no `auth_ok` e no `social_settings`. */
+export interface SocialSettings {
+  /** "Solicitações de amizade: Sempre / Ocultar". */
+  readonly friendRequests: SocialVisibility;
+  /** "Convites de grupo: Sempre / Ocultar" ([SOC-03]). */
+  readonly groupInvites: SocialVisibility;
+}
+
+/** Configuração de conta nova (e de conta antiga, sem o campo): mostra tudo. */
+export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = { friendRequests: "always", groupInvites: "always" };
+
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Register; readonly data: RegisterData }
@@ -325,7 +390,11 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.GroupInvite; readonly data: GroupTargetData }
   | { readonly type: typeof ClientMessageType.GroupAnswer; readonly data: GroupAnswerData }
   | { readonly type: typeof ClientMessageType.GroupKick; readonly data: GroupTargetData }
-  | { readonly type: typeof ClientMessageType.GroupLeave; readonly data: Record<string, never> };
+  | { readonly type: typeof ClientMessageType.GroupLeave; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.FriendRequest; readonly data: FriendTargetData }
+  | { readonly type: typeof ClientMessageType.FriendAnswer; readonly data: FriendAnswerData }
+  | { readonly type: typeof ClientMessageType.FriendRemove; readonly data: FriendTargetData }
+  | { readonly type: typeof ClientMessageType.SocialSettings; readonly data: SocialSettings };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -638,6 +707,48 @@ export interface GroupNoticeData {
   readonly message: string;
 }
 
+/** Máximo de amigos por conta (proteção; mmo-docs [SOC-04]). */
+export const MAX_FRIENDS = 100;
+
+/** Segundos que um pedido de amizade espera resposta (como o convite de grupo); depois expira (aviso `expired`). */
+export const FRIEND_REQUEST_SECONDS = 30;
+
+/** Um amigo como vai na mensagem `friends`. ATENÇÃO: lido em mmo-client/scripts/network/network.gd (friends). */
+export interface FriendView {
+  readonly id: string;
+  readonly name: string;
+  /** Conectado no servidor agora (qualquer zona). Jogador fake de teste: sempre `true`. */
+  readonly online: boolean;
+}
+
+/** Payload de `friends`: todos os seus amigos (online primeiro, depois por nome). */
+export interface FriendsData {
+  readonly friends: readonly FriendView[];
+}
+
+/** Payload de `friend_requested`. */
+export interface FriendRequestedData {
+  /** Quem pediu (responder com `friend_answer { fromId }`). */
+  readonly fromId: string;
+  readonly fromName: string;
+  /** Segundos até o pedido expirar ({@link FRIEND_REQUEST_SECONDS}). */
+  readonly expiresIn: number;
+}
+
+/**
+ * Tipos de aviso de amizade (`friend_notice.code`): `accepted`/`rejected`/`expired` = resposta ao SEU pedido (o outro
+ * aceitou, recusou ou não respondeu a tempo); `added` = você aceitou e agora são amigos; `removed` = você removeu
+ * alguém dos amigos.
+ */
+export type FriendNoticeCode = "accepted" | "rejected" | "expired" | "added" | "removed";
+
+/** Payload de `friend_notice`: o aviso pronto para mostrar (`message`, em português) e de quem se trata. */
+export interface FriendNoticeData {
+  readonly code: FriendNoticeCode;
+  readonly name: string;
+  readonly message: string;
+}
+
 /** Payload de `snapshot`. */
 export interface SnapshotData {
   /** Número do tick do servidor que gerou este estado. */
@@ -670,6 +781,8 @@ export type ServerMessage =
         readonly sessionToken: string;
         /** Corpo escolhido; `null` = ainda não escolheu (o cliente mostra a tela de escolha antes do `join`). */
         readonly body: BodyType | null;
+        /** Configuração social salva na conta (a tela de Configuração mostra; v15, [SOC-04]). */
+        readonly social: SocialSettings;
       };
     }
   | { readonly type: typeof ServerMessageType.BodyChosen; readonly data: { readonly body: BodyType } }
@@ -697,6 +810,10 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
   | { readonly type: typeof ServerMessageType.GroupNotice; readonly data: GroupNoticeData }
+  | { readonly type: typeof ServerMessageType.Friends; readonly data: FriendsData }
+  | { readonly type: typeof ServerMessageType.FriendRequested; readonly data: FriendRequestedData }
+  | { readonly type: typeof ServerMessageType.FriendNotice; readonly data: FriendNoticeData }
+  | { readonly type: typeof ServerMessageType.SocialSettings; readonly data: SocialSettings }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
 /** Serializa uma mensagem para enviar pelo WebSocket. */
@@ -853,6 +970,48 @@ export function parseGroupAnswerData(data: unknown): GroupAnswerData | null {
   return { fromId, accept };
 }
 
+/** Valida o payload de `friend_request`/`friend_remove`. */
+export function parseFriendTargetData(data: unknown): FriendTargetData | null {
+  if (!isRecord(data)) return null;
+  const { playerId } = data;
+  if (typeof playerId !== "string" || playerId.length === 0 || playerId.length > 64) return null;
+  return { playerId };
+}
+
+/** Valida o payload de `friend_answer`. */
+export function parseFriendAnswerData(data: unknown): FriendAnswerData | null {
+  if (!isRecord(data)) return null;
+  const { fromId, accept } = data;
+  if (typeof fromId !== "string" || fromId.length === 0 || fromId.length > 64 || typeof accept !== "boolean") return null;
+  return { fromId, accept };
+}
+
+/** `true` se `value` é uma opção da Configuração social (`always`/`hide`). */
+export function isSocialVisibility(value: unknown): value is SocialVisibility {
+  return SOCIAL_VISIBILITIES.some((v) => v === value);
+}
+
+/** Valida o payload de `social_settings` (as duas opções são obrigatórias). */
+export function parseSocialSettings(data: unknown): SocialSettings | null {
+  if (!isRecord(data)) return null;
+  const { friendRequests, groupInvites } = data;
+  if (!isSocialVisibility(friendRequests) || !isSocialVisibility(groupInvites)) return null;
+  return { friendRequests, groupInvites };
+}
+
+/**
+ * Lê a Configuração social guardada no banco: ausente (conta antiga) ou estragada vira {@link DEFAULT_SOCIAL_SETTINGS}
+ * (campo a campo).
+ */
+export function readSocialSettings(raw: unknown): SocialSettings {
+  if (!isRecord(raw)) return DEFAULT_SOCIAL_SETTINGS;
+  const { friendRequests, groupInvites } = raw;
+  return {
+    friendRequests: isSocialVisibility(friendRequests) ? friendRequests : DEFAULT_SOCIAL_SETTINGS.friendRequests,
+    groupInvites: isSocialVisibility(groupInvites) ? groupInvites : DEFAULT_SOCIAL_SETTINGS.groupInvites,
+  };
+}
+
 /**
  * Decodifica e valida uma mensagem de texto vinda da rede (não confiável).
  * @returns a mensagem tipada, ou `null` se o JSON, o tipo ou o payload forem inválidos.
@@ -928,6 +1087,22 @@ export function parseClientMessage(text: string): ClientMessage | null {
     }
     case ClientMessageType.GroupLeave:
       return { type: ClientMessageType.GroupLeave, data: {} };
+    case ClientMessageType.FriendRequest: {
+      const data = parseFriendTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.FriendRequest, data };
+    }
+    case ClientMessageType.FriendAnswer: {
+      const data = parseFriendAnswerData(raw);
+      return data === null ? null : { type: ClientMessageType.FriendAnswer, data };
+    }
+    case ClientMessageType.FriendRemove: {
+      const data = parseFriendTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.FriendRemove, data };
+    }
+    case ClientMessageType.SocialSettings: {
+      const data = parseSocialSettings(raw);
+      return data === null ? null : { type: ClientMessageType.SocialSettings, data };
+    }
     default:
       return null;
   }

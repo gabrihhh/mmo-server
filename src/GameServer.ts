@@ -21,7 +21,11 @@ import {
   type RegisterData,
   type ResumeData,
   type EquipSlotName,
+  type FriendView,
+  type ServerMessage,
+  type SocialSettings,
 } from "./net/protocol.js";
+import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
 import { Zone, type CastFailure, type CastResult, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
@@ -106,6 +110,15 @@ export class GameServer {
   /** Sessão autenticada de cada jogador. Garante uma conexão por conta. */
   private readonly online: Map<string, Session> = new Map();
   private readonly options: Required<GameServerOptions>;
+  /** Pedidos de amizade pendentes (só na memória; amizade vale entre zonas, [SOC-04]). */
+  private readonly friendRequests: FriendRequests;
+  /**
+   * Amizades com jogadores fake de teste ([SOC-01]): fake não tem conta no banco, então a amizade com ele fica só na
+   * memória do servidor (jogador → ids de fake), some quando o servidor reinicia e nunca vai para a conta.
+   */
+  private readonly fakeFriends: Map<string, Set<string>> = new Map();
+  /** Usernames já conhecidos (de quem autenticou ou foi buscado no banco): nome dos amigos offline sem ir ao banco. */
+  private readonly knownNames: Map<string, string> = new Map();
   private tickTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
@@ -118,6 +131,14 @@ export class GameServer {
       updatesDir: options.updatesDir ?? DEFAULT_UPDATES_DIR,
     };
     for (const config of this.options.zones) this.zones.set(config.id, new Zone(config));
+    this.friendRequests = new FriendRequests({
+      send: (playerId, message): void => this.sendTo(playerId, message),
+      nameOf: (playerId): string | undefined => this.online.get(playerId)?.account?.username ?? this.fakeNameOf(playerId),
+      autoAnswer: (playerId): "accept" | "reject" | null => this.friendAutoAnswer(playerId),
+      areFriends: (a, b): boolean => this.areFriends(a, b),
+      friendCount: (playerId): number => this.friendIdsOf(playerId).length,
+      befriend: (a, b): void => this.befriend(a, b),
+    });
 
     this.http = createServer((req: IncomingMessage, res: ServerResponse) => {
       void this.handleHttp(req, res);
@@ -162,6 +183,7 @@ export class GameServer {
   private startTimers(): void {
     this.tickTimer = setInterval(() => {
       for (const zone of this.zones.values()) zone.tick();
+      this.friendRequests.expire(Date.now());
     }, 1000 / TICK_RATE_HZ);
 
     // Celular perde rede sem fechar o socket: sem heartbeat, o jogador ficaria "fantasma" na zona.
@@ -227,7 +249,12 @@ export class GameServer {
     socket.on("close", (code: number) => {
       this.sessions.delete(session);
       const account: Account | null = session.account;
-      if (account !== null && this.online.get(account.playerId) === session) this.online.delete(account.playerId);
+      if (account !== null && this.online.get(account.playerId) === session) {
+        // Saiu do servidor: os pedidos de amizade pendentes somem e os amigos online o veem offline ([SOC-04]).
+        this.online.delete(account.playerId);
+        this.friendRequests.removePlayer(account.playerId);
+        this.refreshFriendsOf(account.friends);
+      }
       const zoneId: string | undefined = session.zone?.config.id;
       void this.leaveZone(session).then(() => {
         if (zoneId !== undefined && account !== null) {
@@ -322,6 +349,185 @@ export class GameServer {
       case ClientMessageType.GroupLeave:
         this.groupRequest(session, (zone, id) => zone.leaveGroup(id));
         return;
+      // Amizade ([SOC-04]): pedidos em src/social/friends.ts; a amizade em si fica na conta.
+      case ClientMessageType.FriendRequest:
+        this.friendRequest(session, (id) => this.friendRequests.request(id, message.data.playerId, Date.now()));
+        return;
+      case ClientMessageType.FriendAnswer:
+        this.friendRequest(session, (id) => this.friendRequests.answer(id, message.data.fromId, message.data.accept));
+        return;
+      case ClientMessageType.FriendRemove:
+        this.removeFriend(session, message.data.playerId);
+        return;
+      case ClientMessageType.SocialSettings:
+        void this.changeSocialSettings(session, message.data);
+        return;
+    }
+  }
+
+  /** Pedido/resposta de amizade de quem está autenticado; recusado vira `error` só para ele ([SOC-04]). */
+  private friendRequest(session: Session, request: (playerId: string) => FriendResult): void {
+    if (session.account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    const result: FriendResult = request(session.account.playerId);
+    if (!result.ok) this.sendError(session, GameServer.FRIEND_ERRORS[result.reason], result.message);
+  }
+
+  /** Código do protocolo para cada recusa de pedido de amizade. */
+  private static readonly FRIEND_ERRORS: Readonly<Record<FriendFailure, ErrorCode>> = {
+    player_not_found: ErrorCode.PlayerNotFound,
+    invalid_friend_request: ErrorCode.InvalidFriendRequest,
+    already_friends: ErrorCode.AlreadyFriends,
+    friend_request_pending: ErrorCode.FriendRequestPending,
+    friend_request_not_found: ErrorCode.FriendRequestNotFound,
+    friend_list_full: ErrorCode.FriendListFull,
+  };
+
+  /** Manda `message` ao jogador se ele está online (fake de teste/offline: nada). */
+  private sendTo(playerId: string, message: ServerMessage): void {
+    const socket: WebSocket | undefined = this.online.get(playerId)?.socket;
+    if (socket !== undefined && socket.readyState === WebSocket.OPEN) socket.send(encodeServerMessage(message));
+  }
+
+  /** Nome do jogador fake de teste `playerId` em alguma zona, ou `undefined` se não for um fake ([SOC-01]). */
+  private fakeNameOf(playerId: string): string | undefined {
+    for (const zone of this.zones.values()) {
+      const name: string | undefined = zone.fakeName(playerId);
+      if (name !== undefined) return name;
+    }
+    return undefined;
+  }
+
+  /** Resposta automática a pedido de amizade: a do fake de teste, `reject` para quem oculta pedidos, senão `null`. */
+  private friendAutoAnswer(playerId: string): "accept" | "reject" | null {
+    for (const zone of this.zones.values()) {
+      const auto: "accept" | "reject" | null = zone.autoReplyOf(playerId);
+      if (auto !== null) return auto;
+    }
+    return this.online.get(playerId)?.account?.social.friendRequests === "hide" ? "reject" : null;
+  }
+
+  /** Amigos de um jogador online: os da conta + os fakes de teste (só na memória). Offline: só os fakes. */
+  private friendIdsOf(playerId: string): string[] {
+    const saved: readonly string[] = this.online.get(playerId)?.account?.friends ?? [];
+    return [...saved, ...(this.fakeFriends.get(playerId) ?? [])];
+  }
+
+  /** `true` se `a` e `b` são amigos (olha os dois lados: o fake não tem lista própria). */
+  private areFriends(a: string, b: string): boolean {
+    return this.friendIdsOf(a).includes(b) || this.friendIdsOf(b).includes(a);
+  }
+
+  /** Atualiza a lista de amigos na conta em memória do jogador online (o banco é gravado à parte). */
+  private updateFriends(playerId: string, change: (friends: readonly string[]) => string[]): void {
+    const session: Session | undefined = this.online.get(playerId);
+    if (session !== undefined && session.account !== null) session.account = { ...session.account, friends: change(session.account.friends) };
+  }
+
+  /** `a` e `b` viraram amigos: grava (memória + banco; com fake, só memória) e manda as listas novas aos dois. */
+  private befriend(a: string, b: string): void {
+    const fakeA: boolean = this.fakeNameOf(a) !== undefined;
+    const fakeB: boolean = this.fakeNameOf(b) !== undefined;
+    if (fakeA || fakeB) {
+      const [real, fake] = fakeA ? [b, a] : [a, b];
+      const set: Set<string> = this.fakeFriends.get(real) ?? new Set();
+      set.add(fake);
+      this.fakeFriends.set(real, set);
+    } else {
+      this.updateFriends(a, (friends) => (friends.includes(b) ? [...friends] : [...friends, b]));
+      this.updateFriends(b, (friends) => (friends.includes(a) ? [...friends] : [...friends, a]));
+      this.options.accounts.addFriendship(a, b).catch((error: unknown) => {
+        console.error(`[amizade] falha ao salvar a amizade ${a} ↔ ${b}:`, error);
+      });
+    }
+    void this.sendFriends(a);
+    void this.sendFriends(b);
+  }
+
+  /** "Remover amigo": desfaz dos dois lados (memória + banco) e manda as listas novas ([SOC-04]). */
+  private removeFriend(session: Session, otherId: string): void {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    const me: string = account.playerId;
+    if (!this.areFriends(me, otherId)) {
+      this.sendError(session, ErrorCode.NotFriends, "Esse jogador não é seu amigo.");
+      return;
+    }
+    const name: string = this.online.get(otherId)?.account?.username ?? this.fakeNameOf(otherId) ?? this.knownNames.get(otherId) ?? "Jogador";
+    this.fakeFriends.get(me)?.delete(otherId);
+    this.updateFriends(me, (friends) => friends.filter((id) => id !== otherId));
+    this.updateFriends(otherId, (friends) => friends.filter((id) => id !== me));
+    if (this.fakeNameOf(otherId) === undefined) {
+      this.options.accounts.removeFriendship(me, otherId).catch((error: unknown) => {
+        console.error(`[amizade] falha ao desfazer a amizade ${me} ↔ ${otherId}:`, error);
+      });
+    }
+    this.sendTo(me, {
+      type: ServerMessageType.FriendNotice,
+      data: { code: "removed", name, message: `${name} foi removido dos seus amigos.` },
+    });
+    void this.sendFriends(me);
+    void this.sendFriends(otherId);
+  }
+
+  /**
+   * Manda `friends` (lista com online/offline) ao jogador, se ele estiver online. Nome de amigo offline desconhecido é
+   * buscado no banco uma vez (fica em {@link knownNames}); id sem conta (apagada) não aparece.
+   */
+  private async sendFriends(playerId: string): Promise<void> {
+    if (!this.online.has(playerId)) return;
+    const missing: string[] = this.friendIdsOf(playerId).filter((id) => this.nameOfFriend(id) === undefined);
+    if (missing.length > 0) {
+      try {
+        for (const [id, name] of await this.options.accounts.usernamesOf(missing)) this.knownNames.set(id, name);
+      } catch (error: unknown) {
+        console.error(`[amizade] falha ao buscar nomes dos amigos:`, error);
+      }
+    }
+    // Lista montada DEPOIS da espera: reflete o estado mais novo mesmo que algo tenha mudado no meio.
+    const friends: FriendView[] = [];
+    for (const id of this.friendIdsOf(playerId)) {
+      const name: string | undefined = this.nameOfFriend(id);
+      if (name !== undefined) friends.push({ id, name, online: this.online.has(id) || this.fakeNameOf(id) !== undefined });
+    }
+    friends.sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name, "pt-BR"));
+    this.sendTo(playerId, { type: ServerMessageType.Friends, data: { friends } });
+  }
+
+  /** Nome de um amigo: online, fake de teste ou já conhecido; `undefined` = buscar no banco. */
+  private nameOfFriend(playerId: string): string | undefined {
+    return this.online.get(playerId)?.account?.username ?? this.fakeNameOf(playerId) ?? this.knownNames.get(playerId);
+  }
+
+  /** Manda a lista de amigos de novo a cada um destes que estiver online (alguém entrou/saiu do servidor). */
+  private refreshFriendsOf(playerIds: readonly string[]): void {
+    for (const id of playerIds) void this.sendFriends(id);
+  }
+
+  /**
+   * Configuração social ("Solicitações de amizade" e "Convites de grupo": Sempre/Ocultar, [SOC-04]): guarda na conta
+   * em memória (vale na hora: `friendAutoAnswer` e `hidesGroupInvites` leem dali), salva no banco e confirma com
+   * `social_settings`.
+   */
+  private async changeSocialSettings(session: Session, settings: SocialSettings): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    session.account = { ...account, social: settings };
+    try {
+      await this.options.accounts.saveSocialSettings(account.playerId, settings);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar a configuração social de ${account.username}:`, error);
+    }
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(encodeServerMessage({ type: ServerMessageType.SocialSettings, data: settings }));
     }
   }
 
@@ -446,16 +652,21 @@ export class GameServer {
       void this.leaveZone(previous);
       previous.socket.close(CloseCode.Replaced, "entrou em outra conexão");
     }
+    const wasOnline: boolean = this.online.has(account.playerId);
     session.account = account;
     session.sessionToken = sessionToken;
     this.online.set(account.playerId, session);
+    this.knownNames.set(account.playerId, account.username);
     session.socket.send(
       encodeServerMessage({
         type: ServerMessageType.AuthOk,
-        data: { playerId: account.playerId, username: account.username, sessionToken, body: account.body },
+        data: { playerId: account.playerId, username: account.username, sessionToken, body: account.body, social: account.social },
       }),
     );
     this.sendInventory(session);
+    void this.sendFriends(account.playerId);
+    // Os amigos online passam a vê-lo online ([SOC-04]).
+    if (!wasOnline) this.refreshFriendsOf(account.friends);
     this.log(`[auth] ${account.username} autenticou (${kind})`);
   }
 
@@ -614,6 +825,8 @@ export class GameServer {
             console.error(`[${session.connectionId}] falha ao salvar nível/XP de ${account.username}:`, error);
           });
         },
+        // Configuração → "Convites de grupo: Ocultar" ([SOC-04]): lido a cada convite, então mudar vale na hora.
+        hidesGroupInvites: (): boolean => session.account?.social.groupInvites === "hide",
       },
       GameServer.spawnFrom(account.lastPosition, zone),
       basicAttackOf(account.inventory),
@@ -642,6 +855,7 @@ export class GameServer {
         },
       }),
     );
+    void this.sendFriends(account.playerId);
     this.log(`[${zone.config.id}] ${account.username} entrou (${zone.size} online)`);
   }
 

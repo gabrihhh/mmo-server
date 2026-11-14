@@ -76,8 +76,9 @@ export interface ZoneMember {
   /**
    * `true` = este jogador oculta convites de grupo: todo convite é recusado sozinho, sem aparecer para ele, e quem
    * convidou recebe o aviso "X recusou o convite" ([SOC-03]). Ausente = mostra os convites.
-   * ETAPA 3 (Configuração → "Convites de grupo: Sempre / Ocultar", salvo na conta): o GameServer preenche isto no
-   * `join` lendo a conta; a zona já consulta em {@link Zone.groupInviteAutoAnswer}.
+   * Configuração → "Convites de grupo: Sempre / Ocultar" ([SOC-04], salvo na conta): o GameServer preenche isto no
+   * `join` lendo a opção da conta a cada chamada (mudar a opção vale na hora); a zona consulta em
+   * {@link Zone.groupInviteAutoAnswer}.
    */
   hidesGroupInvites?(): boolean;
 }
@@ -141,7 +142,7 @@ export interface DummyConfig {
  * Como um jogador fake responde a convites de grupo e pedidos de amizade (mmo-docs [SOC-01]): `accept` aceita
  * sempre, `reject` recusa sempre. A resposta chega a quem pediu como se viesse de um jogador de verdade.
  * Lido por {@link Zone.autoReplyOf} e, no grupo ([SOC-03]), por {@link Zone.groupInviteAutoAnswer}; amizade
- * (etapa 3) também lê daqui.
+ * ([SOC-04]) também lê daqui.
  */
 export type AutoReply = "accept" | "reject";
 
@@ -551,18 +552,25 @@ export class Zone {
 
   /**
    * Como o jogador `id` responde sozinho a convites/pedidos ([SOC-01]): `accept`/`reject` se for um fake de teste,
-   * `null` se for um jogador de verdade (ou não estiver na zona). Grupo e amizade (próximas etapas) usam isto.
+   * `null` se for um jogador de verdade (ou não estiver na zona). Usado pelo grupo ([SOC-03]) e pela amizade
+   * ([SOC-04], no `GameServer`).
    */
   autoReplyOf(id: string): AutoReply | null {
     return this.players.get(id)?.fake?.autoReply ?? null;
   }
 
+  /** Nome do jogador fake de teste `id` desta zona ([SOC-01]); `undefined` se não for um fake daqui. Amizade ([SOC-04]). */
+  fakeName(id: string): string | undefined {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    return player !== undefined && player.fake !== null ? player.name : undefined;
+  }
+
   /**
    * Resposta automática do jogador `id` a um convite de grupo ([SOC-03]), ou `null` = mostrar o convite para ele:
    * - jogador fake de teste ([SOC-01]): a resposta configurada dele (`accept`/`reject`);
-   * - **jogador que oculta convites de grupo** ({@link ZoneMember.hidesGroupInvites}, etapa 3 / Configuração):
+   * - **jogador que oculta convites de grupo** ({@link ZoneMember.hidesGroupInvites}, Configuração, [SOC-04]):
    *   `reject` — recusa sozinho, sem mostrar nada; quem convidou vê "X recusou o convite".
-   * É o ÚNICO ponto onde a zona decide isso: a etapa 3 só precisa preencher `hidesGroupInvites` no `ZoneMember`.
+   * É o ÚNICO ponto onde a zona decide isso; o `GameServer` preenche `hidesGroupInvites` no `ZoneMember` (opção da conta).
    */
   groupInviteAutoAnswer(id: string): AutoReply | null {
     const player: ZonePlayer | undefined = this.players.get(id);

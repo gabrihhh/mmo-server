@@ -19,7 +19,7 @@ import { TICK_RATE_HZ } from "../sim/movement.js";
  *   convida e expulsa;
  * - o convite espera {@link GROUP_INVITE_SECONDS} s; sem resposta, expira e quem convidou recebe o aviso `expired`
  *   ("X não respondeu ao convite"). Convidado que já tem grupo: quem convidou recebe `in_group` na hora;
- * - quem responde sozinho ({@link GroupHost.autoAnswer}: jogador fake de teste e, na etapa 3, quem oculta convites de
+ * - quem responde sozinho ({@link GroupHost.autoAnswer}: jogador fake de teste e quem oculta convites de
  *   grupo) responde na hora, com o MESMO aviso de um jogador de verdade.
  *
  * A zona usa {@link sameGroup} para membros não se atingirem e {@link membersOf} para a XP do grupo ([JOGO-12]).
@@ -36,7 +36,7 @@ export interface GroupHost {
   levelOf(playerId: string): number;
   /**
    * Resposta automática do jogador a um convite de grupo: `accept`/`reject` na hora, ou `null` = mostrar o convite
-   * para ele decidir. Ver `Zone.groupInviteAutoAnswer` (fakes e o ponto da etapa 3: "ocultar convites de grupo").
+   * para ele decidir. Ver `Zone.groupInviteAutoAnswer` (fakes e "Convites de grupo: Ocultar" da Configuração, [SOC-04]).
    */
   autoAnswer(playerId: string): "accept" | "reject" | null;
 }

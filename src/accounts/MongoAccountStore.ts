@@ -3,7 +3,8 @@ import { MongoClient, MongoServerError, type Collection, type Db } from "mongodb
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
-import { isBodyType, type BodyType } from "../net/protocol.js";
+import { DEFAULT_SOCIAL_SETTINGS, isBodyType, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
+import { readFriendIds } from "../social/friends.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
@@ -43,6 +44,10 @@ interface AccountDocument {
   body?: string | null;
   /** Nível e XP ([JOGO-12]). Pode faltar em conta antiga (vira nível 1 ao ler). Lido sempre por readProgress. */
   progress?: Progress;
+  /** Amigos (ids de jogador, mútuo, [SOC-04]). Pode faltar em conta antiga (= nenhum). Lido sempre por readFriendIds. */
+  friends?: string[];
+  /** Configuração social ([SOC-04]). Pode faltar em conta antiga (= mostra tudo). Lido sempre por readSocialSettings. */
+  social?: SocialSettings;
 }
 
 /** Código de erro do MongoDB para violação de índice único. */
@@ -96,6 +101,8 @@ export class MongoAccountStore implements AccountStore {
         inventory: starterInventory(),
         body: null,
         progress: STARTING_PROGRESS,
+        friends: [],
+        social: DEFAULT_SOCIAL_SETTINGS,
       };
       try {
         await this.accounts.insertOne(doc);
@@ -163,6 +170,29 @@ export class MongoAccountStore implements AccountStore {
     return result.modifiedCount === 1;
   }
 
+  async addFriendship(a: string, b: string): Promise<void> {
+    // $addToSet: repetir não duplica (dois aceites quase juntos, por exemplo).
+    await this.accounts.updateOne({ playerId: a }, { $addToSet: { friends: b } });
+    await this.accounts.updateOne({ playerId: b }, { $addToSet: { friends: a } });
+  }
+
+  async removeFriendship(a: string, b: string): Promise<void> {
+    await this.accounts.updateOne({ playerId: a }, { $pull: { friends: b } });
+    await this.accounts.updateOne({ playerId: b }, { $pull: { friends: a } });
+  }
+
+  async usernamesOf(playerIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    const names: Map<string, string> = new Map();
+    if (playerIds.length === 0) return names;
+    const docs = this.accounts.find({ playerId: { $in: [...playerIds] } }, { projection: { playerId: 1, username: 1 } });
+    for await (const doc of docs) names.set(doc.playerId, doc.username);
+    return names;
+  }
+
+  async saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { social: settings } });
+  }
+
   async isHealthy(): Promise<boolean> {
     try {
       await this.db.command({ ping: 1 });
@@ -185,6 +215,8 @@ export class MongoAccountStore implements AccountStore {
       inventory: readInventory(doc.inventory),
       body: isBodyType(doc.body) ? doc.body : null,
       progress: readProgress(doc.progress),
+      friends: readFriendIds(doc.friends),
+      social: readSocialSettings(doc.social),
     };
   }
 }

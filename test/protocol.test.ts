@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { ClientMessageType, parseClientMessage } from "../src/net/protocol.js";
+import { ClientMessageType, parseClientMessage, readSocialSettings } from "../src/net/protocol.js";
 
 describe("parseClientMessage", () => {
   it("aceita mensagens válidas", () => {
@@ -64,6 +64,31 @@ describe("parseClientMessage", () => {
       data: { playerId: "b" },
     });
     assert.deepStrictEqual(parseClientMessage('{"type":"group_leave","data":{}}'), { type: ClientMessageType.GroupLeave, data: {} });
+    // Amizade e Configuração social ([SOC-04]).
+    assert.deepStrictEqual(parseClientMessage('{"type":"friend_request","data":{"playerId":"fake_accept"}}'), {
+      type: ClientMessageType.FriendRequest,
+      data: { playerId: "fake_accept" },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"friend_answer","data":{"fromId":"a","accept":true}}'), {
+      type: ClientMessageType.FriendAnswer,
+      data: { fromId: "a", accept: true },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"friend_remove","data":{"playerId":"b"}}'), {
+      type: ClientMessageType.FriendRemove,
+      data: { playerId: "b" },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"social_settings","data":{"friendRequests":"hide","groupInvites":"always"}}'), {
+      type: ClientMessageType.SocialSettings,
+      data: { friendRequests: "hide", groupInvites: "always" },
+    });
+  });
+
+  it("readSocialSettings: conta antiga/estragada mostra tudo (campo a campo)", () => {
+    assert.deepStrictEqual(readSocialSettings(undefined), { friendRequests: "always", groupInvites: "always" });
+    assert.deepStrictEqual(readSocialSettings({ friendRequests: "hide", groupInvites: "talvez" }), {
+      friendRequests: "hide",
+      groupInvites: "always",
+    });
   });
 
   it("rejeita JSON inválido, tipo desconhecido e payload fora do formato", () => {
@@ -94,6 +119,11 @@ describe("parseClientMessage", () => {
       '{"type":"group_kick","data":{"playerId":""}}',
       '{"type":"group_answer","data":{"fromId":"a"}}',
       '{"type":"group_answer","data":{"fromId":"a","accept":"sim"}}',
+      '{"type":"friend_request","data":{}}',
+      '{"type":"friend_remove","data":{"playerId":""}}',
+      '{"type":"friend_answer","data":{"fromId":"a","accept":1}}',
+      '{"type":"social_settings","data":{"friendRequests":"nunca","groupInvites":"always"}}',
+      '{"type":"social_settings","data":{"groupInvites":"hide"}}',
     ];
     for (const text of bad) assert.strictEqual(parseClientMessage(text), null, text);
   });

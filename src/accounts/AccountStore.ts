@@ -4,7 +4,8 @@ import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { hashPassword, verifyPassword } from "./password.js";
-import type { BodyType } from "../net/protocol.js";
+import { DEFAULT_SOCIAL_SETTINGS, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
+import { readFriendIds } from "../social/friends.js";
 
 /**
  * Contas de jogador: cadastro com username + e-mail + senha, login por username OU e-mail,
@@ -39,6 +40,10 @@ export interface Account {
   readonly body: BodyType | null;
   /** Nível e XP do personagem ([JOGO-12]). Conta nova/antiga: nível 1, sem XP. */
   readonly progress: Progress;
+  /** Amigos (ids de jogador, amizade mútua, [SOC-04]). Conta nova/antiga: nenhum. Fakes de teste não entram aqui. */
+  readonly friends: readonly string[];
+  /** Configuração social (Sempre/Ocultar pedidos de amizade e convites de grupo, [SOC-04]). Conta antiga: mostra tudo. */
+  readonly social: SocialSettings;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
@@ -79,6 +84,14 @@ export interface AccountStore {
    * (ou conta inexistente).
    */
   chooseBody(playerId: string, body: BodyType): Promise<boolean>;
+  /** Grava a amizade de `a` e `b` nas DUAS contas (mútua; repetir não duplica). */
+  addFriendship(a: string, b: string): Promise<void>;
+  /** Desfaz a amizade de `a` e `b` nas DUAS contas (remoção mútua; ignora quem não era amigo). */
+  removeFriendship(a: string, b: string): Promise<void>;
+  /** Usernames (como cadastrados) das contas pedidas; id sem conta fica de fora. Lista de amigos offline. */
+  usernamesOf(playerIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
+  /** Salva a Configuração social da conta ([SOC-04]). */
+  saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void>;
   /** `true` se o armazenamento está acessível (usado pelo `/health`). */
   isHealthy(): Promise<boolean>;
 }
@@ -113,6 +126,8 @@ interface MemoryRecord {
   inventory: Inventory;
   body: BodyType | null;
   progress: Progress;
+  friends: string[];
+  social: SocialSettings;
 }
 
 /** Implementação em memória, para testes (não precisa de MongoDB). Mesmas regras da versão Mongo. */
@@ -135,6 +150,8 @@ export class InMemoryAccountStore implements AccountStore {
       inventory: starterInventory(),
       body: null,
       progress: STARTING_PROGRESS,
+      friends: [],
+      social: DEFAULT_SOCIAL_SETTINGS,
     };
     this.records.push(record);
     return this.openSession(record);
@@ -180,6 +197,31 @@ export class InMemoryAccountStore implements AccountStore {
     return true;
   }
 
+  async addFriendship(a: string, b: string): Promise<void> {
+    for (const [self, other] of [[a, b], [b, a]] as const) {
+      const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === self);
+      if (record !== undefined && !record.friends.includes(other)) record.friends = [...record.friends, other];
+    }
+  }
+
+  async removeFriendship(a: string, b: string): Promise<void> {
+    for (const [self, other] of [[a, b], [b, a]] as const) {
+      const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === self);
+      if (record !== undefined) record.friends = record.friends.filter((id) => id !== other);
+    }
+  }
+
+  async usernamesOf(playerIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    const names: Map<string, string> = new Map();
+    for (const record of this.records) if (playerIds.includes(record.playerId)) names.set(record.playerId, record.username);
+    return names;
+  }
+
+  async saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.social = settings;
+  }
+
   async isHealthy(): Promise<boolean> {
     return true;
   }
@@ -198,6 +240,8 @@ export class InMemoryAccountStore implements AccountStore {
       inventory: readInventory(record.inventory),
       body: record.body,
       progress: readProgress(record.progress),
+      friends: readFriendIds(record.friends),
+      social: readSocialSettings(record.social),
     };
   }
 }

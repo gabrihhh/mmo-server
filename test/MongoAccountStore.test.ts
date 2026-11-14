@@ -2,6 +2,7 @@ import assert from "assert";
 import { MongoClient } from "mongodb";
 
 import { MongoAccountStore } from "../src/accounts/MongoAccountStore.js";
+import { hashSessionToken } from "../src/accounts/AccountStore.js";
 
 /** Banco separado só para testes (apagado a cada execução). Precisa do Mongo local: npm run db:up. */
 const TEST_MONGO_URL: string = process.env["MONGO_TEST_URL"] ?? "mongodb://localhost:27017/mmo_test";
@@ -61,5 +62,53 @@ describe("MongoAccountStore (MongoDB real)", function () {
     assert.strictEqual(await store.resume(byName.sessionToken), null);
     assert.ok(await store.resume(byEmail.sessionToken), "outra sessão continua valendo");
     assert.strictEqual(await store.isHealthy(), true);
+  });
+
+  it("amizade mútua, remoção, nomes e Configuração social; conta antiga sem os campos é lida com o padrão", async () => {
+    assert.ok(store);
+    const a = await store.register("Amiga_A", "a@amigos.com", "senha-1234");
+    const b = await store.register("Amigo_B", "b@amigos.com", "senha-1234");
+    assert.ok(a.ok && b.ok);
+    assert.deepStrictEqual(a.account.friends, []);
+    assert.deepStrictEqual(a.account.social, { friendRequests: "always", groupInvites: "always" });
+    const idA: string = a.account.playerId;
+    const idB: string = b.account.playerId;
+
+    await store.addFriendship(idA, idB);
+    await store.addFriendship(idB, idA);
+    assert.deepStrictEqual((await store.resume(a.sessionToken))?.friends, [idB], "sem repetir");
+    assert.deepStrictEqual((await store.resume(b.sessionToken))?.friends, [idA], "mútua");
+    assert.deepStrictEqual([...(await store.usernamesOf([idA, idB, "sem-conta"])).entries()].sort(), [
+      [idA, "Amiga_A"],
+      [idB, "Amigo_B"],
+    ].sort());
+    await store.removeFriendship(idB, idA);
+    assert.deepStrictEqual((await store.resume(a.sessionToken))?.friends, []);
+    assert.deepStrictEqual((await store.resume(b.sessionToken))?.friends, []);
+
+    await store.saveSocialSettings(idA, { friendRequests: "hide", groupInvites: "hide" });
+    assert.deepStrictEqual((await store.resume(a.sessionToken))?.social, { friendRequests: "hide", groupInvites: "hide" });
+
+    // Conta antiga (de antes da amizade): sem `friends` nem `social`.
+    const admin: MongoClient = new MongoClient(TEST_MONGO_URL);
+    try {
+      await admin.connect();
+      await admin.db().collection("accounts").insertOne({
+        playerId: "antiga01",
+        username: "Antiga",
+        usernameKey: "antiga",
+        emailKey: "antiga@x.com",
+        passwordHash: "x",
+        sessionHashes: [hashSessionToken("token-antigo")],
+        createdAt: new Date(),
+        lastLoginAt: new Date(),
+        lastPosition: null,
+      });
+    } finally {
+      await admin.close();
+    }
+    const old = await store.resume("token-antigo");
+    assert.deepStrictEqual(old?.friends, []);
+    assert.deepStrictEqual(old?.social, { friendRequests: "always", groupInvites: "always" });
   });
 });

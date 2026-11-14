@@ -247,7 +247,7 @@ describe("grupo ([SOC-03])", () => {
     assert.strictEqual(b.group(), null);
   });
 
-  it("ocultar convites (etapa 3): recusa sozinho e quem convidou vê 'recusou'", () => {
+  it("ocultar convites (Configuração, SOC-04): recusa sozinho e quem convidou vê 'recusou'", () => {
     const z = zone();
     const [a, b] = players(z, "a", "b");
     assert.ok(a !== undefined && b !== undefined);
