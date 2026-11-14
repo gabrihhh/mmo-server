@@ -1,4 +1,5 @@
 import {
+  GROUP_POSITIONS_HZ,
   ServerMessageType,
   encodeServerMessage,
   type CastData,
@@ -17,6 +18,7 @@ import {
   type AttributesView,
   type EquippedItemSummary,
   type GroupView,
+  type GroupPositionView,
 } from "../net/protocol.js";
 import { Groups, type GroupResult } from "./groups.js";
 import {
@@ -214,6 +216,12 @@ export const VIEW_RADIUS = 45;
  * nem curado ([JOGO-12], [SOC-03]): a mesma da área de interesse (quem está vendo a luta).
  */
 export const GROUP_XP_RADIUS = VIEW_RADIUS;
+
+/**
+ * A cada quantos ticks a zona manda `group_positions` (os membros do grupo longe, para o mapa; [SOC-03], [CLI-11]):
+ * {@link GROUP_POSITIONS_HZ} Hz a {@link TICK_RATE_HZ} Hz de simulação = a cada 10 ticks.
+ */
+export const GROUP_POSITIONS_EVERY_TICKS: number = Math.max(1, Math.round(TICK_RATE_HZ / GROUP_POSITIONS_HZ));
 
 /** Tamanho máximo da fila de inputs por jogador. Excesso descarta os mais antigos (anti-speedhack/flood). */
 export const MAX_INPUT_QUEUE = 4;
@@ -963,7 +971,8 @@ export class Zone {
 
   /**
    * Um passo da simulação, nesta ordem: renascimentos → movimento → projéteis → decisão dos NPCs ({@link npcThink}) →
-   * lançamentos (habilidades e ataque simples, de jogadores e NPCs) → regeneração/escudos → snapshot. Os lançamentos vêm depois do movimento: quem está lançando
+   * lançamentos (habilidades e ataque simples, de jogadores e NPCs) → regeneração/escudos → snapshot (e, a cada
+   * {@link GROUP_POSITIONS_EVERY_TICKS}, as posições do grupo longe). Os lançamentos vêm depois do movimento: quem está lançando
    * termina o tick virado para o alvo/ponto.
    * Morto não anda (os inputs são consumidos e confirmados sem mover, para o cliente não acumular).
    */
@@ -978,6 +987,7 @@ export class Zone {
     this.applyCasts();
     this.regenerate();
     this.sendSnapshots();
+    if (this.currentTick % GROUP_POSITIONS_EVERY_TICKS === 0) this.sendGroupPositions();
     this.events = [];
   }
 
@@ -1817,8 +1827,7 @@ export class Zone {
     for (const player of this.players.values()) {
       // Fake de teste não tem conexão: não precisa de snapshot.
       if (player.fake !== null) continue;
-      const near = ([entity]: [Entity, string]): boolean =>
-        entity.id === player.id || entity.id === player.attackTarget || Zone.distance(entity.state, player.state) <= VIEW_RADIUS;
+      const near = ([entity]: [Entity, string]): boolean => Zone.inView(player, entity);
       const shared: string = [
         `"players":[${players.filter(near).map(([, json]) => json).join(",")}]`,
         `"npcs":[${npcs.filter(near).map(([, json]) => json).join(",")}]`,
@@ -1844,6 +1853,33 @@ export class Zone {
       player.member.send(
         `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},${shared},"me":${JSON.stringify(me)}}}`,
       );
+    }
+  }
+
+  /**
+   * `true` se `entity` vai no snapshot de `viewer`: ele mesmo, o alvo dele ou alguém a até {@link VIEW_RADIUS}.
+   * Mesma regra no snapshot e no `group_positions` (que manda justamente quem fica de fora).
+   */
+  private static inView(viewer: ZonePlayer, entity: Entity): boolean {
+    return entity.id === viewer.id || entity.id === viewer.attackTarget || Zone.distance(entity.state, viewer.state) <= VIEW_RADIUS;
+  }
+
+  /**
+   * Manda `group_positions` a cada jogador de verdade que está em grupo: onde estão os membros dele que NÃO vieram no
+   * snapshot (longe da área de interesse), para o mapa do Menu ([CLI-11]). Sem grupo, ou com o grupo todo perto,
+   * não manda nada: o custo é zero para quem joga sozinho e, com grupo, no máximo 4 posições a
+   * {@link GROUP_POSITIONS_HZ} Hz (uma mensagem própria em vez de um campo no snapshot de 20 Hz).
+   */
+  private sendGroupPositions(): void {
+    for (const player of this.players.values()) {
+      if (player.fake !== null) continue;
+      const far: GroupPositionView[] = [];
+      for (const memberId of this.groups.membersOf(player.id)) {
+        const member: ZonePlayer | undefined = this.players.get(memberId);
+        if (member === undefined || Zone.inView(player, member)) continue;
+        far.push({ id: member.id, x: round1(member.state.x), z: round1(member.state.z) });
+      }
+      if (far.length > 0) player.member.send(encodeServerMessage({ type: ServerMessageType.GroupPositions, data: { members: far } }));
     }
   }
 

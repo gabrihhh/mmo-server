@@ -15,8 +15,9 @@
 /**
  * Versão do protocolo. O cliente envia a dele ao autenticar; se for diferente, a conexão é recusada
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
+ * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  */
-export const PROTOCOL_VERSION = 16;
+export const PROTOCOL_VERSION = 17;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -104,6 +105,12 @@ export const ServerMessageType = {
   GroupInvited: "group_invited",
   /** Aviso pequeno sobre o grupo ("X aceitou o convite", "X saiu do grupo"...). Payload: {@link GroupNoticeData}. */
   GroupNotice: "group_notice",
+  /**
+   * Onde estão os membros do SEU grupo que ficaram FORA da sua área de interesse (mmo-docs [SOC-03], [CLI-11]): para
+   * o mapa do Menu mostrar o grupo mesmo longe. Só para quem está em grupo, a {@link GROUP_POSITIONS_HZ} Hz, e só
+   * quando há membro longe (quem está perto já vem no `snapshot`). Payload: {@link GroupPositionsData} (v17).
+   */
+  GroupPositions: "group_positions",
   /**
    * Sua lista de amigos com online/offline (mmo-docs [SOC-04]): após o `auth_ok`, no `join` e a cada mudança (amigo
    * novo, removido, entrou ou saiu do servidor). Payload: {@link FriendsData}.
@@ -749,6 +756,28 @@ export interface GroupNoticeData {
   readonly message: string;
 }
 
+/**
+ * Frequência (Hz) da mensagem `group_positions`. Baixa de propósito: é só para o mapa (1 pixel = 2 m, [CLI-11]);
+ * andando a 5 m/s o membro anda ~2,5 m (pouco mais de 1 pixel) entre duas. O snapshot (20 Hz) fica intacto.
+ * ATENÇÃO: mmo-client/scripts/network/protocol.gd (`GROUP_POSITIONS_HZ`; `Network.GROUP_POSITIONS_STALE_SECONDS` conta com ela).
+ */
+export const GROUP_POSITIONS_HZ = 2;
+
+/** Posição de um membro do grupo no chão (m, 1 casa decimal; o mapa não precisa de altura nem de rotação). */
+export interface GroupPositionView {
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+}
+
+/**
+ * Payload de `group_positions`: os membros do seu grupo (na mesma zona) que NÃO estão no seu snapshot — longe da sua
+ * área de interesse. Você mesmo e quem está perto não vêm. ATENÇÃO: lido em mmo-client/scripts/network/network.gd.
+ */
+export interface GroupPositionsData {
+  readonly members: readonly GroupPositionView[];
+}
+
 /** Máximo de amigos por conta (proteção; mmo-docs [SOC-04]). */
 export const MAX_FRIENDS = 100;
 
@@ -852,6 +881,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
   | { readonly type: typeof ServerMessageType.GroupNotice; readonly data: GroupNoticeData }
+  | { readonly type: typeof ServerMessageType.GroupPositions; readonly data: GroupPositionsData }
   | { readonly type: typeof ServerMessageType.Friends; readonly data: FriendsData }
   | { readonly type: typeof ServerMessageType.FriendRequested; readonly data: FriendRequestedData }
   | { readonly type: typeof ServerMessageType.FriendNotice; readonly data: FriendNoticeData }

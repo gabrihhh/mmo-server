@@ -1,10 +1,10 @@
 import assert from "assert";
 
-import { GROUP_XP_RADIUS, Zone, type DummyConfig, type FakePlayerConfig, type ZoneMember } from "../src/zones/Zone.js";
+import { GROUP_POSITIONS_EVERY_TICKS, GROUP_XP_RADIUS, Zone, type DummyConfig, type FakePlayerConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { GROUP_INVITE_TICKS } from "../src/zones/groups.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { groupXp, xpReward, type Progress } from "../src/progression/level.js";
-import { GROUP_INVITE_SECONDS, GROUP_MAX_MEMBERS, type CastData } from "../src/net/protocol.js";
+import { GROUP_INVITE_SECONDS, GROUP_MAX_MEMBERS, GROUP_POSITIONS_HZ, type CastData } from "../src/net/protocol.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 
 /** Grupo ([SOC-03]): convite, líder, saída, sem dano entre membros e XP do grupo. */
@@ -312,5 +312,77 @@ describe("grupo ([SOC-03])", () => {
     assert.deepStrictEqual(near.saved, { level: 0, xp: reward }, "membro perto: mesma XP, sem ter batido");
     assert.strictEqual(far.saved, null, "membro longe: nada");
     assert.strictEqual(outsider.saved, null, "de fora do grupo: nada");
+  });
+});
+
+describe("posições do grupo para o mapa (group_positions, [SOC-03]/[CLI-11])", () => {
+  /** Põe um jogador de verdade na zona em (x, z). */
+  function at(z: Zone, id: string, x: number, zPos: number): Member {
+    const member = new Member(id);
+    z.join(member, { x, y: 0, z: zPos, rotY: 0 }, SWORD);
+    return member;
+  }
+
+  /** Os `group_positions` recebidos: cada um vira a lista `id@x,z`. */
+  function positions(m: Member): string[][] {
+    return m.all("group_positions").map((msg) => {
+      const list: unknown = msg.data["members"];
+      if (!Array.isArray(list)) return [];
+      return list.map((e: unknown) => (typeof e === "object" && e !== null && "id" in e && "x" in e && "z" in e ? `${String(e.id)}@${String(e.x)},${String(e.z)}` : "?"));
+    });
+  }
+
+  const ticks = (z: Zone, n: number): void => {
+    for (let i = 0; i < n; i++) z.tick();
+  };
+
+  it("membro longe recebe a posição do outro a 2 Hz; quem está perto não vem; quem não é do grupo não recebe", () => {
+    assert.strictEqual(GROUP_POSITIONS_EVERY_TICKS, TICK_RATE_HZ / GROUP_POSITIONS_HZ);
+    const z = zone();
+    const a = at(z, "a", 0, 0);
+    const b = at(z, "b", 100, 0);
+    const near = at(z, "near", 10, 0);
+    const outsider = at(z, "outsider", 100, 5);
+    form(z, a, b, near);
+    ticks(z, GROUP_POSITIONS_EVERY_TICKS - 1);
+    assert.deepStrictEqual(positions(a), [], "só a cada GROUP_POSITIONS_EVERY_TICKS");
+    ticks(z, 1);
+    // A (0,0): B está a 100 m (longe); NEAR a 10 m já vem no snapshot. Fakes da zona não são do grupo.
+    assert.deepStrictEqual(positions(a), [["b@100,0"]]);
+    assert.deepStrictEqual(positions(b), [["a@0,0", "near@10,0"]], "B vê os dois (ambos longe dele)");
+    assert.deepStrictEqual(positions(near), [["b@100,0"]]);
+    assert.deepStrictEqual(positions(outsider), [], "quem não é do grupo não recebe (mesmo perto de B)");
+    ticks(z, GROUP_POSITIONS_EVERY_TICKS * 3);
+    assert.strictEqual(positions(a).length, 4, "2 Hz: uma a cada 10 ticks");
+  });
+
+  it("sozinho ou com o grupo todo perto: nada é mandado", () => {
+    const z = zone();
+    const solo = at(z, "solo", 0, 0);
+    const a = at(z, "a", 50, 0);
+    const b = at(z, "b", 60, 0);
+    form(z, a, b);
+    ticks(z, GROUP_POSITIONS_EVERY_TICKS * 2);
+    assert.deepStrictEqual(positions(solo), []);
+    assert.deepStrictEqual(positions(a), []);
+    assert.deepStrictEqual(positions(b), []);
+  });
+
+  it("sair do grupo (ou o grupo acabar) para de mandar", () => {
+    const z = zone();
+    const a = at(z, "a", 0, 0);
+    const b = at(z, "b", -120, 30);
+    const c = at(z, "c", 120, -30);
+    form(z, a, b, c);
+    ticks(z, GROUP_POSITIONS_EVERY_TICKS);
+    assert.deepStrictEqual(positions(a), [["b@-120,30", "c@120,-30"]]);
+    assert.deepStrictEqual(z.leaveGroup("c"), { ok: true });
+    ticks(z, GROUP_POSITIONS_EVERY_TICKS);
+    assert.deepStrictEqual(positions(a)[1], ["b@-120,30"], "C saiu: não vem mais para A");
+    assert.strictEqual(positions(c).length, 1, "C não recebe mais nada");
+    assert.deepStrictEqual(z.leaveGroup("b"), { ok: true });
+    ticks(z, GROUP_POSITIONS_EVERY_TICKS * 2);
+    assert.strictEqual(positions(a).length, 2, "o grupo acabou: A para de receber");
+    assert.strictEqual(positions(b).length, 2);
   });
 });
