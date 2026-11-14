@@ -68,6 +68,10 @@ interface Session {
   zone: Zone | null;
   /** Respondeu ao último ping do heartbeat. */
   alive: boolean;
+  /** Quando a conexão abriu (ms, `Date.now()`): o log da saída diz quanto tempo durou. */
+  readonly openedAt: number;
+  /** Por que o servidor derrubou (heartbeat sem resposta, erro do socket); `null` = o outro lado fechou/caiu. */
+  dropReason: string | null;
 }
 
 /** Como a autenticação aconteceu (só para o log). */
@@ -162,6 +166,7 @@ export class GameServer {
     this.heartbeatTimer = setInterval(() => {
       for (const session of this.sessions) {
         if (!session.alive) {
+          session.dropReason = `heartbeat: sem resposta ao ping em ${this.options.heartbeatIntervalMs / 1000} s`;
           session.socket.close(CloseCode.Timeout, "heartbeat timeout");
           session.socket.terminate();
           continue;
@@ -201,6 +206,8 @@ export class GameServer {
       authFailures: 0,
       zone: null,
       alive: true,
+      openedAt: Date.now(),
+      dropReason: null,
     };
     this.sessions.add(session);
 
@@ -222,12 +229,18 @@ export class GameServer {
       const zoneId: string | undefined = session.zone?.config.id;
       void this.leaveZone(session).then(() => {
         if (zoneId !== undefined && account !== null) {
-          this.log(`[${zoneId}] ${account.username} saiu (code ${code}, ${this.zones.get(zoneId)?.size ?? 0} online)`);
+          // Diagnóstico de queda: quanto durou e se foi o servidor que derrubou (heartbeat/erro) ou a rede/o cliente.
+          const seconds: string = ((Date.now() - session.openedAt) / 1000).toFixed(1);
+          const why: string = session.dropReason ?? (code === 1006 ? "caiu sem aviso (rede ou app)" : "fechou");
+          this.log(
+            `[${zoneId}] ${account.username} saiu (code ${code}, ${why}, conectado ${seconds} s, ${this.zones.get(zoneId)?.size ?? 0} online)`,
+          );
         }
       });
     });
-    socket.on("error", () => {
+    socket.on("error", (error: Error) => {
       // O "close" vem logo depois; registrar o handler evita que o erro derrube o processo.
+      session.dropReason = `erro do socket: ${error.message}`;
     });
   }
 
@@ -619,7 +632,8 @@ export class GameServer {
     session.socket.close(CloseCode.Rejected, code);
   }
 
+  /** Escreve no console (se `options.log`), com a hora na frente (para ver quanto tempo passou entre eventos). */
   private log(text: string): void {
-    if (this.options.log) console.log(text);
+    if (this.options.log) console.log(`${new Date().toLocaleTimeString("pt-BR")} ${text}`);
   }
 }
