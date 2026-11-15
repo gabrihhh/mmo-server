@@ -180,7 +180,11 @@ export class GameServer {
       void this.handleHttp(req, res);
     });
     this.wss = new WebSocketServer({ server: this.http, maxPayload: MAX_MESSAGE_BYTES });
-    this.wss.on("connection", (socket: WebSocket) => this.handleConnection(socket));
+    this.wss.on("connection", (socket: WebSocket, req: IncomingMessage) => {
+      // Diagnóstico: quem abriu conexão (antes de autenticar), para ver aparelho que conecta e não entra.
+      this.log(`[conexão] ${req.socket.remoteAddress ?? "?"} abriu conexão`);
+      this.handleConnection(socket);
+    });
   }
 
   /**
@@ -267,7 +271,9 @@ export class GameServer {
     const url: string = req.url ?? "";
     if (req.method === "GET" && url.startsWith(UPDATES_ROUTE)) {
       const relativePath: string = url.slice(UPDATES_ROUTE.length).split("?")[0] ?? "";
+      // Diagnóstico ([INFRA-08]): qual aparelho pediu o manifesto/pacote (atualização que não termina).
       await serveUpdateFile(relativePath, this.options.updatesDir, res);
+      this.log(`[update] ${req.socket.remoteAddress ?? "?"} ${relativePath}: ${res.statusCode}`);
       return;
     }
     if (req.method === "GET" && url === "/health") {
