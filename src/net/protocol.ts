@@ -547,6 +547,13 @@ export interface NpcSnapshot extends PlayerSnapshot {
   readonly targetable?: boolean;
   /** Monstro (zumbi, [JOGO-13]): o cliente mostra só vida, nível e barra de lançamento, sem nome. */
   readonly monster?: boolean;
+  /**
+   * Tamanho do corpo (vezes o normal; ausente = 1): o chefe é um zumbi maior ([JOGO-18]). O cliente escala o modelo e
+   * sobe as barras. ATENÇÃO: PlayerState.scale em mmo-client/scripts/network/player_state.gd.
+   */
+  readonly scale?: number;
+  /** Chefe ([JOGO-18]): o cliente mostra o nome em dourado acima dele e o mapa marca diferente. Ausente = não é. */
+  readonly boss?: boolean;
   /** Serviço do NPC: `"blacksmith"` = ferreiro (tocar nele abre a tela de melhoria, [JOGO-16]). Ausente = nenhum. */
   readonly service?: "blacksmith";
 }

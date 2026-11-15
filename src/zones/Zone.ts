@@ -48,7 +48,7 @@ import {
 import { CRIT_MULTIPLIER, NO_EFFECTS, type AttributeEffects, type AttributeId } from "../items/attributes.js";
 import type { Inventory } from "../items/inventory.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
-import { EQUIP_SLOTS, ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
+import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
   DUMMY_RESPAWN_SECONDS,
@@ -121,8 +121,8 @@ export interface ZoneMember {
  * - `brawler`: parado, ataca sozinho com o ataque simples da arma `weapon` quem chegar no alcance (jogadores e
  *   NPCs); tem vida e morre como o boneco;
  * - `zombie`: monstro ([JOGO-13]). Parado em casa até um jogador chegar a `aggroRadius` m de casa (ou bater nele);
- *   aí anda até ele a `speed` m/s e bate com o ataque simples da arma `weapon`, usando também a habilidade `ability`
- *   da arma quando ela estiver pronta e o alvo no alcance dela. Quem ele ataca sai da tabela de ameaça ([JOGO-14]).
+ *   aí anda até ele a `speed` m/s e bate com o golpe `attack` (ataque simples, de {@link MONSTER_ABILITIES}: zumbi não
+ *   segura arma), usando também a habilidade `ability` (idem) quando ela estiver pronta e o alvo no alcance dela. Quem ele ataca sai da tabela de ameaça ([JOGO-14]).
  *   Passou de `leashRadius` m de casa: desiste, volta andando (sem atacar) e enche a vida. Só ataca jogadores. Quem lutou contra ele ganha XP ({@link xpReward} do nível dele + {@link groupXp}) e moedas ({@link goldReward}).
  */
 export type NpcBehavior =
@@ -134,7 +134,9 @@ export type NpcBehavior =
   | { readonly kind: "blacksmith" }
   | {
       readonly kind: "zombie";
-      readonly weapon: string;
+      /** Ataque simples: id em {@link MONSTER_ABILITIES} (ex. `zombie_punch`). */
+      readonly attack: string;
+      /** Habilidade: id em {@link MONSTER_ABILITIES} ou de um item do catálogo. */
       readonly ability: string;
       readonly aggroRadius: number;
       readonly leashRadius: number;
@@ -164,6 +166,15 @@ export interface DummyConfig {
    * (provisório, [JOGO-13]). Vale junto com o do nível.
    */
   readonly damageMultiplier?: number;
+  /**
+   * Tamanho do corpo (padrão 1): o chefe é um zumbi maior ([JOGO-18]). O cliente desenha o modelo nessa escala e o
+   * corpo dele conta maior nos alcances (raio {@link BODY_RADIUS} × escala).
+   */
+  readonly scale?: number;
+  /** Chefe ([JOGO-18]): o cliente mostra o nome dele em dourado e o mapa o marca diferente. Padrão `false`. */
+  readonly boss?: boolean;
+  /** Multiplicador da XP e das moedas que o monstro dá (padrão 1; chefe dá mais, [JOGO-18]). */
+  readonly rewardMultiplier?: number;
 }
 
 /**
@@ -437,7 +448,13 @@ interface ZoneDummy extends Combatant {
   readonly respawnSeconds: number;
   /** Multiplicador do dano que ele dá ({@link DummyConfig.damageMultiplier}). */
   readonly damageMultiplier: number;
-  /** Zumbi: a habilidade da arma que ele usa (`null` nos outros). */
+  /** Tamanho do corpo (1 = normal; chefe maior, [JOGO-18]): o raio do corpo nos alcances cresce junto. */
+  readonly scale: number;
+  /** Chefe ([JOGO-18]). */
+  readonly boss: boolean;
+  /** Multiplicador da XP e das moedas que dá (chefe, [JOGO-18]). */
+  readonly rewardMultiplier: number;
+  /** Zumbi: a habilidade que ele usa (`null` nos outros). */
   readonly ability: AbilityDef | null;
   /** Zumbi: desistiu do alvo e está voltando para casa (não ataca; chegando, enche a vida). */
   returning: boolean;
@@ -504,7 +521,9 @@ export class Zone {
       const monster: boolean = behavior.kind === "zombie";
       const growth: number = monster ? MONSTER_EDGE * monsterFactor(level) : playerFactor(level);
       const maxHp: number = round1((dummy.maxHp ?? DUMMY_MAX_HP) * growth);
-      const weapon: string | null = behavior.kind === "brawler" || behavior.kind === "zombie" ? behavior.weapon : null;
+      const weapon: string | null = behavior.kind === "brawler" ? behavior.weapon : null;
+      // Zumbi bate com a mão: o golpe dele vem de MONSTER_ABILITIES, não de uma arma ([JOGO-18]).
+      const monsterAttack: AbilityDef | undefined = behavior.kind === "zombie" ? MONSTER_ABILITIES[behavior.attack] : undefined;
       this.dummies.set(dummy.id, {
         kind: "dummy",
         id: dummy.id,
@@ -523,7 +542,7 @@ export class Zone {
         shieldUntilTick: 0,
         reduction: 0,
         reductionUntilTick: 0,
-        basicAttack: weapon === null ? UNARMED_ATTACK : (getItem(weapon)?.basicAttack ?? UNARMED_ATTACK),
+        basicAttack: monsterAttack ?? (weapon === null ? UNARMED_ATTACK : (getItem(weapon)?.basicAttack ?? UNARMED_ATTACK)),
         attackTarget: null,
         lastMoveTick: Number.NEGATIVE_INFINITY,
         cast: null,
@@ -535,7 +554,10 @@ export class Zone {
         refillTick: 0,
         respawnSeconds: dummy.respawnSeconds ?? DUMMY_RESPAWN_SECONDS,
         damageMultiplier: dummy.damageMultiplier ?? 1,
-        ability: behavior.kind === "zombie" ? (Zone.findAbility(behavior.ability)?.ability ?? null) : null,
+        scale: dummy.scale ?? 1,
+        boss: dummy.boss ?? false,
+        rewardMultiplier: dummy.rewardMultiplier ?? 1,
+        ability: behavior.kind === "zombie" ? (MONSTER_ABILITIES[behavior.ability] ?? Zone.findAbility(behavior.ability)?.ability ?? null) : null,
         returning: false,
         contributors: new Set(),
         threat: new ThreatTable(),
@@ -720,6 +742,9 @@ export class Zone {
       ...(dummy.behavior.kind === "blacksmith" ? { service: "blacksmith" as const } : {}),
       // Monstro ([JOGO-13]): o cliente mostra só vida, nível e lançamento (sem nome).
       ...(dummy.behavior.kind === "zombie" ? { monster: true } : {}),
+      // Chefe ([JOGO-18]): maior (escala do modelo) e com o nome à vista.
+      ...(dummy.scale !== 1 ? { scale: dummy.scale } : {}),
+      ...(dummy.boss ? { boss: true } : {}),
     }));
   }
 
@@ -1325,7 +1350,7 @@ export class Zone {
     if (caster.kind !== "player") return;
     for (const npc of this.dummies.values()) {
       if (!Zone.isMonster(npc) || npc.dead || npc.returning || !this.isEnemy(npc, caster)) continue;
-      if (Zone.distance(npc.state, caster.state) > ability.radius + BODY_RADIUS) continue;
+      if (Zone.distance(npc.state, caster.state) > ability.radius + Zone.bodyRadius(npc)) continue;
       npc.threat.raiseTo(caster.id, Math.max(THREAT_INITIAL, npc.threat.maxExcept(caster.id) * TAUNT_THREAT_MULTIPLIER));
       npc.tauntedBy = caster.id;
       npc.tauntUntilTick = this.currentTick + secondsToTicks(ability.tauntSeconds);
@@ -1565,7 +1590,8 @@ export class Zone {
           const ez: number = enemy.state.z - player.state.z;
           const along: number = ex * cast.aimX + ez * cast.aimZ;
           const across: number = Math.abs(ex * cast.aimZ - ez * cast.aimX);
-          if (along < 0 || along > ability.range + BODY_RADIUS || across > ability.radius + BODY_RADIUS) continue;
+          const body: number = Zone.bodyRadius(enemy);
+          if (along < 0 || along > ability.range + body || across > ability.radius + body) continue;
           if (along < bestAlong) {
             best = enemy;
             bestAlong = along;
@@ -1659,10 +1685,10 @@ export class Zone {
     for (const projectile of this.projectiles) {
       const ability: AbilityDef = projectile.ability;
       const step: number = Math.min(ability.projectileSpeed * TICK_SECONDS, ability.range - projectile.traveled);
-      const reach: number = ability.radius + BODY_RADIUS;
       let hit: Entity | null = null;
       let hitAlong: number = Infinity;
       for (const enemy of this.enemiesOf(projectile.source)) {
+        const reach: number = ability.radius + Zone.bodyRadius(enemy);
         const ex: number = enemy.state.x - projectile.x;
         const ez: number = enemy.state.z - projectile.z;
         const along: number = ex * projectile.dirX + ez * projectile.dirZ;
@@ -1744,7 +1770,7 @@ export class Zone {
     for (const enemy of this.enemiesOf(player)) {
       const dx: number = enemy.state.x - x;
       const dz: number = enemy.state.z - z;
-      if (Math.sqrt(dx * dx + dz * dz) <= ability.radius + BODY_RADIUS) this.damage(player, enemy, ability.damage, ability.id);
+      if (Math.sqrt(dx * dx + dz * dz) <= ability.radius + Zone.bodyRadius(enemy)) this.damage(player, enemy, ability.damage, ability.id);
     }
   }
 
@@ -1860,10 +1886,20 @@ export class Zone {
   }
 
   /** `true` se `target` está a até `range` (+ folga) de `source`, no plano XZ. */
-  private static inRange(source: Combatant, target: Combatant, range: number): boolean {
+  private static inRange(source: Entity, target: Entity, range: number): boolean {
     const dx: number = target.state.x - source.state.x;
     const dz: number = target.state.z - source.state.z;
-    return Math.sqrt(dx * dx + dz * dz) <= range + RANGE_TOLERANCE;
+    return Math.sqrt(dx * dx + dz * dz) <= range + RANGE_TOLERANCE + Zone.extraBody(source) + Zone.extraBody(target);
+  }
+
+  /** Raio do corpo de `entity` (m): {@link BODY_RADIUS} × a escala (chefe maior, [JOGO-18]). */
+  private static bodyRadius(entity: Entity): number {
+    return entity.kind === "dummy" ? BODY_RADIUS * entity.scale : BODY_RADIUS;
+  }
+
+  /** Quanto o corpo de `entity` passa do normal (m; 0 em quem tem escala 1): soma nos alcances de ataque. */
+  private static extraBody(entity: Entity): number {
+    return Zone.bodyRadius(entity) - BODY_RADIUS;
   }
 
   /** Vira `source` para `target` (mesma convenção da simulação: rotY = 0 olha para -Z). */
@@ -1965,9 +2001,10 @@ export class Zone {
           if (member !== undefined && Zone.distance(member.state, target.state) <= GROUP_XP_RADIUS) winners.add(member);
         }
       }
-      const reward: number = groupXp(xpReward(target.level), winners.size);
+      // Chefe dá mais (rewardMultiplier, [JOGO-18]).
+      const reward: number = round1(groupXp(xpReward(target.level), winners.size) * target.rewardMultiplier);
       // Moedas pelo nível do monstro, inteiras para cada um (sem bônus de grupo), [JOGO-15].
-      const gold: number = goldReward(target.level);
+      const gold: number = Math.round(goldReward(target.level) * target.rewardMultiplier);
       for (const player of winners) this.grantReward(player, reward, gold);
       target.contributors.clear();
     }

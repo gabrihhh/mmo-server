@@ -67,7 +67,7 @@ const ZOMBIE: DummyConfig = {
   x: 1,
   z: 0,
   body: "zombie",
-  behavior: { kind: "zombie", weapon: "knight_sword", ability: "line_cleave", aggroRadius: 30, leashRadius: 60, speed: 3.5 },
+  behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 30, leashRadius: 60, speed: 3.5 },
 };
 
 function zone(dummies: readonly DummyConfig[] = [], maxPlayers: number = 10): Zone {

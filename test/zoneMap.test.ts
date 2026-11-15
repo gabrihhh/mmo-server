@@ -9,7 +9,8 @@ describe("mapa da zona (maps/*.json)", () => {
 
   it("aceita um mapa válido", () => {
     const map = parseZoneMap({ monsters: [{ ...ok, level: 3, x: 10, z: -5 }], npcs: [{ id: "test_bag", x: 1, z: 2 }] }, 150);
-    assert.deepStrictEqual(map.monsters, [{ ...ok, level: 3, x: 10, z: -5 }]);
+    // Sem escala/chefe/nome (mapa antigo): padrões.
+    assert.deepStrictEqual(map.monsters, [{ ...ok, level: 3, x: 10, z: -5, scale: 1, boss: false, name: "" }]);
     assert.deepStrictEqual(map.npcs, [{ id: "test_bag", x: 1, z: 2 }]);
   });
 
@@ -25,6 +26,14 @@ describe("mapa da zona (maps/*.json)", () => {
     assert.throws(() => parseZoneMap(map({ ...ok, perception: "5" }), 150), /perception/);
     assert.throws(() => parseZoneMap(map({ ...ok, x: 151 }), 150), /fora do mapa/);
     assert.throws(() => parseZoneMap({ monsters: [], npcs: [{ id: "b", x: 0, z: 999 }] }, 150), /fora do mapa/);
+    assert.throws(() => parseZoneMap(map({ ...ok, scale: 9 }), 150), /escala/);
+    assert.throws(() => parseZoneMap(map({ ...ok, boss: 1 }), 150), /boss/);
+    assert.throws(() => parseZoneMap(map({ ...ok, name: "x".repeat(41) }), 150), /nome/);
+  });
+
+  it("chefe: escala, nome e chefe chegam ao zumbi (maior, mais vida, golpes do chefe)", () => {
+    const map = parseZoneMap({ monsters: [{ ...ok, scale: 2, boss: true, name: "Rei Podre" }], npcs: [] }, 150);
+    assert.deepStrictEqual([map.monsters[0]?.scale, map.monsters[0]?.boss, map.monsters[0]?.name], [2, true, "Rei Podre"]);
   });
 
   it("NPC de teste vai para o lugar do mapa; id desconhecido é erro", () => {
@@ -40,6 +49,7 @@ describe("mapa da zona (maps/*.json)", () => {
     for (const z of zombies) {
       assert.ok(typeof z.level === "number" && Number.isInteger(z.level) && z.level >= 0, `nível de ${z.id}`);
       assert.ok(z.behavior?.kind === "zombie" && z.behavior.aggroRadius > 0 && z.behavior.leashRadius > 0, `alcances de ${z.id}`);
+      assert.strictEqual(z.look?.hand ?? null, null, `${z.id} sem arma (bate com a mão)`);
     }
   });
 });

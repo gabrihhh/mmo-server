@@ -287,7 +287,7 @@ describe("grupo ([SOC-03])", () => {
       level: 1,
       maxHp: 40,
       body: "zombie",
-      behavior: { kind: "zombie", weapon: "knight_sword", ability: "line_cleave", aggroRadius: 8, leashRadius: 20, speed: 3.5 },
+      behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 8, leashRadius: 20, speed: 3.5 },
     };
     const z = zone([zombie], false);
     const a = new Member("a");

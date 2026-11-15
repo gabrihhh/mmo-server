@@ -8,7 +8,7 @@
  * ATENÇÃO: o formato é escrito por `mmo-client/tools/blender/blender_export_zone.py` (read_mobs).
  */
 
-/** Tipos de monstro: zumbi lutador (espada longa; `ataque` melee no Blender) ou atirador (besta; ranged). */
+/** Tipos de monstro: zumbi lutador (bate com a mão; `ataque` melee no Blender) ou cuspidor (cospe de longe; ranged). */
 export const MONSTER_KINDS = ["fighter", "shooter"] as const;
 /** Um dos {@link MONSTER_KINDS}. */
 export type MonsterKind = (typeof MONSTER_KINDS)[number];
@@ -25,7 +25,20 @@ export interface MonsterSpawn {
   readonly resetRange: number;
   /** Jogador a esta distância de casa (m) chama a atenção dele (`percepcao` no Blender). */
   readonly perception: number;
+  /** Tamanho do corpo (`escala` no Blender; 1 = normal, de {@link MIN_SCALE} a {@link MAX_SCALE}), [JOGO-18]. */
+  readonly scale: number;
+  /** Chefe (`chefe` no Blender), [JOGO-18]. */
+  readonly boss: boolean;
+  /** Nome à vista (`nome` no Blender; chefes). Vazio = o nome padrão do tipo. */
+  readonly name: string;
 }
+
+/** Menor e maior escala aceitas para o corpo de um monstro (vezes o normal). */
+export const MIN_SCALE = 0.5;
+/** Ver {@link MIN_SCALE}. */
+export const MAX_SCALE = 4;
+/** Nome mais comprido aceito para um monstro (letras). */
+export const MAX_NAME_LENGTH = 40;
 
 /** Onde fica um NPC de teste de `zones.ts` (id do NPC; posição no chão, m). */
 export interface NpcPlacement {
@@ -87,10 +100,24 @@ function readMonster(entry: unknown, where: string, halfSize: number, seen: Set<
   if (typeof level !== "number" || !Number.isSafeInteger(level) || level < 0) {
     throw new Error(`${where}: nível precisa ser inteiro, 0 ou mais (${String(level)})`);
   }
+  // Campos de 2026-11-15 são opcionais: mapa antigo continua valendo.
+  const scale: unknown = entry["scale"] ?? 1;
+  if (typeof scale !== "number" || !Number.isFinite(scale) || scale < MIN_SCALE || scale > MAX_SCALE) {
+    throw new Error(`${where}: escala precisa ir de ${MIN_SCALE} a ${MAX_SCALE} (${String(scale)})`);
+  }
+  const boss: unknown = entry["boss"] ?? false;
+  if (typeof boss !== "boolean") throw new Error(`${where}: boss precisa ser true/false (${String(boss)})`);
+  const name: unknown = entry["name"] ?? "";
+  if (typeof name !== "string" || name.length > MAX_NAME_LENGTH) {
+    throw new Error(`${where}: nome precisa ser texto de até ${MAX_NAME_LENGTH} letras`);
+  }
   return {
     id,
     kind,
     level,
+    scale,
+    boss,
+    name,
     x: readCoordinate(entry["x"], "x", where, halfSize),
     z: readCoordinate(entry["z"], "z", where, halfSize),
     resetRange: readRange(entry["resetRange"], "resetRange", where),
@@ -101,7 +128,7 @@ function readMonster(entry: unknown, where: string, halfSize: number, seen: Set<
 /**
  * Valida o mapa [data] (o JSON lido) de uma zona com metade do lado [halfSize] (m). Erro (com o motivo e o índice) se
  * algo estiver fora do formato: id vazio ou repetido, tipo desconhecido, nível não inteiro ou negativo, alcance ≤ 0,
- * posição fora do mapa. Falha alto de propósito: monstro sumido sem aviso seria pior.
+ * posição fora do mapa, escala fora de {@link MIN_SCALE}..{@link MAX_SCALE}, nome comprido demais. Falha alto de propósito: monstro sumido sem aviso seria pior.
  */
 export function parseZoneMap(data: unknown, halfSize: number): ZoneMapData {
   if (!isRecord(data) || !Array.isArray(data["monsters"]) || !Array.isArray(data["npcs"])) {

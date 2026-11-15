@@ -166,6 +166,24 @@ export const UNARMED_ATTACK: AbilityDef = ability({
 });
 
 /**
+ * Golpes dos monstros ([JOGO-13], [JOGO-18]): não são de item (zumbi não segura arma, bate com a mão). Mesmas regras
+ * das habilidades dos jogadores (lançamento, alcance, projétil); o dano ainda passa pelo `damageMultiplier` e pelo
+ * nível do monstro. Um zumbi usa um ataque simples (`attack`) e uma habilidade (`ability`) daqui.
+ * ATENÇÃO: visual (animação, cor) em mmo-client/scripts/combat/ability_visuals.gd; ids não podem repetir os de ITEMS.
+ */
+export const MONSTER_ABILITIES: Readonly<Record<string, AbilityDef>> = {
+  // Zumbi lutador: soco com as mãos e uma pancada larga à frente.
+  zombie_punch: ability({ id: "zombie_punch", title: "Soco de zumbi", description: "Pancada com as mãos podres.", aim: "target", range: 1.7, cooldown: 1.3, castTime: 1.3, damage: 8 }),
+  zombie_bash: ability({ id: "zombie_bash", title: "Pancadão", description: "Golpe largo com os dois braços à frente.", aim: "direction", range: 3.2, radius: 1.2, cooldown: 7, castTime: 0.7, damage: 14 }),
+  // Zumbi cuspidor (ranged): cospe de longe e, de vez em quando, uma bola de gosma que dá para desviar.
+  zombie_spit: ability({ id: "zombie_spit", title: "Cuspe", description: "Cusparada de gosma.", aim: "target", range: 9, cooldown: 1.6, castTime: 1.2, damage: 9, releaseTime: 0.35 }),
+  acid_glob: ability({ id: "acid_glob", title: "Bola de gosma", description: "Bola de gosma que voa reto e acerta o primeiro.", aim: "direction", range: 14, radius: 0.6, cooldown: 6, castTime: 0.8, damage: 20, projectileSpeed: 13 }),
+  // Chefe (zumbi gigante): murro pesado e o pisão em volta (aviso no chão: dá para sair).
+  boss_smash: ability({ id: "boss_smash", title: "Murro gigante", description: "Murro pesado do chefe.", aim: "target", range: 2.2, cooldown: 1.8, castTime: 1.4, damage: 16 }),
+  boss_stomp: ability({ id: "boss_stomp", title: "Pisão", description: "Pisão que acerta todos em volta.", aim: "area_self", radius: 5, cooldown: 9, castTime: 1.4, damage: 30 }),
+};
+
+/**
  * Perfil de cada conjunto em baixo/médio/alto ([JOGO-09]). O nome é o `set` dos itens. Só exibição: os números de
  * verdade estão nas habilidades e no `bonusHp` das peças, escolhidos para cair na faixa do nível.
  * Todo conjunto tem pelo menos uma carta defensiva (escudo, redução de dano, cura ou fuga).

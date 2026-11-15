@@ -59,7 +59,6 @@ const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK
 
 function zombieConfig(kind: "fighter" | "shooter", x: number, z: number, level: number = 1): DummyConfig {
   const fighter: boolean = kind === "fighter";
-  const weapon: string = fighter ? "knight_sword" : "ranger_crossbow";
   return {
     id: "zombie",
     name: "Zumbi",
@@ -69,8 +68,7 @@ function zombieConfig(kind: "fighter" | "shooter", x: number, z: number, level: 
     maxHp: 100,
     respawnSeconds: 10,
     body: "male",
-    look: { hand: weapon, head: null, chest: null, feet: null },
-    behavior: { kind: "zombie", weapon, ability: fighter ? "line_cleave" : "piercing_bolt", aggroRadius: 8, leashRadius: 20, speed: 3.5 },
+    behavior: { kind: "zombie", attack: fighter ? "zombie_punch" : "zombie_spit", ability: fighter ? "zombie_bash" : "acid_glob", aggroRadius: 8, leashRadius: 20, speed: 3.5 },
   };
 }
 
@@ -199,8 +197,8 @@ describe("zumbis", () => {
     assert.ok(hit, "bateu no jogador");
   });
 
-  it("usa a habilidade da arma: lutador o Corte em linha, atirador o Virote certeiro (projétil)", () => {
-    for (const [kind, ability] of [["fighter", "line_cleave"], ["shooter", "piercing_bolt"]] as const) {
+  it("usa a habilidade dele: lutador o Pancadão, cuspidor a Bola de gosma (projétil)", () => {
+    for (const [kind, ability] of [["fighter", "zombie_bash"], ["shooter", "acid_glob"]] as const) {
       const zone = zoneWith([zombieConfig(kind, 0, -4)]);
       const a = new Member("a");
       zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 });
@@ -259,6 +257,43 @@ describe("zumbis", () => {
     assert.ok(died);
     assert.deepStrictEqual(a.saved, { level: 0, xp: 20, gold: goldReward(1) });
     assert.strictEqual(a.me()["xp"], 20);
+  });
+
+  it("chefe ([JOGO-18]): maior no snapshot, corpo maior no alcance e XP/moedas × rewardMultiplier", () => {
+    const reach: number = SWORD.range + 0.5; // fora do alcance de um zumbi normal (tolerância < 0,5)
+    const boss: DummyConfig = {
+      ...zombieConfig("fighter", 0, -reach),
+      maxHp: 1,
+      scale: 2.5,
+      boss: true,
+      rewardMultiplier: 10,
+      damageMultiplier: 0,
+      behavior: { kind: "zombie", attack: "boss_smash", ability: "boss_stomp", aggroRadius: 0.1, leashRadius: 50, speed: 0 },
+    };
+    const zone = zoneWith([boss]);
+    const a = new Member("a");
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    zone.tick();
+    assert.strictEqual(a.field("zombie", "scale"), 2.5);
+    assert.strictEqual(a.field("zombie", "boss"), true);
+    zone.setAttackTarget("a", "zombie");
+    let died = false;
+    for (let i = 0; i < 60 && !died; i++) {
+      zone.tick();
+      died = a.events("death").some((e) => e["id"] === "zombie");
+    }
+    assert.ok(died, "o corpo grande fica no alcance da espada");
+    // 20 × 10 = 200 XP: sobe para o nível 1 (pede 100) e sobram 100.
+    assert.deepStrictEqual(a.saved, { level: 1, xp: xpReward(1) * 10 - xpToNextLevel(0), gold: goldReward(1) * 10 });
+  });
+
+  it("zumbi normal não manda escala nem chefe", () => {
+    const zone = zoneWith([zombieConfig("fighter", 0, -12)]);
+    const a = new Member("a");
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 });
+    zone.tick();
+    assert.strictEqual(a.field("zombie", "scale"), undefined);
+    assert.strictEqual(a.field("zombie", "boss"), undefined);
   });
 
   it("todos que bateram no monstro ganham a XP inteira + bônus de grupo quando ele morre (não divide)", () => {

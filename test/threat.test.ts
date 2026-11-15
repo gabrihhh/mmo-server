@@ -63,8 +63,7 @@ function zombie(id: string, x: number, z: number, extra: Partial<DummyConfig> = 
     respawnSeconds: 1,
     damageMultiplier: 0,
     body: "zombie",
-    look: { hand: "knight_sword", head: null, chest: null, feet: null },
-    behavior: { kind: "zombie", weapon: "knight_sword", ability: "line_cleave", aggroRadius: 0.1, leashRadius: 50, speed: 3.5 },
+    behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 0.1, leashRadius: 50, speed: 3.5 },
     ...extra,
   };
 }
@@ -142,7 +141,7 @@ describe("ameaça (aggro) dos monstros", () => {
   });
 
   it("dano gera ameaça (1 por ponto) e entra na tabela; percepção dá a ameaça inicial", () => {
-    const zone = zoneWith([zombie("z", 0, 0), zombie("z2", 30, 0, { behavior: { kind: "zombie", weapon: "knight_sword", ability: "line_cleave", aggroRadius: 5, leashRadius: 50, speed: 3.5 } })]);
+    const zone = zoneWith([zombie("z", 0, 0), zombie("z2", 30, 0, { behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 5, leashRadius: 50, speed: 3.5 } })]);
     join(zone, "a", 0, 2);
     join(zone, "p", 30, 3);
     zone.tick();
@@ -269,7 +268,7 @@ describe("ameaça (aggro) dos monstros", () => {
   });
 
   it("zera ao desistir (voltar para casa) e ao morrer/reaparecer", () => {
-    const zone = zoneWith([zombie("z", 0, 0, { behavior: { kind: "zombie", weapon: "knight_sword", ability: "line_cleave", aggroRadius: 0.1, leashRadius: 10, speed: 3.5 } })]);
+    const zone = zoneWith([zombie("z", 0, 0, { behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 0.1, leashRadius: 10, speed: 3.5 } })]);
     join(zone, "a", 0, 2);
     castAndFinish(zone, "a", cast("bolt", { targetId: "z" }));
     assert.strictEqual(threat(zone, "z", "a"), 18);
@@ -314,7 +313,7 @@ describe("ameaça (aggro) dos monstros", () => {
 
   it("XP não muda: só percepção/provocação não dá XP; quem bateu ganha a XP de sempre", () => {
     const zone = zoneWith([
-      zombie("z", 0, 0, { maxHp: 14, level: 1, behavior: { kind: "zombie", weapon: "knight_sword", ability: "line_cleave", aggroRadius: 5, leashRadius: 50, speed: 3.5 } }),
+      zombie("z", 0, 0, { maxHp: 14, level: 1, behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 5, leashRadius: 50, speed: 3.5 } }),
     ]);
     const a = join(zone, "a", 0, 2);
     const near1 = join(zone, "n", 3, 0);

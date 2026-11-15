@@ -19,36 +19,53 @@ const ZOMBIE_FIGHTER_HP = 150;
 const ZOMBIE_SHOOTER_HP = 100;
 const ZOMBIE_SPEED = 3.5;
 const ZOMBIE_RESPAWN_SECONDS = 10;
-/** Dano dos zumbis: metade do da arma (provisório; com a força cheia, um jogador nível 0 não aguenta). */
+/** Dano dos zumbis: metade do golpe (provisório; com a força cheia, um jogador nível 0 não aguenta). */
 const ZOMBIE_DAMAGE_MULTIPLIER = 0.5;
+/**
+ * Chefe ([JOGO-18]): zumbi gigante (escala do Blender). Vida × {@link BOSS_HP_MULTIPLIER} da do lutador, dano ×
+ * {@link BOSS_DAMAGE_MULTIPLIER} (já com o 0,5 provisório), XP e moedas × {@link BOSS_REWARD_MULTIPLIER}, demora
+ * {@link BOSS_RESPAWN_SECONDS} s para voltar e anda um pouco mais devagar. Pensado para grupo (ou solo bem acima do
+ * nível dele).
+ */
+const BOSS_HP_MULTIPLIER = 8;
+const BOSS_DAMAGE_MULTIPLIER = 0.75;
+const BOSS_REWARD_MULTIPLIER = 10;
+const BOSS_RESPAWN_SECONDS = 120;
+const BOSS_SPEED = 3.2;
 
 /**
- * Zumbi do tipo [spawn.kind] — lutador (espada longa, Corte em linha) ou atirador (besta, Virote certeiro) — no
- * lugar e no nível de [spawn]. Vida, dano e XP crescem com o nível ([JOGO-12]).
+ * Zumbi do tipo [spawn.kind] no lugar e no nível de [spawn] ([JOGO-13], [JOGO-18]). **Não segura arma**: o lutador
+ * bate com a mão (Soco de zumbi + Pancadão), o cuspidor (`shooter`) cospe de longe (Cuspe + Bola de gosma); o chefe
+ * (`boss`) é um lutador gigante com Murro gigante + Pisão. Vida, dano e XP crescem com o nível ([JOGO-12]).
  */
 function zombie(spawn: MonsterSpawn): DummyConfig {
   const kind: MonsterKind = spawn.kind;
   const fighter: boolean = kind === "fighter";
-  const weapon: string = fighter ? "knight_sword" : "ranger_crossbow";
+  const boss: boolean = spawn.boss;
+  const defaultName: string = boss ? "Chefe zumbi" : fighter ? "Zumbi lutador" : "Zumbi cuspidor";
+  const baseHp: number = fighter ? ZOMBIE_FIGHTER_HP : ZOMBIE_SHOOTER_HP;
   return {
     id: spawn.id,
-    name: fighter ? "Zumbi lutador" : "Zumbi atirador",
+    name: spawn.name.length > 0 ? spawn.name : defaultName,
     x: spawn.x,
     z: spawn.z,
     level: spawn.level,
-    maxHp: fighter ? ZOMBIE_FIGHTER_HP : ZOMBIE_SHOOTER_HP,
-    respawnSeconds: ZOMBIE_RESPAWN_SECONDS,
-    damageMultiplier: ZOMBIE_DAMAGE_MULTIPLIER,
-    // Modelo do zumbi (pele verde, roupa rasgada); sem equipamento: só a arma na mão.
+    maxHp: boss ? baseHp * BOSS_HP_MULTIPLIER : baseHp,
+    respawnSeconds: boss ? BOSS_RESPAWN_SECONDS : ZOMBIE_RESPAWN_SECONDS,
+    damageMultiplier: boss ? BOSS_DAMAGE_MULTIPLIER : ZOMBIE_DAMAGE_MULTIPLIER,
+    scale: spawn.scale,
+    boss,
+    rewardMultiplier: boss ? BOSS_REWARD_MULTIPLIER : 1,
+    // Modelo do zumbi (pele verde, roupa rasgada); sem equipamento e sem arma (bate com a mão).
     body: "zombie",
-    look: { hand: weapon, head: null, chest: null, feet: null },
+    look: { hand: null, head: null, chest: null, feet: null },
     behavior: {
       kind: "zombie",
-      weapon,
-      ability: fighter ? "line_cleave" : "piercing_bolt",
+      attack: boss ? "boss_smash" : fighter ? "zombie_punch" : "zombie_spit",
+      ability: boss ? "boss_stomp" : fighter ? "zombie_bash" : "acid_glob",
       aggroRadius: spawn.perception,
       leashRadius: spawn.resetRange,
-      speed: ZOMBIE_SPEED,
+      speed: boss ? BOSS_SPEED : ZOMBIE_SPEED,
     },
   };
 }
