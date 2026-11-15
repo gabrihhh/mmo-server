@@ -1,5 +1,6 @@
 import type { AbilityView, InventoryView, ItemView } from "../net/protocol.js";
 import { BAG_CAPACITY, type Inventory, type ItemStack } from "./inventory.js";
+import { upgradeAttributesOf, upgradeChance, upgradeCost } from "./upgrade.js";
 import { SET_PROFILES, UNARMED_ATTACK, getItem, type AbilityDef } from "./catalog.js";
 
 /**
@@ -49,6 +50,12 @@ function itemView(stack: ItemStack): ItemView | null {
     profile: SET_PROFILES[def.set] ?? null,
     basicAttack: def.basicAttack === null ? null : abilityView(def.basicAttack),
     abilities: def.abilities.map(abilityView),
+    // Melhoria no ferreiro ([JOGO-16]): nível, pontos, o que aceita e a próxima tentativa (preço e chance prontos).
+    level: stack.level ?? 0,
+    attrs: stack.attrs ?? {},
+    upgradeAttributes: upgradeAttributesOf(stack),
+    upgradeCost: upgradeCost(stack.level ?? 0),
+    upgradeChance: upgradeChance(stack.level ?? 0),
   };
 }
 

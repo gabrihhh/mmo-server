@@ -1,3 +1,5 @@
+import { isAttributeId, type AttributeId } from "../items/attributes.js";
+
 /**
  * Contrato de rede cliente ↔ servidor.
  *
@@ -18,7 +20,7 @@
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
  */
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -48,6 +50,11 @@ export const ClientMessageType = {
   Unequip: "unequip",
   /** Organiza a mochila: troca o item de uma vaga com o de outra ([CLI-10]). Payload: {@link BagMoveData}. */
   BagMove: "bag_move",
+  /**
+   * Tenta melhorar um item no ferreiro (perto dele, com moedas, [JOGO-16]). Payload: {@link UpgradeData}.
+   * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
+   */
+  Upgrade: "upgrade",
   /** Fixa (ou limpa, com `null`) o alvo do ataque simples; o servidor ataca sozinho quando em alcance. Payload: {@link AttackData}. */
   Attack: "attack",
   /** Lança uma habilidade (carta) vestida. Payload: {@link CastData}. Ver mmo-docs [JOGO-06]. */
@@ -97,6 +104,8 @@ export const ServerMessageType = {
   Snapshot: "snapshot",
   /** Inventário completo (vestido + mochila) com o que cada item faz. Vem após o `auth_ok` e a cada troca. */
   Inventory: "inventory",
+  /** Resultado de uma tentativa de melhoria no ferreiro ([JOGO-16]). Payload: {@link UpgradeResultData}. */
+  UpgradeResult: "upgrade_result",
   /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
   Attributes: "attributes",
   /**
@@ -197,6 +206,12 @@ export const ErrorCode = {
   BodyAlreadyChosen: "body_already_chosen",
   /** `inspect` de quem não está (mais) na zona. A conexão continua. */
   PlayerNotFound: "player_not_found",
+  /** Ferreiro ([JOGO-16]): moedas a menos que o preço da melhoria. A conexão continua. */
+  NotEnoughGold: "not_enough_gold",
+  /** Ferreiro: atributo que o conjunto do item não aceita. A conexão continua. */
+  InvalidAttribute: "invalid_attribute",
+  /** Ferreiro: longe dele (ou morto). A conexão continua. */
+  TooFar: "too_far",
   /** Grupo ([SOC-03]): convidar/expulsar sem ser o líder. A conexão continua. */
   NotGroupLeader: "not_group_leader",
   /** Grupo já tem o máximo de membros ({@link GROUP_MAX_MEMBERS}). A conexão continua. */
@@ -353,6 +368,26 @@ export interface UnequipData {
   readonly index: number | null;
 }
 
+/** Payload de `upgrade`: o item (vestido ou na mochila) e o atributo escolhido ([JOGO-16]). */
+export interface UpgradeData {
+  readonly uid: string;
+  readonly attribute: AttributeId;
+}
+
+/** Payload de `upgrade_result` ([JOGO-16]). */
+export interface UpgradeResultData {
+  readonly uid: string;
+  /** `true` = subiu de nível; `false` = falhou (perdeu só as moedas). */
+  readonly success: boolean;
+  /** Moedas pagas. */
+  readonly cost: number;
+  readonly attribute: AttributeId;
+  /** Nível do item depois da tentativa. */
+  readonly level: number;
+  /** Pontos que o atributo ganhou (0 se falhou; 1 = novo; 2 = reforço). */
+  readonly points: number;
+}
+
 /** Payload de `bag_move`: posições (0 = primeira vaga) na mochila. */
 export interface BagMoveData {
   readonly from: number;
@@ -445,6 +480,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
   | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
+  | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
   | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData }
@@ -505,6 +541,8 @@ export interface NpcSnapshot extends PlayerSnapshot {
   readonly targetable?: boolean;
   /** Monstro (zumbi, [JOGO-13]): o cliente mostra só vida, nível e barra de lançamento, sem nome. */
   readonly monster?: boolean;
+  /** Serviço do NPC: `"blacksmith"` = ferreiro (tocar nele abre a tela de melhoria, [JOGO-16]). Ausente = nenhum. */
+  readonly service?: "blacksmith";
 }
 
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
@@ -518,6 +556,8 @@ export type CombatEvent =
       /** Dano absorvido pelo escudo (0 sem escudo). */
       readonly absorbed: number;
       readonly ability: string;
+      /** Golpe crítico (atributo Crítico, [JOGO-16]): o cliente mostra o número maior. Ausente = normal. */
+      readonly crit?: true;
     }
   | {
       readonly type: "cast_start";
@@ -675,6 +715,15 @@ export interface ItemView {
   /** Ataque simples (só armas). */
   readonly basicAttack: AbilityView | null;
   readonly abilities: readonly AbilityView[];
+  /** Nível de melhoria ([JOGO-16]): 0 = +0; sem teto. */
+  readonly level: number;
+  /** Pontos de cada atributo ganhos no ferreiro (só os que têm pontos). */
+  readonly attrs: Readonly<Partial<Record<AttributeId, number>>>;
+  /** Atributos que o ferreiro aceita para este item (do conjunto), na ordem da tela. */
+  readonly upgradeAttributes: readonly AttributeId[];
+  /** Preço (moedas) e chance (0 a 1) da próxima melhoria. O cliente não calcula. */
+  readonly upgradeCost: number;
+  readonly upgradeChance: number;
 }
 
 /** Payload de `inventory`. */
@@ -893,6 +942,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.PlayerLeft; readonly data: { readonly id: string } }
   | { readonly type: typeof ServerMessageType.Snapshot; readonly data: SnapshotData }
   | { readonly type: typeof ServerMessageType.Inventory; readonly data: InventoryView }
+  | { readonly type: typeof ServerMessageType.UpgradeResult; readonly data: UpgradeResultData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
@@ -1025,6 +1075,14 @@ export function parseUnequipData(data: unknown): UnequipData | null {
 
 /** Posição de vaga da mochila aceitável na rede (inteiro de 0 a 999; a regra do inventário confere o resto). */
 const isBagIndex = (value: unknown): value is number => isFiniteNumber(value) && Number.isInteger(value) && value >= 0 && value < 1000;
+
+/** Valida o payload de `upgrade`. */
+export function parseUpgradeData(data: unknown): UpgradeData | null {
+  if (!isRecord(data)) return null;
+  const { uid, attribute } = data;
+  if (typeof uid !== "string" || uid.length === 0 || uid.length > 64 || !isAttributeId(attribute)) return null;
+  return { uid, attribute };
+}
 
 /** Valida o payload de `bag_move`. */
 export function parseBagMoveData(data: unknown): BagMoveData | null {
@@ -1184,6 +1242,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.BagMove: {
       const data = parseBagMoveData(raw);
       return data === null ? null : { type: ClientMessageType.BagMove, data };
+    }
+    case ClientMessageType.Upgrade: {
+      const data = parseUpgradeData(raw);
+      return data === null ? null : { type: ClientMessageType.Upgrade, data };
     }
     case ClientMessageType.Attack: {
       const data = parseAttackData(raw);

@@ -44,6 +44,9 @@ import {
   STARTING_PROGRESS,
   type Progress,
 } from "../progression/level.js";
+import { CRIT_MULTIPLIER, NO_EFFECTS, type AttributeEffects, type AttributeId } from "../items/attributes.js";
+import type { Inventory } from "../items/inventory.js";
+import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
 import { EQUIP_SLOTS, ITEMS, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
@@ -74,6 +77,15 @@ import {
  * joystick pode chegar com buracos de 1 tick sem o jogador ter parado de verdade.
  */
 const ATTACK_MOVE_GRACE_TICKS = 2;
+
+/**
+ * `ability` do evento `heal` do roubo de vida ([JOGO-16]): não é uma carta, o cliente só mostra o número verde.
+ * ATENÇÃO: mmo-client trata ids desconhecidos de `heal` como cura comum.
+ */
+export const LIFESTEAL_ABILITY = "lifesteal";
+
+/** Distância máxima (m) do ferreiro para melhorar itens ([JOGO-16]). ATENÇÃO: = BLACKSMITH_RANGE em mmo-client (hud). */
+export const BLACKSMITH_RANGE = 4;
 
 export interface ZoneMember {
   /** Id do jogador. */
@@ -117,6 +129,8 @@ export type NpcBehavior =
   | { readonly kind: "shooter"; readonly target: string; readonly rotation: readonly string[]; readonly pauseSeconds: number }
   | { readonly kind: "punchingBag"; readonly regenDelaySeconds: number; readonly regenPerSecond: number }
   | { readonly kind: "brawler"; readonly weapon: string }
+  /** Ferreiro ([JOGO-16]): parado, invulnerável, não é alvo; perto dele dá para melhorar itens. */
+  | { readonly kind: "blacksmith" }
   | {
       readonly kind: "zombie";
       readonly weapon: string;
@@ -290,6 +304,8 @@ interface ZonePlayer extends Combatant {
   maxMana: number;
   /** Vida extra dos itens vestidos ([JOGO-09]); a vida máxima é (base + isto) × {@link playerFactor}. */
   bonusHp: number;
+  /** Atributos de melhoria somados do que veste ([JOGO-16]): dano, crítico, defesa, recarga... */
+  effects: AttributeEffects;
   /** Inputs recebidos e ainda não simulados, em ordem de seq. */
   readonly inputs: Command[];
   /** Disparada ativa ([JOGO-07]): multiplicador para os próximos `stepsLeft` passos, até `untilTick`. */
@@ -473,6 +489,9 @@ export class Zone {
     autoAnswer: (playerId): "accept" | "reject" | null => this.groupInviteAutoAnswer(playerId),
   });
 
+  /** Sorteio (0 a <1) do crítico ([JOGO-16]) e da melhoria no ferreiro; os testes trocam por um fixo. */
+  random: () => number = Math.random;
+
   constructor(readonly config: ZoneConfig) {
     for (const dummy of config.dummies) {
       const home: MoveState = { x: dummy.x, y: 0, z: dummy.z, rotY: 0 };
@@ -550,6 +569,7 @@ export class Zone {
       mana: maxMana,
       maxMana,
       bonusHp,
+      effects: NO_EFFECTS,
       dead: false,
       respawnTick: 0,
       shield: 0,
@@ -692,7 +712,8 @@ export class Zone {
       ...(dummy.body !== null ? { body: dummy.body, look: dummy.look } : {}),
       // Aliado (saco de pancadas: dá para curar) e quem não serve de alvo de ataque (atirador invulnerável, aliado).
       ...(dummy.behavior.kind === "punchingBag" ? { ally: true } : {}),
-      ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" ? { targetable: false } : {}),
+      ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" || dummy.behavior.kind === "blacksmith" ? { targetable: false } : {}),
+      ...(dummy.behavior.kind === "blacksmith" ? { service: "blacksmith" as const } : {}),
       // Monstro ([JOGO-13]): o cliente mostra só vida, nível e lançamento (sem nome).
       ...(dummy.behavior.kind === "zombie" ? { monster: true } : {}),
     }));
@@ -712,6 +733,7 @@ export class Zone {
     look: Look = NO_LOOK,
     bonusHp: number = 0,
     progress: Progress = STARTING_PROGRESS,
+    effects: AttributeEffects = NO_EFFECTS,
   ): JoinResult {
     if (!this.players.has(member.id) && this.realPlayerCount() >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
@@ -726,11 +748,12 @@ export class Zone {
       level: progress.level,
       member,
       state: { x: clamp(start.x, -limit, limit), y: start.y, z: clamp(start.z, -limit, limit), rotY: start.rotY },
-      hp: round1((PLAYER_MAX_HP + bonusHp) * factor),
-      maxHp: round1((PLAYER_MAX_HP + bonusHp) * factor),
-      mana: round1(PLAYER_MAX_MANA * factor),
-      maxMana: round1(PLAYER_MAX_MANA * factor),
+      hp: round1((PLAYER_MAX_HP + bonusHp) * factor * (1 + effects.health)),
+      maxHp: round1((PLAYER_MAX_HP + bonusHp) * factor * (1 + effects.health)),
+      mana: round1(PLAYER_MAX_MANA * factor * (1 + effects.mana)),
+      maxMana: round1(PLAYER_MAX_MANA * factor * (1 + effects.mana)),
       bonusHp,
+      effects,
       dead: false,
       respawnTick: 0,
       shield: 0,
@@ -787,7 +810,7 @@ export class Zone {
   }
 
   /**
-   * Troca o ataque simples, as cartas, a aparência e a vida extra dos itens (o inventário mudou). A recarga de cada
+   * Troca o ataque simples, as cartas, a aparência, a vida extra e os atributos de melhoria ([JOGO-16]) dos itens (o inventário mudou). A recarga de cada
    * POSIÇÃO de carta é mantida ({@link Combatant.readyTick}): a carta nova espera o que faltava da anterior. Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
    * Vida máxima nova: a vida atual acompanha na MESMA proporção (tirar e vestir de novo não cura).
    * Se o alvo fixo não serve mais para o ataque novo (ex.: aliado e agora é uma espada), ele é solto.
@@ -798,12 +821,14 @@ export class Zone {
     abilities: ReadonlyMap<string, AbilityDef>,
     look?: Look,
     bonusHp: number = 0,
+    effects: AttributeEffects = NO_EFFECTS,
   ): void {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined) return;
     player.basicAttack = basicAttack;
     player.abilities = abilities;
     player.bonusHp = bonusHp;
+    player.effects = effects;
     this.applyPlayerStats(player);
     const target: Entity | undefined = player.attackTarget === null ? undefined : this.entity(player.attackTarget);
     if (target !== undefined && !this.validAttackTarget(player, basicAttack, target)) {
@@ -892,7 +917,8 @@ export class Zone {
     }
 
     player.mana -= ability.manaCost;
-    player.readyTick.set(Zone.cardSlot(ability.id), this.currentTick + secondsToTicks(ability.cooldown));
+    // Atributo Recarga ([JOGO-16]): menos tempo de recarga.
+    player.readyTick.set(Zone.cardSlot(ability.id), this.currentTick + secondsToTicks(ability.cooldown * (1 - player.effects.cooldown)));
     if (isMovementAbility(ability)) {
       this.applyMovementAbility(player, ability, aimX, aimZ);
       return { ok: true };
@@ -1341,13 +1367,14 @@ export class Zone {
   }
 
   /**
-   * Vida e mana máximas do jogador pelo nível e pelos itens: (base + vida extra) × {@link playerFactor}. A vida e a
+   * Vida e mana máximas do jogador pelo nível e pelos itens: (base + vida extra) × {@link playerFactor} × (1 + atributo
+   * Vida/Mana dos itens melhorados, [JOGO-16]). A vida e a
    * mana atuais acompanham na MESMA proporção (trocar de item ou subir de nível não cura).
    */
   private applyPlayerStats(player: ZonePlayer): void {
     const factor: number = playerFactor(player.level);
-    const maxHp: number = round1((PLAYER_MAX_HP + player.bonusHp) * factor);
-    const maxMana: number = round1(PLAYER_MAX_MANA * factor);
+    const maxHp: number = round1((PLAYER_MAX_HP + player.bonusHp) * factor * (1 + player.effects.health));
+    const maxMana: number = round1(PLAYER_MAX_MANA * factor * (1 + player.effects.mana));
     if (maxHp !== player.maxHp) {
       player.hp = player.dead ? 0 : (player.hp * maxHp) / player.maxHp;
       player.maxHp = maxHp;
@@ -1374,6 +1401,29 @@ export class Zone {
       this.groups.refresh(player.id);
     }
     player.member.onProgress?.(progress);
+  }
+
+  /**
+   * Melhoria no ferreiro ([JOGO-16]): o jogador precisa estar vivo e a até {@link BLACKSMITH_RANGE} m de um ferreiro
+   * da zona. Quem decide o resultado é {@link upgradeItem} (com o sorteio {@link random}); aceita, as moedas saem do
+   * progresso do jogador (salvo por {@link ZoneMember.onProgress}). Devolve o resultado para quem guarda o inventário.
+   */
+  upgradeItem(playerId: string, inventory: Inventory, uid: string, attribute: AttributeId): UpgradeResult | { readonly ok: false; readonly reason: "too_far" } {
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    if (player === undefined || player.dead || !this.nearBlacksmith(player)) return { ok: false, reason: "too_far" };
+    const result: UpgradeResult = upgradeItem(inventory, uid, attribute, player.progress.gold, this.random());
+    if (!result.ok) return result;
+    player.progress = { ...player.progress, gold: player.progress.gold - result.cost };
+    player.member.onProgress?.(player.progress);
+    return result;
+  }
+
+  /** `true` se há um ferreiro a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador. */
+  private nearBlacksmith(player: ZonePlayer): boolean {
+    for (const npc of this.dummies.values()) {
+      if (npc.behavior.kind === "blacksmith" && Zone.distance(player.state, npc.state) <= BLACKSMITH_RANGE + BODY_RADIUS) return true;
+    }
+    return false;
   }
 
   private shooterThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "shooter" }>): void {
@@ -1465,9 +1515,12 @@ export class Zone {
     if (this.currentTick - player.lastMoveTick <= ATTACK_MOVE_GRACE_TICKS) return;
     const attack: AbilityDef = player.basicAttack;
     if (!Zone.inRange(player, target, attack.range)) return;
-    const duration: number = secondsToTicks(attack.castTime);
+    // Atributo Velocidade de ataque ([JOGO-16], só jogador): o golpe (e a soltura do tiro) fica mais curto.
+    const speed: number = 1 + (player.kind === "player" ? player.effects.attackSpeed : 0);
+    const duration: number = secondsToTicks(attack.castTime / speed);
     const endTick: number = this.currentTick + duration;
-    player.cast = { kind: "attack", ability: attack, targetId: target.id, aimX: 0, aimZ: 0, endTick, releaseTick: Zone.releaseTick(attack, endTick), inRangeAtRelease: null };
+    const releaseTick: number = attack.releaseTime > 0 ? endTick - secondsToTicks(attack.releaseTime / speed) : endTick;
+    player.cast = { kind: "attack", ability: attack, targetId: target.id, aimX: 0, aimZ: 0, endTick, releaseTick, inRangeAtRelease: null };
     Zone.face(player, target);
     this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS, ...Zone.releaseField(player.cast) });
   }
@@ -1654,14 +1707,17 @@ export class Zone {
       }
     }
     let supported: number = 0;
+    // Atributos Cura/Escudo de quem cura ([JOGO-16]).
+    const healBonus: number = source.kind === "player" ? 1 + source.effects.healing : 1;
+    const shieldBonus: number = source.kind === "player" ? 1 + source.effects.shield : 1;
     if (ability.heal > 0) {
-      const healed: number = round1(Math.min(target.maxHp - target.hp, ability.heal * factor));
+      const healed: number = round1(Math.min(target.maxHp - target.hp, ability.heal * factor * healBonus));
       target.hp += healed;
       supported += healed;
       this.events.push({ type: "heal", source: source.id, target: target.id, amount: healed, ability: ability.id });
     }
     if (ability.shield > 0) {
-      target.shield = round1(ability.shield * factor);
+      target.shield = round1(ability.shield * factor * shieldBonus);
       target.shieldUntilTick = this.currentTick + secondsToTicks(ability.shieldSeconds);
       supported += target.shield;
     }
@@ -1692,7 +1748,7 @@ export class Zone {
    */
   private isEnemy(source: Entity, target: Entity): boolean {
     if (target.dead || target.id === source.id) return false;
-    if (target.kind === "dummy" && target.behavior.kind === "shooter") return false;
+    if (target.kind === "dummy" && (target.behavior.kind === "shooter" || target.behavior.kind === "blacksmith")) return false;
     // Jogador fake de teste: NPCs e monstros não o atacam (senão ele sumia no meio do teste, [SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return false;
     if (source.kind === "dummy") {
@@ -1816,18 +1872,21 @@ export class Zone {
    */
   private damage(source: Entity, target: Entity, amount: number, abilityId: string): void {
     if (target.dead || amount <= 0) return;
-    // Atirador de teste: invulnerável ([JOGO-11]).
-    if (target.kind === "dummy" && target.behavior.kind === "shooter") return;
+    // Atirador de teste e ferreiro: invulneráveis ([JOGO-11], [JOGO-16]).
+    if (target.kind === "dummy" && (target.behavior.kind === "shooter" || target.behavior.kind === "blacksmith")) return;
     // Fake de teste não leva dano de NPC/monstro, nem de área/projétil que passe por ele ([SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return;
     // Membro do grupo não leva dano de outro membro ([SOC-03]; segurança além do isEnemy).
     if (source.kind === "player" && target.kind === "player" && this.groups.sameGroup(source.id, target.id)) return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
     // Nível de quem bate ([JOGO-12]): jogador × (1 + 1% por nível), monstro × 1,02^nível × o multiplicador dele.
-    const multiplier: number = source.kind === "dummy" ? source.damageMultiplier : 1;
-    const scaled: number = round1(amount * Zone.strength(source) * multiplier);
+    // Atributos de melhoria ([JOGO-16]): Dano e Crítico de quem bate (jogador), Defesa de quem apanha (jogador).
+    const multiplier: number = source.kind === "dummy" ? source.damageMultiplier : 1 + source.effects.damage;
+    const crit: boolean = source.kind === "player" && source.effects.crit > 0 && this.random() < source.effects.crit;
+    const scaled: number = round1(amount * Zone.strength(source) * multiplier * (crit ? CRIT_MULTIPLIER : 1));
     const reduced: boolean = target.reduction > 0 && this.currentTick < target.reductionUntilTick;
-    let remaining: number = reduced ? round1(scaled * (1 - target.reduction)) : scaled;
+    const defense: number = target.kind === "player" ? target.effects.defense : 0;
+    let remaining: number = round1(scaled * (reduced ? 1 - target.reduction : 1) * (1 - defense));
     let absorbed: number = 0;
     if (target.shield > 0 && this.currentTick < target.shieldUntilTick) {
       absorbed = Math.min(target.shield, remaining);
@@ -1847,7 +1906,15 @@ export class Zone {
         target.threat.add(source.id, (dealt + absorbed) * THREAT_PER_DAMAGE);
       }
     }
-    this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId });
+    this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId, ...(crit ? { crit: true } : {}) });
+    // Roubo de vida ([JOGO-16]): parte do dano causado (vida + escudo) volta para quem bateu, até a vida máxima.
+    if (source.kind === "player" && source.effects.lifesteal > 0 && !source.dead) {
+      const stolen: number = round1(Math.min(source.maxHp - source.hp, (dealt + absorbed) * source.effects.lifesteal));
+      if (stolen > 0) {
+        source.hp += stolen;
+        this.events.push({ type: "heal", source: source.id, target: source.id, amount: stolen, ability: LIFESTEAL_ABILITY });
+      }
+    }
     if (target.hp > 0) return;
     target.hp = 0;
     target.dead = true;

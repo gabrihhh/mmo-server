@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { Look } from "../net/protocol.js";
+import { attributeEffects, readPoints, sumPoints, type AttributeEffects, type AttributePoints } from "./attributes.js";
 import { EQUIP_SLOTS, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
 
 /**
@@ -11,10 +12,14 @@ import { EQUIP_SLOTS, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type Ability
 /** Capacidade da mochila, em itens. */
 export const BAG_CAPACITY = 30;
 
-/** Um item que o jogador possui. `uid` diferencia dois itens iguais (no futuro: qualidade, durabilidade). */
+/** Um item que o jogador possui. `uid` diferencia dois itens iguais (cada um tem o seu nível de melhoria). */
 export interface ItemStack {
   readonly uid: string;
   readonly itemId: string;
+  /** Nível de melhoria no ferreiro ([JOGO-16]): +1, +2… sem teto. Ausente = +0. */
+  readonly level?: number;
+  /** Pontos de atributo ganhos nas melhorias ([JOGO-16]). Ausente = nenhum. */
+  readonly attrs?: AttributePoints;
 }
 
 /** Inventário completo. */
@@ -133,9 +138,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** Lê um ItemStack guardado; `null` se inválido ou de item que não existe mais. */
 function readStack(value: unknown): ItemStack | null {
   if (!isRecord(value)) return null;
-  const { uid, itemId } = value;
+  const { uid, itemId, level, attrs } = value;
   if (typeof uid !== "string" || typeof itemId !== "string" || getItem(itemId) === undefined) return null;
-  return { uid, itemId };
+  // Melhoria ([JOGO-16]): só guarda os campos se o item foi melhorado (item +0 continua { uid, itemId }).
+  const safeLevel: number = typeof level === "number" && Number.isSafeInteger(level) && level > 0 ? level : 0;
+  const points: AttributePoints = readPoints(attrs);
+  if (safeLevel === 0 && Object.keys(points).length === 0) return { uid, itemId };
+  return { uid, itemId, level: safeLevel, attrs: points };
 }
 
 /**
@@ -193,6 +202,16 @@ export function bonusHpOf(inventory: Inventory): number {
     total += (stack === null ? undefined : getItem(stack.itemId))?.bonusHp ?? 0;
   }
   return total;
+}
+
+/** Efeito somado dos atributos de melhoria de tudo que está vestido ([JOGO-16]). */
+export function attributeEffectsOf(inventory: Inventory): AttributeEffects {
+  const lists: AttributePoints[] = [];
+  for (const slot of EQUIP_SLOTS) {
+    const attrs: AttributePoints | undefined = inventory.equipped[slot]?.attrs;
+    if (attrs !== undefined) lists.push(attrs);
+  }
+  return attributeEffects(sumPoints(lists));
 }
 
 /** Aparência: o `itemId` vestido em cada slot (o que os outros jogadores veem). */

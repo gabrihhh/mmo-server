@@ -46,6 +46,10 @@ describe("parseClientMessage", () => {
       type: ClientMessageType.Unequip,
       data: { slot: "feet", index: 3 },
     });
+    assert.deepStrictEqual(parseClientMessage('{"type":"upgrade","data":{"uid":"abc","attribute":"crit"}}'), {
+      type: ClientMessageType.Upgrade,
+      data: { uid: "abc", attribute: "crit" },
+    });
     assert.deepStrictEqual(parseClientMessage('{"type":"bag_move","data":{"from":0,"to":4}}'), {
       type: ClientMessageType.BagMove,
       data: { from: 0, to: 4 },
@@ -120,6 +124,8 @@ describe("parseClientMessage", () => {
       '{"type":"unequip","data":{"slot":"mochila"}}',
       '{"type":"unequip","data":{"slot":"feet","index":-1}}',
       '{"type":"bag_move","data":{"from":0}}',
+      '{"type":"upgrade","data":{"uid":"abc","attribute":"voar"}}',
+      '{"type":"upgrade","data":{"attribute":"crit"}}',
       '{"type":"bag_move","data":{"from":1.5,"to":2}}',
       '{"type":"cast","data":{"abilityId":""}}',
       '{"type":"cast","data":{"abilityId":"meteor","x":"1"}}',

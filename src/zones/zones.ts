@@ -78,6 +78,14 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
       pauseSeconds: 2,
     },
   },
+  // Ferreiro ([JOGO-16]): parado na praça, invulnerável; perto dele melhora os itens com moedas.
+  {
+    id: "blacksmith",
+    name: "Ferreiro",
+    body: "male",
+    look: { hand: null, head: null, chest: "knight_plate", feet: "training_boots" },
+    behavior: { kind: "blacksmith" },
+  },
   // Brigão: parado, bate com o ataque da espada longa em quem chegar perto; tem vida e morre.
   {
     id: "test_brawler",

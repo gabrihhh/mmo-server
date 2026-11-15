@@ -1,4 +1,6 @@
 import type { Progress } from "./progression/level.js";
+import type { AttributeId } from "./items/attributes.js";
+import type { UpgradeFailure } from "./items/upgrade.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
@@ -36,7 +38,7 @@ import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 import { DEFAULT_UPDATE_POLL_MS, UpdateWatcher } from "./http/updateWatcher.js";
-import { basicAttackOf, bonusHpOf, equip, equippedAbilities, lookOf, moveInBag, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
+import { attributeEffectsOf, basicAttackOf, bonusHpOf, equip, equippedAbilities, lookOf, moveInBag, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
 import { inventoryView } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
@@ -332,6 +334,9 @@ export class GameServer {
         return;
       case ClientMessageType.Unequip:
         void this.changeInventory(session, (inventory) => unequip(inventory, GameServer.slotOf(message.data.slot), message.data.index));
+        return;
+      case ClientMessageType.Upgrade:
+        void this.handleUpgrade(session, message.data.uid, message.data.attribute);
         return;
       case ClientMessageType.BagMove:
         void this.changeInventory(session, (inventory) => moveInBag(inventory, message.data.from, message.data.to));
@@ -742,6 +747,7 @@ export class GameServer {
       equippedAbilities(result.inventory),
       lookOf(result.inventory),
       bonusHpOf(result.inventory),
+      attributeEffectsOf(result.inventory),
     );
     try {
       await this.options.accounts.saveInventory(account.playerId, result.inventory);
@@ -750,6 +756,73 @@ export class GameServer {
     }
     this.sendInventory(session);
   }
+
+  /**
+   * Melhoria no ferreiro ([JOGO-16]): a zona confere a distância, as moedas e sorteia (`Zone.upgradeItem`, que já
+   * desconta as moedas e salva o progresso). Responde `upgrade_result`; se subiu de nível, salva o inventário, a zona
+   * passa a usar os atributos novos (se o item está vestido) e vai o `inventory` novo.
+   */
+  private async handleUpgrade(session: Session, uid: string, attribute: AttributeId): Promise<void> {
+    const zone: Zone | null = session.zone;
+    if (session.account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const playerId: string = session.account.playerId;
+    const result = zone.upgradeItem(playerId, session.account.inventory, uid, attribute);
+    if (!result.ok) {
+      this.sendError(session, GameServer.UPGRADE_ERRORS[result.reason], GameServer.UPGRADE_MESSAGES[result.reason]);
+      return;
+    }
+    const level: number = result.stack.level ?? 0;
+    const points: number = result.success ? (result.stack.attrs?.[attribute] ?? 0) - (GameServer.pointsBefore(session.account.inventory, uid, attribute)) : 0;
+    // O onProgress da zona já trocou o progresso (moedas) na sessão: lê a conta de novo antes de mexer nela.
+    const account: Account | null = session.account;
+    if (result.success && account !== null) {
+      session.account = { ...account, inventory: result.inventory };
+      zone.setLoadout(
+        playerId,
+        basicAttackOf(result.inventory),
+        equippedAbilities(result.inventory),
+        lookOf(result.inventory),
+        bonusHpOf(result.inventory),
+        attributeEffectsOf(result.inventory),
+      );
+      try {
+        await this.options.accounts.saveInventory(playerId, result.inventory);
+      } catch (error: unknown) {
+        console.error(`[${session.connectionId}] falha ao salvar inventário (ferreiro) de ${account.username}:`, error);
+      }
+    }
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(
+        encodeServerMessage({ type: ServerMessageType.UpgradeResult, data: { uid, success: result.success, cost: result.cost, attribute, level, points } }),
+      );
+    }
+    if (result.success) this.sendInventory(session);
+  }
+
+  /** Pontos que o item `uid` tinha em `attribute` (antes da melhoria). */
+  private static pointsBefore(inventory: Account["inventory"], uid: string, attribute: AttributeId): number {
+    const stacks = [...Object.values(inventory.equipped), ...inventory.bag];
+    return stacks.find((stack) => stack !== null && stack.uid === uid)?.attrs?.[attribute] ?? 0;
+  }
+
+  /** Código do protocolo para cada recusa do ferreiro. */
+  private static readonly UPGRADE_ERRORS: Readonly<Record<UpgradeFailure | "too_far", ErrorCode>> = {
+    item_not_found: ErrorCode.ItemNotFound,
+    invalid_attribute: ErrorCode.InvalidAttribute,
+    not_enough_gold: ErrorCode.NotEnoughGold,
+    too_far: ErrorCode.TooFar,
+  };
+
+  /** Mensagens (em português) das recusas do ferreiro. */
+  private static readonly UPGRADE_MESSAGES: Readonly<Record<UpgradeFailure | "too_far", string>> = {
+    item_not_found: "Esse item não é seu.",
+    invalid_attribute: "Esse item não aceita esse atributo.",
+    not_enough_gold: "Moedas insuficientes.",
+    too_far: "Chegue perto do ferreiro.",
+  };
 
   /** Código do protocolo para cada recusa de `cast` (mesmos nomes). */
   private static readonly CAST_ERRORS: Readonly<Record<CastFailure, ErrorCode>> = {
@@ -877,6 +950,7 @@ export class GameServer {
       lookOf(account.inventory),
       bonusHpOf(account.inventory),
       account.progress,
+      attributeEffectsOf(account.inventory),
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");
