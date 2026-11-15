@@ -35,6 +35,12 @@ export const ClientMessageType = {
   /** Encerra a sessão deste aparelho (o token deixa de valer) e fecha a conexão. Payload: `{}`. */
   Logout: "logout",
   /**
+   * Sinal de vida do celular parado ([INFRA-12]): mensagem vazia a cada ~100 ms quando não manda passos, para o Wi-Fi do
+   * Android não entrar em economia de energia (que entrega os snapshots em lotes e faz os outros andarem aos trancos).
+   * O servidor só ignora. ATENÇÃO: enviado por mmo-client/scripts/network/network.gd (`_keep_radio_awake`).
+   */
+  KeepAlive: "ka",
+  /**
    * Escolhe o corpo do personagem (uma vez só, na primeira entrada; vale para sempre). Payload: {@link ChooseBodyData}.
    * Ver mmo-docs [INFRA-07].
    */
@@ -482,6 +488,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Login; readonly data: LoginData }
   | { readonly type: typeof ClientMessageType.Resume; readonly data: ResumeData }
   | { readonly type: typeof ClientMessageType.Logout; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.KeepAlive; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ChooseBody; readonly data: ChooseBodyData }
   | { readonly type: typeof ClientMessageType.Join; readonly data: JoinData }
   | { readonly type: typeof ClientMessageType.Input; readonly data: InputData }
@@ -1246,6 +1253,8 @@ export function parseClientMessage(text: string): ClientMessage | null {
     }
     case ClientMessageType.Logout:
       return { type: ClientMessageType.Logout, data: {} };
+    case ClientMessageType.KeepAlive:
+      return { type: ClientMessageType.KeepAlive, data: {} };
     case ClientMessageType.ChooseBody: {
       const data = parseChooseBodyData(raw);
       return data === null ? null : { type: ClientMessageType.ChooseBody, data };

@@ -4,6 +4,8 @@ import { ClientMessageType, parseClientMessage, readSocialSettings } from "../sr
 
 describe("parseClientMessage", () => {
   it("aceita mensagens válidas", () => {
+    // Sinal de vida do celular parado ([INFRA-12]): aceito e sem dados.
+    assert.deepStrictEqual(parseClientMessage('{"type":"ka","data":{}}'), { type: "ka", data: {} });
     assert.deepStrictEqual(parseClientMessage('{"type":"join","data":{"zone":"zone_1"}}'), {
       type: ClientMessageType.Join,
       data: { zone: "zone_1" },

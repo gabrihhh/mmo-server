@@ -417,6 +417,9 @@ export class GameServer {
       case ClientMessageType.Logout:
         void this.handleLogout(session);
         return;
+      case ClientMessageType.KeepAlive:
+        // Só mantém o Wi-Fi do celular acordado ([INFRA-12]); nada a fazer.
+        return;
       case ClientMessageType.ChooseBody:
         void this.handleChooseBody(session, message.data.body);
         return;
