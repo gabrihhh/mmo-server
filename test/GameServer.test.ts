@@ -386,7 +386,8 @@ describe("GameServer", () => {
       const npcs: unknown = snap.data["npcs"];
       // Só os NPCs perto (área de interesse, VIEW_RADIUS) vêm no snapshot.
       const near: number = (ZONE_CONFIGS[0]?.dummies ?? []).filter((d) => Math.hypot(d.x, d.z) <= VIEW_RADIUS + 4).length;
-      assert.ok(Array.isArray(npcs) && npcs.length > 0 && npcs.length <= near, "só NPCs da área de interesse no snapshot");
+      // Snapshot por diferença: pode vir só quem mudou (até nenhum), mas nunca quem está longe.
+      assert.ok(Array.isArray(npcs) && npcs.length <= near, "só NPCs da área de interesse no snapshot");
     });
 
     it("cast: aceito vira cast_start; durante o lançamento = busy; depois, antes da recarga = on_cooldown", async () => {

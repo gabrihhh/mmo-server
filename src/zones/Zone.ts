@@ -217,6 +217,11 @@ export interface ZoneConfig {
   readonly spawnRadius: number;
   /** Jogadores podem atacar jogadores aqui ([JOGO-02]). `false` = zona segura (só monstros). */
   readonly pvp: boolean;
+  /**
+   * Estoque de passos ({@link MOVE_BUFFER}; padrão ele). 1 = sem estoque (aplica assim que chega; os testes de mecânica
+   * usam para não depender do atraso de 1 tick ao começar a andar).
+   */
+  readonly moveBuffer?: number;
   /** Bonecos de treino da zona. */
   readonly dummies: readonly DummyConfig[];
   /** Jogadores fake de teste ([SOC-01]); ausente = nenhum. Não contam em `maxPlayers` nem no "online". */
@@ -229,6 +234,26 @@ export interface SpawnPoint {
   readonly y: number;
   readonly z: number;
   readonly rotY: number;
+}
+
+/**
+ * Diagnóstico da chegada dos passos de um jogador ([INFRA-12]), desde a última leitura ({@link Zone.takeNetStats}):
+ * buracos entre passos (rede segurando), ticks em que vieram 2+ de uma vez (rajada), fila e passos jogados fora.
+ */
+export interface NetStats {
+  /** Quando chegou o último passo (ms, `performance.now`); 0 = nenhum ainda. */
+  lastArrivalMs: number;
+  /** Passos que chegaram. */
+  arrivals: number;
+  /** Maior intervalo entre dois passos seguidos (ms) e quantos intervalos passaram de 100 ms. */
+  maxGapMs: number;
+  gapsOver100: number;
+  /** Ticks em que 2 ou mais passos foram aplicados juntos (chegaram em rajada). */
+  bursts: number;
+  /** Maior fila vista no começo de um tick. */
+  maxQueue: number;
+  /** Passos jogados fora por fila cheia. */
+  dropped: number;
 }
 
 /** Resultado de {@link Zone.join}: lotada, ou aceito com a lista de quem está na zona (inclusive ele). */
@@ -248,6 +273,22 @@ export const MAX_INPUTS_PER_TICK = 4;
  * tick: só dá para gastar o que acumulou parado/travado.
  */
 export const MAX_INPUT_CREDIT: number = Math.round(0.5 * TICK_RATE_HZ);
+
+/**
+ * Estoque de passos ([INFRA-12]): o celular manda os passos no relógio dele e o servidor aplica no dele; sem estoque,
+ * ~20% dos ticks recebiam 0 passos e o seguinte 2 (medido), e o personagem andava "para-pula" para os OUTROS. Ao
+ * começar a andar, a zona espera ter este tanto de passos na fila (ou o mais velho ter esperado
+ * {@link MOVE_BUFFER_MAX_WAIT_TICKS}) e daí aplica 1 por tick, liso; fila vazia = reabastece. Custa ~1 tick a mais para
+ * os outros verem; quem anda não sente (o cliente prevê).
+ */
+export const MOVE_BUFFER = 2;
+/** Espera máxima (ticks) pelo estoque ao começar a andar: um toque curto (1 passo só) não fica preso. */
+export const MOVE_BUFFER_MAX_WAIT_TICKS = 1;
+/**
+ * Fila acima do estoque + isto (passos) = acumulou (rede soltou uma rajada, relógio do celular um pouco mais rápido):
+ * aplica mais de 1 por tick para alcançar (até {@link MAX_INPUTS_PER_TICK}, com crédito).
+ */
+export const MOVE_BUFFER_CATCHUP_EXTRA = 2;
 
 /**
  * Área de interesse (m): cada jogador recebe no snapshot só os jogadores e NPCs a esta distância dele (mais ele
@@ -390,6 +431,11 @@ interface ZonePlayer extends Combatant {
   lastAppliedSeq: number;
   /** Crédito de comandos ({@link MAX_INPUT_CREDIT}): +1 por tick, −1 por comando aplicado. */
   inputCredit: number;
+  /** Diagnóstico de rede deste jogador ({@link Zone.takeNetStats}, [INFRA-12]). */
+  readonly net: NetStats;
+  /** Estoque de passos ({@link MOVE_BUFFER}): esperando juntar antes de começar a andar, e há quantos ticks. */
+  moveBuffering: boolean;
+  moveBufferWait: number;
   /**
    * O que este jogador já recebeu de cada entidade que está na vista dele (id → campos do último envio). O snapshot
    * leva só o que mudou desde então; quem sai da vista vai em `gone` (fase 1 de desempenho, [INFRA-11]).
@@ -679,6 +725,9 @@ export class Zone {
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
       inputCredit: 0,
+      moveBuffering: true,
+      moveBufferWait: 0,
+      net: Zone.emptyNetStats(),
       view: new Map(),
       sentMe: new Map(),
       basicAttack: UNARMED_ATTACK,
@@ -872,6 +921,9 @@ export class Zone {
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
       inputCredit: 0,
+      moveBuffering: true,
+      moveBufferWait: 0,
+      net: Zone.emptyNetStats(),
       view: new Map(),
       sentMe: new Map(),
       basicAttack,
@@ -907,7 +959,32 @@ export class Zone {
    * passar de {@link MAX_INPUT_QUEUE}, descarta os mais antigos (o cliente se corrige pelo snapshot).
    */
   queueInput(id: string, input: InputData): void {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player !== undefined) {
+      const now: number = performance.now();
+      const net: NetStats = player.net;
+      if (net.lastArrivalMs > 0) {
+        const gap: number = now - net.lastArrivalMs;
+        net.maxGapMs = Math.max(net.maxGapMs, gap);
+        if (gap > 100) net.gapsOver100++;
+      }
+      net.lastArrivalMs = now;
+      net.arrivals++;
+    }
     this.enqueue(id, { kind: "move", seq: input.seq, input });
+  }
+
+  /** Lê e zera o diagnóstico de rede de `id` ({@link NetStats}); `undefined` se não está na zona. */
+  takeNetStats(id: string): NetStats | undefined {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return undefined;
+    const copy: NetStats = { ...player.net };
+    Object.assign(player.net, { ...Zone.emptyNetStats(), lastArrivalMs: player.net.lastArrivalMs });
+    return copy;
+  }
+
+  private static emptyNetStats(): NetStats {
+    return { lastArrivalMs: 0, arrivals: 0, maxGapMs: 0, gapsOver100: 0, bursts: 0, maxQueue: 0, dropped: 0 };
   }
 
   private enqueue(id: string, command: Command): void {
@@ -915,7 +992,10 @@ export class Zone {
     if (player === undefined || command.seq <= player.lastReceivedSeq) return;
     player.lastReceivedSeq = command.seq;
     player.inputs.push(command);
-    while (player.inputs.length > MAX_INPUT_QUEUE) player.inputs.shift();
+    while (player.inputs.length > MAX_INPUT_QUEUE) {
+      player.inputs.shift();
+      player.net.dropped++;
+    }
   }
 
   /**
@@ -1198,10 +1278,22 @@ export class Zone {
       // Crédito: +1 por tick (guarda até MAX_INPUT_CREDIT); cada PASSO gasta 1. Habilidade na fila (Investida,
       // Disparada) não gasta: tem a recarga dela, e gastar deixaria um passo sobrando na fila a cada uma (atraso).
       player.inputCredit = Math.min(MAX_INPUT_CREDIT, player.inputCredit + 1);
+      player.net.maxQueue = Math.max(player.net.maxQueue, player.inputs.length);
+      // Estoque de passos: quantos passos este tick pode aplicar (0 juntando, 1 normal, mais se acumulou).
+      const buffer: number = this.config.moveBuffer ?? MOVE_BUFFER;
+      const queuedMoves: number = player.inputs.reduce((count, c) => count + (c.kind === "move" ? 1 : 0), 0);
+      if (queuedMoves === 0) {
+        player.moveBuffering = true;
+        player.moveBufferWait = 0;
+      } else if (player.moveBuffering) {
+        if (queuedMoves >= buffer || player.moveBufferWait >= MOVE_BUFFER_MAX_WAIT_TICKS) player.moveBuffering = false;
+        else player.moveBufferWait++;
+      }
+      const allowedMoves: number = player.moveBuffering ? 0 : queuedMoves > buffer + MOVE_BUFFER_CATCHUP_EXTRA ? MAX_INPUTS_PER_TICK : 1;
       let moves: number = 0;
       while (player.inputs.length > 0) {
         const next: Command | undefined = player.inputs[0];
-        if (next !== undefined && next.kind === "move" && (moves >= MAX_INPUTS_PER_TICK || player.inputCredit < 1)) break;
+        if (next !== undefined && next.kind === "move" && (moves >= allowedMoves || player.inputCredit < 1)) break;
         const command: Command | undefined = player.inputs.shift();
         if (command === undefined) break;
         if (command.kind === "move") {
@@ -1219,6 +1311,7 @@ export class Zone {
           player.member.send(encodeServerMessage({ type: ServerMessageType.Error, data: { code: result.reason, message: result.message } }));
         }
       }
+      if (moves >= 2) player.net.bursts++;
     }
   }
 

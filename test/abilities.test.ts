@@ -56,7 +56,8 @@ const ALL: ReadonlyMap<string, AbilityDef> = new Map(
 
 /** Zona com o jogador "a" na origem (todas as habilidades vestidas) e um boneco em (0, -2). */
 function setup(dummyAt: { x: number; z: number } = { x: 0, z: -2 }): { z: Zone; a: Member } {
-  const z = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true, dummies: [{ id: "dummy", name: "B", ...dummyAt }] });
+  // Sem estoque de passos (moveBuffer 1): passo aplicado no tick em que chega.
+  const z = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true, moveBuffer: 1, dummies: [{ id: "dummy", name: "B", ...dummyAt }] });
   const a = new Member("a");
   z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, ALL);
   return { z, a };

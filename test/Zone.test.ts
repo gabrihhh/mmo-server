@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { MAX_INPUT_CREDIT, MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, NO_LOOK, Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { MAX_INPUT_CREDIT, MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, MOVE_BUFFER, MOVE_BUFFER_MAX_WAIT_TICKS, NO_LOOK, Zone, type ZoneMember } from "../src/zones/Zone.js";
 import { UNARMED_ATTACK } from "../src/items/catalog.js";
 import type { Look } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS, quantize } from "../src/sim/movement.js";
@@ -24,7 +24,8 @@ class FakeMember implements ZoneMember {
 }
 
 const newZone = (maxPlayers: number = 50, pvp: boolean = true): Zone =>
-  new Zone({ id: "test", halfSize: 150, maxPlayers, spawnRadius: 5, pvp, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });
+  // Sem estoque de passos (moveBuffer 1): estes testes conferem a mecânica, passo aplicado no tick em que chega.
+  new Zone({ id: "test", halfSize: 150, maxPlayers, spawnRadius: 5, pvp, moveBuffer: 1, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });
 
 /** Vida cheia de jogador, como sai no snapshot. */
 /** Campos de combate de um jogador recém-chegado (vida e mana cheias). */
@@ -142,6 +143,35 @@ describe("Zone", () => {
     for (let seq = 9; seq <= 9 + 40; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
     for (let i = 0; i < 3; i++) zone.tick();
     assert.ok((zone.getSnapshot("a")?.x ?? 0) <= quantizeSteps(8 + MAX_INPUT_CREDIT + 3, step) + 1e-9, "no máximo o crédito guardado + 1 por tick");
+  });
+
+  it("estoque de passos: chegada irregular (0, 2, 0, 2...) vira exatamente 1 passo por tick para os outros", () => {
+    const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: false, dummies: [] });
+    zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
+    let seq = 0;
+    const xs: number[] = [];
+    for (let t = 0; t < 40; t++) {
+      // Celular e servidor desalinhados: num tick não chega nada, no outro chegam dois.
+      if (t % 2 === 1) {
+        zone.queueInput("a", { seq: ++seq, x: 1, z: 0 });
+        zone.queueInput("a", { seq: ++seq, x: 1, z: 0 });
+      }
+      zone.tick();
+      xs.push(zone.getSnapshot("a")?.x ?? NaN);
+    }
+    const steps: number[] = xs.slice(1).map((x, i) => Math.round((x - (xs[i] ?? 0)) / STEP_M));
+    // Depois de começar (estoque cheio), todo tick anda 1 passo: nem parado, nem dois de uma vez.
+    const started: number = steps.findIndex((n) => n > 0);
+    assert.ok(started >= 0 && started <= MOVE_BUFFER, "começa logo");
+    assert.deepStrictEqual(steps.slice(started), steps.slice(started).map(() => 1), `passos por tick: ${steps.join(",")}`);
+  });
+
+  it("estoque de passos: um toque curto (1 passo só) não fica preso; espera no máximo MOVE_BUFFER_MAX_WAIT_TICKS", () => {
+    const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: false, dummies: [] });
+    zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
+    zone.queueInput("a", { seq: 1, x: 1, z: 0 });
+    for (let i = 0; i <= MOVE_BUFFER_MAX_WAIT_TICKS; i++) zone.tick();
+    assert.strictEqual(zone.getSnapshot("a")?.x, STEP_M);
   });
 
   it("ignora seq repetido ou antigo e limita às bordas", () => {

@@ -62,7 +62,7 @@ describe("área de interesse do snapshot", () => {
   });
 
   it("só manda o que mudou: parado não vai de novo; andou vai só a posição ([INFRA-11])", () => {
-    const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: false, dummies: [dummy("boneco", 0, 5)] });
+    const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: false, moveBuffer: 1, dummies: [dummy("boneco", 0, 5)] });
     const raw: Array<Record<string, unknown>> = [];
     const a = new Member("a");
     const spy: ZoneMember = { id: "a", name: "a", send: (t: string): void => { a.send(t); raw.push(JSON.parse(t).data); } };

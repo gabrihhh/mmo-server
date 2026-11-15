@@ -3,6 +3,7 @@ import type { AttributeId } from "./items/attributes.js";
 import type { UpgradeFailure } from "./items/upgrade.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 
@@ -29,7 +30,7 @@ import {
   type SocialSettings,
 } from "./net/protocol.js";
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
-import { Zone, type CastFailure, type CastResult, type JoinResult, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
+import { Zone, type CastFailure, type CastResult, type JoinResult, type NetStats, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
@@ -104,7 +105,14 @@ interface Session {
   client: ClientBuild | null;
   /** Já foi recusada/mandada atualizar e vai fechar em {@link CLOSE_DELAY_MS}: as mensagens dela são ignoradas. */
   closing: boolean;
+  /** Ping de verdade (ms) medido pelo ping/pong do WebSocket desde o último resumo de rede ([INFRA-12]). */
+  readonly rttSamples: number[];
 }
+
+/** A cada quantos ms o servidor mede o ping de cada um (ping/pong do WebSocket com a hora dentro). */
+const RTT_PROBE_MS = 1000;
+/** A cada quantos ms vai para o log o resumo de rede de cada jogador na zona ([INFRA-12]). */
+const NET_REPORT_MS = 10_000;
 
 /** Como a autenticação aconteceu (só para o log). */
 type AuthKind = "cadastro" | "login" | "sessão";
@@ -149,6 +157,12 @@ export class GameServer {
   /** O laço de ticks está rodando ({@link startTimers}); `false` depois de parar. */
   private ticking: boolean = false;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** Medição de ping e resumo de rede por jogador ([INFRA-12]). */
+  private rttTimer: NodeJS.Timeout | null = null;
+  private netReportTimer: NodeJS.Timeout | null = null;
+  /** Atraso do laço de eventos do Node (servidor travado) e tick mais lento desde o último resumo ([INFRA-12]). */
+  private readonly loopDelay: IntervalHistogram = monitorEventLoopDelay({ resolution: 10 });
+  private slowestTickMs: number = 0;
   /** Versões publicadas do pacote do jogo por plataforma; versão nova → manda atualizar quem está na velha. */
   private readonly updates: UpdateWatcher;
 
@@ -211,6 +225,9 @@ export class GameServer {
     this.tickTimer = null;
     this.ticking = false;
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
+    if (this.rttTimer !== null) clearInterval(this.rttTimer);
+    if (this.netReportTimer !== null) clearInterval(this.netReportTimer);
+    this.loopDelay.disable();
     this.updates.stop();
     await Promise.all(Array.from(this.sessions, (session) => this.leaveZone(session)));
     for (const session of this.sessions) session.socket.terminate();
@@ -238,7 +255,9 @@ export class GameServer {
       if (now - nextAt > MAX_TICK_CATCHUP * tickMs) nextAt = now;
       let ran: number = 0;
       while (now >= nextAt && ran < MAX_TICK_CATCHUP) {
+        const started: number = performance.now();
         for (const zone of this.zones.values()) zone.tick();
+        this.slowestTickMs = Math.max(this.slowestTickMs, performance.now() - started);
         this.friendRequests.expire(Date.now());
         nextAt += tickMs;
         ran++;
@@ -261,6 +280,47 @@ export class GameServer {
         session.socket.ping();
       }
     }, this.options.heartbeatIntervalMs);
+
+    // Diagnóstico de rede ([INFRA-12]): ping com a hora dentro (o pong devolve) e, a cada 10 s, um resumo por jogador.
+    this.rttTimer = setInterval(() => {
+      const stamp: Buffer = Buffer.alloc(8);
+      stamp.writeDoubleBE(performance.now());
+      for (const session of this.sessions) {
+        if (session.zone !== null && session.socket.readyState === WebSocket.OPEN) session.socket.ping(stamp);
+      }
+    }, RTT_PROBE_MS);
+    this.rttTimer.unref();
+    this.loopDelay.enable();
+    this.netReportTimer = setInterval(() => this.logNetReport(), NET_REPORT_MS);
+    this.netReportTimer.unref();
+  }
+
+  /**
+   * Uma linha por jogador na zona: ping médio/pior, passos que chegaram, maior buraco entre eles, buracos de mais de
+   * 100 ms, ticks com rajada (2+ passos juntos), maior fila e passos jogados fora ([INFRA-12]).
+   */
+  private logNetReport(): void {
+    // O próprio servidor: se isto é baixo enquanto o ping sobe, quem trava é a rede/aparelho, não o servidor.
+    const loopMaxMs: number = this.loopDelay.max / 1e6;
+    const anyoneInZone: boolean = Array.from(this.sessions).some((session) => session.zone !== null);
+    if (anyoneInZone) {
+      this.log(`[servidor] pior atraso do laço ${loopMaxMs.toFixed(0)} ms · tick mais lento ${this.slowestTickMs.toFixed(1)} ms`);
+    }
+    this.loopDelay.reset();
+    this.slowestTickMs = 0;
+    for (const session of this.sessions) {
+      if (session.zone === null || session.account === null) continue;
+      const net: NetStats | undefined = session.zone.takeNetStats(session.account.playerId);
+      const rtt: number[] = session.rttSamples.splice(0);
+      if (net === undefined || (net.arrivals === 0 && rtt.length === 0)) continue;
+      const avg: number = rtt.length > 0 ? rtt.reduce((a, b) => a + b, 0) / rtt.length : -1;
+      const worst: number = rtt.length > 0 ? Math.max(...rtt) : -1;
+      this.log(
+        `[rede] ${session.account.username}: ping ${avg.toFixed(0)} ms (pior ${worst.toFixed(0)}) · ${net.arrivals} passos, ` +
+          `maior buraco ${net.maxGapMs.toFixed(0)} ms, ${net.gapsOver100} buracos >100 ms, ${net.bursts} rajadas, ` +
+          `fila máx ${net.maxQueue}, ${net.dropped} jogados fora`,
+      );
+    }
   }
 
   /**
@@ -297,12 +357,15 @@ export class GameServer {
       openedAt: Date.now(),
       dropReason: null,
       client: null,
+      rttSamples: [],
       closing: false,
     };
     this.sessions.add(session);
 
-    socket.on("pong", () => {
+    socket.on("pong", (data: Buffer) => {
       session.alive = true;
+      // Pong do medidor de ping (traz a hora em que o ping saiu); o do heartbeat vem vazio.
+      if (data.length === 8) session.rttSamples.push(performance.now() - data.readDoubleBE(0));
     });
     socket.on("message", (data: RawData, isBinary: boolean) => {
       const message: ClientMessage | null = isBinary ? null : parseClientMessage(data.toString());
