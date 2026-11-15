@@ -2,7 +2,9 @@ import assert from "assert";
 
 import {
   STARTING_PROGRESS,
+  addGold,
   addXp,
+  goldReward,
   monsterFactor,
   playerFactor,
   xpFactor,
@@ -82,7 +84,7 @@ function ticks(zone: Zone, count: number): void {
 
 describe("evolução (nível e XP)", () => {
   it("começa no nível 0; XP 2% acumulando, jogador +1% por nível, monstro 2% acumulando", () => {
-    assert.deepStrictEqual(STARTING_PROGRESS, { level: 0, xp: 0 });
+    assert.deepStrictEqual(STARTING_PROGRESS, { level: 0, xp: 0, gold: 0 });
     assert.strictEqual(xpFactor(0), 1);
     assert.ok(Math.abs(xpFactor(3) - 1.02 ** 3) < 1e-12);
     // Jogador: 1% da base por nível, sem acumular; monstro: 2% acumulando (e vida +20%).
@@ -111,30 +113,30 @@ describe("evolução (nível e XP)", () => {
   });
 
   it("addXp sobe de nível e passa a sobra adiante (1 casa); não há nível máximo", () => {
-    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 99.9), { level: 0, xp: 99.9 });
-    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 105.3), { level: 1, xp: 5.3 });
-    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 202), { level: 2, xp: 0 }); // 100 + 102
-    assert.ok(addXp({ level: 50, xp: 0 }, 1_000_000).level > 50);
+    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 99.9), { level: 0, xp: 99.9, gold: 0 });
+    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 105.3), { level: 1, xp: 5.3, gold: 0 });
+    assert.deepStrictEqual(addXp(STARTING_PROGRESS, 202), { level: 2, xp: 0, gold: 0 }); // 100 + 102
+    assert.ok(addXp({ level: 50, xp: 0, gold: 0 }, 1_000_000).level > 50);
     assert.deepStrictEqual(addXp(STARTING_PROGRESS, -50), STARTING_PROGRESS);
     // 5 zumbis de nível 1 (20 cada) = 100: sobe do 0 para o 1.
     let progress: Progress = STARTING_PROGRESS;
     for (let i = 0; i < 5; i++) progress = addXp(progress, xpReward(1));
-    assert.deepStrictEqual(progress, { level: 1, xp: 0 });
+    assert.deepStrictEqual(progress, { level: 1, xp: 0, gold: 0 });
   });
 
   it("readProgress: conta antiga/estragada vira nível 0; XP fora da faixa é limitada; nível alto vale", () => {
     assert.deepStrictEqual(readProgress(undefined), STARTING_PROGRESS);
     assert.deepStrictEqual(readProgress({ level: "3" }), STARTING_PROGRESS);
     assert.deepStrictEqual(readProgress({ level: -1, xp: 5 }), STARTING_PROGRESS);
-    assert.deepStrictEqual(readProgress({ level: 3, xp: 40.25 }), { level: 3, xp: 40.3 });
-    assert.deepStrictEqual(readProgress({ level: 0, xp: 999999 }), { level: 0, xp: 99.9 });
-    assert.deepStrictEqual(readProgress({ level: 999, xp: 10 }), { level: 999, xp: 10 });
+    assert.deepStrictEqual(readProgress({ level: 3, xp: 40.25, gold: 0 }), { level: 3, xp: 40.3, gold: 0 });
+    assert.deepStrictEqual(readProgress({ level: 0, xp: 999999, gold: 0 }), { level: 0, xp: 99.9, gold: 0 });
+    assert.deepStrictEqual(readProgress({ level: 999, xp: 10, gold: 0 }), { level: 999, xp: 10, gold: 0 });
   });
 
   it("o snapshot leva o nível de todos e a XP só no `me`; vida/mana máximas crescem com o nível", () => {
     const zone = zoneWith([]);
     const a = new Member("a");
-    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, new Map(), undefined, 0, { level: 10, xp: 12.5 });
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, new Map(), undefined, 0, { level: 10, xp: 12.5, gold: 0 });
     zone.tick();
     assert.strictEqual(a.me()["level"], 10);
     assert.strictEqual(a.me()["xp"], 12.5);
@@ -255,7 +257,7 @@ describe("zumbis", () => {
       died = a.events("death").some((e) => e["id"] === "zombie");
     }
     assert.ok(died);
-    assert.deepStrictEqual(a.saved, { level: 0, xp: 20 });
+    assert.deepStrictEqual(a.saved, { level: 0, xp: 20, gold: goldReward(1) });
     assert.strictEqual(a.me()["xp"], 20);
   });
 
@@ -274,8 +276,8 @@ describe("zumbis", () => {
       died = a.events("death").some((e) => e["id"] === "zombie");
     }
     assert.ok(died, "zumbi morreu");
-    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 2) }, "XP inteira + 10% do grupo");
-    assert.deepStrictEqual(b.saved, { level: 0, xp: groupXp(xpReward(1), 2) });
+    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 2), gold: goldReward(1) }, "XP inteira + 10% do grupo");
+    assert.deepStrictEqual(b.saved, { level: 0, xp: groupXp(xpReward(1), 2), gold: goldReward(1) });
   });
 
   it("quem curou quem lutava também ganha a XP; quem só estava perto não", () => {
@@ -296,8 +298,8 @@ describe("zumbis", () => {
       died = a.events("death").some((e) => e["id"] === "zombie");
     }
     assert.ok(died, "zumbi morreu");
-    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 2) });
-    assert.deepStrictEqual(healer.saved, { level: 0, xp: groupXp(xpReward(1), 2) }, "curou quem batia: ganhou");
+    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 2), gold: goldReward(1) });
+    assert.deepStrictEqual(healer.saved, { level: 0, xp: groupXp(xpReward(1), 2), gold: goldReward(1) }, "curou quem batia: ganhou");
     assert.strictEqual(idle.saved, null, "só estava perto: não ganhou");
   });
 
@@ -329,7 +331,7 @@ describe("zumbis", () => {
       died = b.events("death").some((e) => e["id"] === "zombie");
     }
     assert.ok(died, "b matou");
-    assert.deepStrictEqual(b.saved, { level: 0, xp: xpReward(1) });
+    assert.deepStrictEqual(b.saved, { level: 0, xp: xpReward(1), gold: goldReward(1) });
     assert.strictEqual(a.saved, null, "a lutou antes da desistência: não ganha");
   });
 
@@ -359,7 +361,7 @@ describe("zumbis", () => {
   it("subir de nível manda `level_up` para todos e aumenta vida/mana máximas", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
     const a = new Member("a");
-    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 90 });
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 90, gold: 0 });
     zone.setAttackTarget("a", "zombie");
     let levelUp: Record<string, unknown> | undefined;
     for (let i = 0; i < 60 && levelUp === undefined; i++) {
@@ -367,8 +369,26 @@ describe("zumbis", () => {
       levelUp = a.events("level_up")[0];
     }
     assert.deepStrictEqual(levelUp, { type: "level_up", id: "a", level: 1 });
-    assert.deepStrictEqual(a.saved, { level: 1, xp: 10 });
+    assert.deepStrictEqual(a.saved, { level: 1, xp: 10, gold: goldReward(1) });
     assert.strictEqual(a.field("a", "maxHp"), 101);
     assert.strictEqual(a.field("a", "maxMana"), 101);
+  });
+});
+
+describe("moedas ([JOGO-15])", () => {
+  it("monstro dá moedas pelo nível: 10 no nível 1, 2% a mais por nível, inteiro", () => {
+    assert.strictEqual(goldReward(0), 10);
+    assert.strictEqual(goldReward(1), 10);
+    assert.strictEqual(goldReward(10), 12);
+    assert.strictEqual(goldReward(50), 26);
+    assert.strictEqual(goldReward(100), 71);
+    assert.ok(Number.isInteger(goldReward(37)));
+  });
+
+  it("addGold soma inteiro e não tira; addXp mantém as moedas", () => {
+    const start = { level: 0, xp: 0, gold: 5 };
+    assert.deepStrictEqual(addGold(start, 10), { level: 0, xp: 0, gold: 15 });
+    assert.deepStrictEqual(addGold(start, -3), start);
+    assert.strictEqual(addXp(start, 150).gold, 5);
   });
 });

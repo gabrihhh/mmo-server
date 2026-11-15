@@ -32,9 +32,11 @@ import {
   type MoveState,
 } from "../sim/movement.js";
 import {
+  addGold,
   addXp,
   monsterFactor,
   playerFactor,
+  goldReward,
   groupXp,
   xpReward,
   xpToNextLevel,
@@ -108,7 +110,7 @@ export interface ZoneMember {
  * - `zombie`: monstro ([JOGO-13]). Parado em casa até um jogador chegar a `aggroRadius` m de casa (ou bater nele);
  *   aí anda até ele a `speed` m/s e bate com o ataque simples da arma `weapon`, usando também a habilidade `ability`
  *   da arma quando ela estiver pronta e o alvo no alcance dela. Quem ele ataca sai da tabela de ameaça ([JOGO-14]).
- *   Passou de `leashRadius` m de casa: desiste, volta andando (sem atacar) e enche a vida. Só ataca jogadores. Quem lutou contra ele ganha XP ({@link xpReward} do nível dele + {@link groupXp}).
+ *   Passou de `leashRadius` m de casa: desiste, volta andando (sem atacar) e enche a vida. Só ataca jogadores. Quem lutou contra ele ganha XP ({@link xpReward} do nível dele + {@link groupXp}) e moedas ({@link goldReward}).
  */
 export type NpcBehavior =
   | { readonly kind: "dummy" }
@@ -562,7 +564,7 @@ export class Zone {
       basicAttack: UNARMED_ATTACK,
       abilities: new Map(),
       look: fake.look,
-      progress: { level: fake.level, xp: 0 },
+      progress: { level: fake.level, xp: 0, gold: 0 },
       readyTick: new Map(),
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
@@ -1357,12 +1359,12 @@ export class Zone {
   }
 
   /**
-   * Dá `amount` de XP ao jogador ([JOGO-12]); subindo de nível, refaz vida/mana máximas e avisa todos (`level_up`).
-   * A XP em si só vai para ele (no `me` do snapshot): os outros veem o nível, não quanto falta.
-   * O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
+   * Dá `amount` de XP ([JOGO-12]) e `gold` moedas ([JOGO-15]) ao jogador; subindo de nível, refaz vida/mana máximas e
+   * avisa todos (`level_up`). XP e moedas só vão para ele (no `me` do snapshot): os outros veem o nível, não quanto
+   * falta nem o dinheiro. O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
    */
-  private grantXp(player: ZonePlayer, amount: number): void {
-    const progress: Progress = addXp(player.progress, amount);
+  private grantReward(player: ZonePlayer, amount: number, gold: number): void {
+    const progress: Progress = addGold(addXp(player.progress, amount), gold);
     player.progress = progress;
     if (progress.level !== player.level) {
       player.level = progress.level;
@@ -1889,7 +1891,9 @@ export class Zone {
         }
       }
       const reward: number = groupXp(xpReward(target.level), winners.size);
-      for (const player of winners) this.grantXp(player, reward);
+      // Moedas pelo nível do monstro, inteiras para cada um (sem bônus de grupo), [JOGO-15].
+      const gold: number = goldReward(target.level);
+      for (const player of winners) this.grantReward(player, reward, gold);
       target.contributors.clear();
     }
   }
@@ -1972,6 +1976,7 @@ export class Zone {
         level: player.progress.level,
         xp: player.progress.xp,
         xpNext: xpToNextLevel(player.progress.level),
+        gold: player.progress.gold,
       };
       player.member.send(
         `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},${shared},"me":${JSON.stringify(me)}}}`,

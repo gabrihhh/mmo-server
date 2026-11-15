@@ -18,7 +18,7 @@
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
  */
-export const PROTOCOL_VERSION = 18;
+export const PROTOCOL_VERSION = 19;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -44,8 +44,10 @@ export const ClientMessageType = {
   Input: "input",
   /** Veste um item da mochila (o do slot volta para a mochila). Payload: {@link EquipData}. */
   Equip: "equip",
-  /** Tira o item de um slot para a mochila. Payload: {@link UnequipData}. */
+  /** Tira o item de um slot para a mochila (no fim, ou na vaga onde foi solto). Payload: {@link UnequipData}. */
   Unequip: "unequip",
+  /** Organiza a mochila: troca o item de uma vaga com o de outra ([CLI-10]). Payload: {@link BagMoveData}. */
+  BagMove: "bag_move",
   /** Fixa (ou limpa, com `null`) o alvo do ataque simples; o servidor ataca sozinho quando em alcance. Payload: {@link AttackData}. */
   Attack: "attack",
   /** Lança uma habilidade (carta) vestida. Payload: {@link CastData}. Ver mmo-docs [JOGO-06]. */
@@ -347,6 +349,14 @@ export interface EquipData {
 /** Payload de `unequip`. */
 export interface UnequipData {
   readonly slot: EquipSlotName;
+  /** Vaga da mochila onde o item foi solto (arrastar, [CLI-10]); `null`/ausente = no fim. */
+  readonly index: number | null;
+}
+
+/** Payload de `bag_move`: posições (0 = primeira vaga) na mochila. */
+export interface BagMoveData {
+  readonly from: number;
+  readonly to: number;
 }
 
 /** Payload de `cast`. O que vai depende do tipo de mira da habilidade ([JOGO-06]). */
@@ -434,6 +444,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Input; readonly data: InputData }
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
+  | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
   | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData }
@@ -578,6 +589,8 @@ export interface OwnStatus {
   readonly level: number;
   readonly xp: number;
   readonly xpNext: number;
+  /** Moedas do personagem ([JOGO-15]); o cliente mostra no Inventário. ATENÇÃO: lido em network.gd (`me.gold`). */
+  readonly gold: number;
 }
 
 /** Jogador completo, como vai no `welcome` e no `player_joined`: posição + nome exibido + aparência. */
@@ -1004,8 +1017,20 @@ export function parseChooseBodyData(data: unknown): ChooseBodyData | null {
 
 export function parseUnequipData(data: unknown): UnequipData | null {
   if (!isRecord(data)) return null;
-  const { slot } = data;
-  return isSlotName(slot) ? { slot } : null;
+  const { slot, index } = data;
+  if (!isSlotName(slot)) return null;
+  if (index === undefined || index === null) return { slot, index: null };
+  return isBagIndex(index) ? { slot, index } : null;
+}
+
+/** Posição de vaga da mochila aceitável na rede (inteiro de 0 a 999; a regra do inventário confere o resto). */
+const isBagIndex = (value: unknown): value is number => isFiniteNumber(value) && Number.isInteger(value) && value >= 0 && value < 1000;
+
+/** Valida o payload de `bag_move`. */
+export function parseBagMoveData(data: unknown): BagMoveData | null {
+  if (!isRecord(data)) return null;
+  const { from, to } = data;
+  return isBagIndex(from) && isBagIndex(to) ? { from, to } : null;
 }
 
 /** Número finito ou ausente/null (→ null). `undefined` no retorno = inválido. */
@@ -1155,6 +1180,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Unequip: {
       const data = parseUnequipData(raw);
       return data === null ? null : { type: ClientMessageType.Unequip, data };
+    }
+    case ClientMessageType.BagMove: {
+      const data = parseBagMoveData(raw);
+      return data === null ? null : { type: ClientMessageType.BagMove, data };
     }
     case ClientMessageType.Attack: {
       const data = parseAttackData(raw);

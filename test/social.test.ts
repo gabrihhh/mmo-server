@@ -167,7 +167,7 @@ describe("atributos (inspect)", () => {
 
   it("jogador de verdade: o que veste agora e o nível dele", () => {
     const z: Zone = zone();
-    z.join(new Member("a"), undefined, UNARMED_ATTACK, new Map(), { hand: "knight_sword", head: null, chest: null, feet: null }, 0, { level: 10, xp: 0 });
+    z.join(new Member("a"), undefined, UNARMED_ATTACK, new Map(), { hand: "knight_sword", head: null, chest: null, feet: null }, 0, { level: 10, xp: 0, gold: 0 });
     const view = z.attributes("a");
     assert.strictEqual(view?.level, 10);
     assert.strictEqual(view?.equipped.hand?.itemId, "knight_sword");

@@ -40,7 +40,15 @@ describe("parseClientMessage", () => {
     });
     assert.deepStrictEqual(parseClientMessage('{"type":"unequip","data":{"slot":"feet"}}'), {
       type: ClientMessageType.Unequip,
-      data: { slot: "feet" },
+      data: { slot: "feet", index: null },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"unequip","data":{"slot":"feet","index":3}}'), {
+      type: ClientMessageType.Unequip,
+      data: { slot: "feet", index: 3 },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"bag_move","data":{"from":0,"to":4}}'), {
+      type: ClientMessageType.BagMove,
+      data: { from: 0, to: 4 },
     });
     assert.deepStrictEqual(parseClientMessage('{"type":"input","data":{"seq":7,"x":0.5,"z":-1}}'), {
       type: ClientMessageType.Input,
@@ -110,6 +118,9 @@ describe("parseClientMessage", () => {
       '{"type":"resume","data":{"version":4,"sessionToken":""}}',
       '{"type":"equip","data":{"uid":""}}',
       '{"type":"unequip","data":{"slot":"mochila"}}',
+      '{"type":"unequip","data":{"slot":"feet","index":-1}}',
+      '{"type":"bag_move","data":{"from":0}}',
+      '{"type":"bag_move","data":{"from":1.5,"to":2}}',
       '{"type":"cast","data":{"abilityId":""}}',
       '{"type":"cast","data":{"abilityId":"meteor","x":"1"}}',
       '{"type":"inspect","data":{}}',

@@ -3,7 +3,7 @@ import assert from "assert";
 import { GROUP_POSITIONS_EVERY_TICKS, GROUP_XP_RADIUS, Zone, type DummyConfig, type FakePlayerConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { GROUP_INVITE_TICKS } from "../src/zones/groups.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
-import { groupXp, xpReward, type Progress } from "../src/progression/level.js";
+import { goldReward, groupXp, xpReward, type Progress } from "../src/progression/level.js";
 import { GROUP_INVITE_SECONDS, GROUP_MAX_MEMBERS, GROUP_POSITIONS_HZ, type CastData } from "../src/net/protocol.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 
@@ -308,8 +308,8 @@ describe("grupo ([SOC-03])", () => {
     }
     assert.ok(died, "zumbi morreu");
     const reward: number = groupXp(xpReward(1), 2);
-    assert.deepStrictEqual(a.saved, { level: 0, xp: reward }, "quem bateu: XP + bônus de 2");
-    assert.deepStrictEqual(near.saved, { level: 0, xp: reward }, "membro perto: mesma XP, sem ter batido");
+    assert.deepStrictEqual(a.saved, { level: 0, xp: reward, gold: goldReward(1) }, "quem bateu: XP + bônus de 2");
+    assert.deepStrictEqual(near.saved, { level: 0, xp: reward, gold: goldReward(1) }, "membro perto: mesma XP, sem ter batido");
     assert.strictEqual(far.saved, null, "membro longe: nada");
     assert.strictEqual(outsider.saved, null, "de fora do grupo: nada");
   });

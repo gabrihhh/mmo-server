@@ -12,7 +12,7 @@ import {
   ThreatTable,
   chooseThreatTarget,
 } from "../src/combat/threat.js";
-import { groupXp, xpReward, type Progress } from "../src/progression/level.js";
+import { goldReward, groupXp, xpReward, type Progress } from "../src/progression/level.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
 
@@ -324,7 +324,7 @@ describe("ameaça (aggro) dos monstros", () => {
     castAndFinish(zone, "k", cast("challenge"));
     assert.strictEqual(zone.npcTargetOf("z"), "k");
     castAndFinish(zone, "a", cast("bolt", { targetId: "z" })); // 18 > 14 × 1,2 × 1,02: mata
-    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 1) }, "só quem bateu, sem bônus");
+    assert.deepStrictEqual(a.saved, { level: 0, xp: groupXp(xpReward(1), 1), gold: goldReward(1) }, "só quem bateu, sem bônus");
     assert.strictEqual(near1.saved, null, "ameaça de percepção não dá XP");
     assert.strictEqual(knight.saved, null, "provocar não é bater nem curar: sem XP (fora de grupo)");
   });

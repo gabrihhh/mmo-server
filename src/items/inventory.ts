@@ -93,12 +93,38 @@ export function equip(inventory: Inventory, uid: string): InventoryResult {
   return { ok: true, inventory: { ...inventory, equipped: { ...inventory.equipped, [def.slot]: stack }, bag } };
 }
 
-/** Tira o item do slot e põe no fim da mochila. `slot_empty` se não há nada; `bag_full` se não cabe. */
-export function unequip(inventory: Inventory, slot: EquipSlot): InventoryResult {
+/**
+ * Tira o item do slot e põe na mochila: na posição `index` (arrastado para uma vaga, [CLI-10]; os de depois andam uma
+ * para a frente) ou, sem `index` / além do fim, no fim. `slot_empty` se não há nada; `bag_full` se não cabe.
+ */
+export function unequip(inventory: Inventory, slot: EquipSlot, index: number | null = null): InventoryResult {
   const current: ItemStack | null = inventory.equipped[slot];
   if (current === null) return { ok: false, reason: "slot_empty" };
   if (inventory.bag.length >= BAG_CAPACITY) return { ok: false, reason: "bag_full" };
-  return { ok: true, inventory: { ...inventory, equipped: { ...inventory.equipped, [slot]: null }, bag: [...inventory.bag, current] } };
+  const bag: ItemStack[] = [...inventory.bag];
+  const at: number = index === null ? bag.length : Math.min(Math.max(0, Math.floor(index)), bag.length);
+  bag.splice(at, 0, current);
+  return { ok: true, inventory: { ...inventory, equipped: { ...inventory.equipped, [slot]: null }, bag } };
+}
+
+/**
+ * Organiza a mochila (arrastar um item para outra vaga, [CLI-10]): o item da posição `from` troca de lugar com o da
+ * posição `to`; `to` numa vaga livre (além do último item) leva o item para o fim. `item_not_found` se `from` não tem
+ * item. Mesma posição = nada muda (aceito).
+ */
+export function moveInBag(inventory: Inventory, from: number, to: number): InventoryResult {
+  const stack: ItemStack | undefined = Number.isInteger(from) ? inventory.bag[from] : undefined;
+  if (stack === undefined || !Number.isInteger(to) || to < 0) return { ok: false, reason: "item_not_found" };
+  const bag: ItemStack[] = [...inventory.bag];
+  const other: ItemStack | undefined = bag[to];
+  if (other === undefined) {
+    bag.splice(from, 1);
+    bag.push(stack);
+  } else {
+    bag[from] = other;
+    bag[to] = stack;
+  }
+  return { ok: true, inventory: { ...inventory, bag } };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { BAG_CAPACITY, equip, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
+import { BAG_CAPACITY, equip, moveInBag, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
 import {
   ABILITIES_PER_SLOT,
   ASSASSIN_SET,
@@ -97,6 +97,25 @@ describe("catálogo e inventário", () => {
 
     const full: Inventory = { ...inv, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `u${i}`, itemId: "training_staff" })) };
     assert.deepStrictEqual(unequip(full, "feet"), { ok: false, reason: "bag_full" });
+  });
+
+  it("arrastar: unequip na vaga solta e bag_move troca de lugar ([CLI-10])", () => {
+    const inv: Inventory = { ...swordAndStaff(), bag: [{ uid: "a", itemId: "training_staff" }, { uid: "b", itemId: "arcane_staff" }] };
+    const off = unequip(inv, "head", 1);
+    assert.ok(off.ok);
+    assert.deepStrictEqual(off.inventory.bag.map((s) => s.uid), ["a", "h", "b"], "entra na vaga 1, os outros andam");
+    const far = unequip(inv, "head", 99);
+    assert.ok(far.ok);
+    assert.deepStrictEqual(far.inventory.bag.map((s) => s.uid), ["a", "b", "h"], "além do fim = no fim");
+
+    const swapped = moveInBag(inv, 0, 1);
+    assert.ok(swapped.ok);
+    assert.deepStrictEqual(swapped.inventory.bag.map((s) => s.uid), ["b", "a"]);
+    const toEmpty = moveInBag({ ...inv, bag: [...inv.bag, { uid: "c", itemId: "training_hood" }] }, 0, 20);
+    assert.ok(toEmpty.ok);
+    assert.deepStrictEqual(toEmpty.inventory.bag.map((s) => s.uid), ["b", "c", "a"], "vaga livre = vai para o fim");
+    assert.deepStrictEqual(moveInBag(inv, 5, 0), { ok: false, reason: "item_not_found" });
+    assert.deepStrictEqual(moveInBag(inv, 0, -1), { ok: false, reason: "item_not_found" });
   });
 
   it("readInventory: sem dado → inicial; item desconhecido some; slot errado vai para a mochila", () => {

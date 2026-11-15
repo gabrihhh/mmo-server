@@ -13,6 +13,8 @@
  * - **bônus de grupo**: cada jogador a mais na luta dá +10% de XP a todos ({@link groupXp}; 2026-11-14). Contam (e
  *   ganham) também os membros do grupo de quem lutou que estão a até 45 m do monstro (`Zone.ts`, mmo-docs [SOC-03]).
  * XP é guardada com 1 casa decimal (20,2), para o 1% contar desde os níveis baixos.
+ * **Moedas** (2026-11-14, [JOGO-15]): o dinheiro do personagem fica junto do progresso; matar um monstro dá
+ * {@link goldReward} do nível dele a cada um que ganha a XP (não divide, sem bônus de grupo).
  * **Sem nível máximo** (decisão 2026-11-13: o jogo ainda não definiu se terá um).
  */
 
@@ -46,16 +48,24 @@ export const BASE_XP_REWARD = 20;
  */
 export const GROUP_XP_BONUS = 0.1;
 
-/** Nível e XP guardados na conta. */
+/** Moedas que um monstro de nível 1 dá (a cada participante). Provisório: a economia ainda não foi decidida. */
+export const BASE_GOLD_REWARD = 10;
+
+/** Crescimento das moedas do monstro por nível (2%, acumulando: o mesmo ritmo da XP e da força dele). */
+export const GOLD_GROWTH = 1.02;
+
+/** Nível, XP e moedas guardados na conta. */
 export interface Progress {
   /** Nível atual ({@link STARTING_LEVEL} ou mais; sem teto). */
   readonly level: number;
   /** XP juntada DENTRO do nível atual (0 até menos que {@link xpToNextLevel}(level)), 1 casa decimal; zera ao subir. */
   readonly xp: number;
+  /** Moedas (dinheiro) do personagem: inteiro, 0 ou mais ([JOGO-15]). */
+  readonly gold: number;
 }
 
-/** Personagem novo: nível 0, sem XP. */
-export const STARTING_PROGRESS: Progress = { level: STARTING_LEVEL, xp: 0 };
+/** Personagem novo: nível 0, sem XP, sem moedas. */
+export const STARTING_PROGRESS: Progress = { level: STARTING_LEVEL, xp: 0, gold: 0 };
 
 /** Arredonda a 1 casa decimal (XP guardada e enviada assim). */
 const round1 = (value: number): number => Math.round(value * 10) / 10;
@@ -97,7 +107,20 @@ export function groupXp(reward: number, players: number): number {
 }
 
 /**
- * Soma `amount` de XP, subindo quantos níveis couberem (a sobra passa para o nível seguinte).
+ * Moedas que um monstro de nível `level` dá a cada participante: 10 no nível 1, × 1,02 por nível acima, arredondado
+ * para inteiro (nível 10 = 12; nível 50 = 26; nível 100 = 71). [JOGO-15]
+ */
+export function goldReward(level: number): number {
+  return Math.max(1, Math.round(BASE_GOLD_REWARD * GOLD_GROWTH ** (Math.max(1, level) - 1)));
+}
+
+/** Soma `amount` moedas (inteiro, nunca negativo). */
+export function addGold(progress: Progress, amount: number): Progress {
+  return { ...progress, gold: progress.gold + Math.max(0, Math.floor(amount)) };
+}
+
+/**
+ * Soma `amount` de XP, subindo quantos níveis couberem (a sobra passa para o nível seguinte). As moedas não mudam.
  */
 export function addXp(progress: Progress, amount: number): Progress {
   let level: number = progress.level;
@@ -106,7 +129,7 @@ export function addXp(progress: Progress, amount: number): Progress {
     xp = round1(xp - xpToNextLevel(level));
     level += 1;
   }
-  return { level, xp };
+  return { level, xp, gold: progress.gold };
 }
 
 /** Lê o progresso guardado no banco; dado ausente/estragado (conta antiga) vira {@link STARTING_PROGRESS}. */
@@ -114,8 +137,11 @@ export function readProgress(raw: unknown): Progress {
   if (typeof raw !== "object" || raw === null) return STARTING_PROGRESS;
   const level: unknown = Reflect.get(raw, "level");
   const xp: unknown = Reflect.get(raw, "xp");
+  const gold: unknown = Reflect.get(raw, "gold");
   if (typeof level !== "number" || !Number.isSafeInteger(level) || level < STARTING_LEVEL) return STARTING_PROGRESS;
   const safeLevel: number = level;
   const safeXp: number = typeof xp === "number" && Number.isFinite(xp) ? round1(xp) : 0;
-  return { level: safeLevel, xp: Math.min(Math.max(0, safeXp), round1(xpToNextLevel(safeLevel) - 0.1)) };
+  // Moedas: conta antiga (sem o campo) ou valor estragado = 0.
+  const safeGold: number = typeof gold === "number" && Number.isSafeInteger(gold) && gold > 0 ? gold : 0;
+  return { level: safeLevel, xp: Math.min(Math.max(0, safeXp), round1(xpToNextLevel(safeLevel) - 0.1)), gold: safeGold };
 }
