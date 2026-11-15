@@ -441,8 +441,8 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
   },
   assassin_vest: {
     id: "assassin_vest",
-    name: "Colete sombrio",
-    description: "Colete de couro negro com faixa roxa.",
+    name: "Casaco sombrio",
+    description: "Casaco longo negro, do pescoço à canela, com faixa roxa.",
     set: "Assassino",
     slot: "chest",
     bonusHp: 0,
