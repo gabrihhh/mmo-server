@@ -14,7 +14,7 @@ import {
   type AbilityDef,
 } from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
-import { TICK_RATE_HZ } from "../src/sim/movement.js";
+import { TICK_RATE_HZ, quantize } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
 import { SnapshotView } from "./helpers.js";
 
@@ -203,8 +203,8 @@ describe("habilidades (cast)", () => {
     finish(z, fireball);
     assert.ok(a.events.some((e) => e["type"] === "projectile" && e["ability"] === "fireball" && e["dirZ"] === -1), "saiu o projétil");
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP, "ainda voando: sem dano");
-    // Encosta no corpo a 5 - 0,4 - 0,6 = 4 m: 4 / 14 m/s ≈ 0,29 s ≈ 6 ticks.
-    for (let i = 0; i < 6; i++) z.tick();
+    // Encosta no corpo a 5 - 0,4 - 0,6 = 4 m: 4 / 14 m/s ≈ 0,29 s (9 ticks a 30 Hz).
+    for (let i = 0; i < Math.ceil((4 / fireball.projectileSpeed) * TICK_RATE_HZ); i++) z.tick();
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP - fireball.damage);
     const end = a.events.find((e) => e["type"] === "projectile_end");
     assert.ok(end && typeof end["z"] === "number" && Math.abs(end["z"] + 4) < 1e-6, "acaba onde encostou (z = -4)");
@@ -226,8 +226,8 @@ describe("habilidades (cast)", () => {
     const fireball: AbilityDef = def("training_staff", "fireball");
     z.castAbility("a", cast("fireball", { x: 0, z: -1 }));
     finish(z, fireball);
-    // b anda para o lado (5 m/s) durante o voo (~0,64 s até chegar perto dele): sai do caminho.
-    for (let seq = 1; seq <= 20; seq++) {
+    // b anda para o lado (5 m/s) durante o voo (~0,64 s até chegar perto dele): sai do caminho (1 s andando).
+    for (let seq = 1; seq <= TICK_RATE_HZ; seq++) {
       z.queueInput("b", { seq, x: 1, z: 0 });
       z.tick();
     }
@@ -265,8 +265,8 @@ describe("habilidades (cast)", () => {
     assert.strictEqual(zone.getSnapshot("a")?.shield, shield.shield);
 
     zone.setAttackTarget("b", "a");
-    zone.tick();
-    zone.tick();
+    // Golpe de 0,05 s: sai em poucos ticks (quantos depende da taxa de ticks).
+    for (let i = 0; i < 5 && !a.events.some((e) => e["type"] === "damage" && e["target"] === "a"); i++) zone.tick();
     const hit = a.events.find((e) => e["type"] === "damage" && e["target"] === "a");
     assert.ok(hit, "levou o golpe");
     assert.strictEqual(hit["absorbed"], shield.shield);
@@ -290,20 +290,23 @@ describe("habilidades (cast)", () => {
     z.queueInput("a", { seq: 1, x: 1, z: 0 });
     assert.deepStrictEqual(z.castAbility("a", cast("dash", { x: 0, z: -1, seq: 2 })), { ok: true }, "enfileirado");
     z.tick(); // seq 1 (passo) e 2 (começa a Investida, sem mover)
-    const step: number = 5 * 0.05;
+    const step: number = quantize(5 / TICK_RATE_HZ);
     assert.ok(Math.abs((z.getSnapshot("a")?.z ?? NaN) - 0) < 1e-9, "o comando em si não move");
     let seq = 2;
+    let expectedZ: number = 0;
     for (let i = 0; i < steps; i++) {
       z.queueInput("a", { seq: ++seq, x: 1, z: 0 }); // joystick para o lado: ignorado durante a Investida
       z.tick();
+      // Cada passo anda o trecho e arredonda ao mm (como a simulação).
+      expectedZ = quantize(expectedZ - dash.dashDistance / steps);
       const partial = z.getSnapshot("a");
-      assert.ok(partial && Math.abs(partial.z - -(dash.dashDistance * (i + 1)) / steps) < 1e-9, `passo ${i + 1}: z ${partial?.z}`);
+      assert.ok(partial && Math.abs(partial.z - expectedZ) < 1e-9, `passo ${i + 1}: z ${partial?.z}`);
     }
     z.queueInput("a", { seq: ++seq, x: 1, z: 0 }); // acabou: volta a andar normal
     z.tick();
     const snap = z.getSnapshot("a");
     assert.ok(snap);
-    assert.ok(Math.abs(snap.x - 2 * step) < 1e-9 && Math.abs(snap.z - -dash.dashDistance) < 1e-9, `posição ${snap.x}, ${snap.z}`);
+    assert.ok(Math.abs(snap.x - quantize(2 * step)) < 1e-9 && Math.abs(snap.z - -dash.dashDistance) < 0.01, `posição ${snap.x}, ${snap.z}`);
   });
 
   it("Disparada: dobra a velocidade dos próximos passos (contados em passos) e acaba", () => {
@@ -317,10 +320,11 @@ describe("habilidades (cast)", () => {
       z.tick();
     }
     const fast: number = z.getSnapshot("a")?.x ?? NaN;
-    assert.ok(Math.abs(fast - steps * 2 * 5 * 0.05) < 1e-6, `rápido: ${fast}`);
+    // Arredonda ao mm a cada passo: tolerância de 1 mm por passo.
+    assert.ok(Math.abs(fast - steps * 2 * (5 / TICK_RATE_HZ)) < steps * 0.001, `rápido: ${fast}`);
     z.queueInput("a", { seq: ++seq, x: 1, z: 0 });
     z.tick();
-    assert.ok(Math.abs((z.getSnapshot("a")?.x ?? NaN) - (fast + 5 * 0.05)) < 1e-6, "volta ao normal");
+    assert.ok(Math.abs((z.getSnapshot("a")?.x ?? NaN) - (fast + 5 / TICK_RATE_HZ)) < 0.001, "volta ao normal");
     assert.strictEqual(z.getSnapshot("a")?.speed, 1);
   });
 
@@ -438,12 +442,12 @@ describe("habilidades (cast)", () => {
     // b apanha antes, de a com o soco.
     z.setLoadout("a", UNARMED_ATTACK, ALL);
     z.setAttackTarget("a", "b");
-    for (let i = 0; i < 40; i++) z.tick();
+    for (let i = 0; i < 2 * TICK_RATE_HZ; i++) z.tick();
     z.setLoadout("a", tome.basicAttack, ALL);
     assert.strictEqual(z.setAttackTarget("a", "b"), "ok");
     assert.strictEqual(z.setAttackTarget("a", "a"), "invalid_target", "você mesmo não");
     z.setAttackTarget("a", "b");
-    for (let i = 0; i < 40; i++) z.tick();
+    for (let i = 0; i < 2 * TICK_RATE_HZ; i++) z.tick();
     assert.ok(a.events.some((e) => e["type"] === "heal" && e["target"] === "b" && e["ability"] === tome.basicAttack?.id));
 
     const withDummy = setup();

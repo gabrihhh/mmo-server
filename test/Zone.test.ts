@@ -3,7 +3,7 @@ import assert from "assert";
 import { MAX_INPUT_CREDIT, MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, NO_LOOK, Zone, type ZoneMember } from "../src/zones/Zone.js";
 import { UNARMED_ATTACK } from "../src/items/catalog.js";
 import type { Look } from "../src/net/protocol.js";
-import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
+import { MOVE_SPEED, TICK_SECONDS, quantize } from "../src/sim/movement.js";
 
 /** Membro falso que guarda as mensagens recebidas, já decodificadas. */
 class FakeMember implements ZoneMember {
@@ -28,6 +28,9 @@ const newZone = (maxPlayers: number = 50, pvp: boolean = true): Zone =>
 
 /** Vida cheia de jogador, como sai no snapshot. */
 /** Campos de combate de um jogador recém-chegado (vida e mana cheias). */
+/** Um passo (1 tick andando) em metros, já arredondado ao mm como a simulação. */
+const STEP_M: number = quantize(MOVE_SPEED * TICK_SECONDS);
+
 const FULL = { hp: 100, maxHp: 100, level: 0, dead: false, shield: 0, guard: 0, speed: 1, mana: 100, maxMana: 100 };
 
 describe("Zone", () => {
@@ -83,10 +86,10 @@ describe("Zone", () => {
     zone.queueInput("a", { seq: 1, x: 1, z: 0 });
     zone.tick();
 
-    // 5 m/s * 0,05 s = 0,25 m para +X; virado para +X => rotY = atan2(-1, -0) = -PI/2 (vai com 2 casas, [INFRA-11]).
+    // 5 m/s × 1 tick (1/30 s) = 0,167 m para +X (mm); virado para +X => rotY = atan2(-1, -0) = -PI/2 (2 casas, [INFRA-11]).
     assert.deepStrictEqual(zone.getSnapshot("a"), {
       id: "a",
-      x: MOVE_SPEED * TICK_SECONDS,
+      x: STEP_M,
       y: 0,
       z: 0,
       rotY: Math.round(Math.atan2(-1, -0) * 100) / 100,
@@ -98,13 +101,13 @@ describe("Zone", () => {
     assert.strictEqual(lastSnapshot(b).players.length, 2);
 
     zone.tick();
-    assert.strictEqual(zone.getSnapshot("a")?.x, MOVE_SPEED * TICK_SECONDS, "sem input, fica parado");
+    assert.strictEqual(zone.getSnapshot("a")?.x, STEP_M, "sem input, fica parado");
   });
 
   it("anti-speedhack: normaliza direção > 1; rajada sem ter travado não acelera; fila limitada", () => {
     const zone = newZone();
     zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
-    const step: number = MOVE_SPEED * TICK_SECONDS;
+    const step: number = STEP_M;
 
     zone.queueInput("a", { seq: 1, x: 1000, z: 0 });
     zone.tick();
@@ -113,21 +116,21 @@ describe("Zone", () => {
     // Andando a cada tick não sobra crédito: mandar 10 de uma vez não faz andar mais que 1 por tick.
     for (let seq = 2; seq <= 11; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
     zone.tick();
-    assert.strictEqual(zone.getSnapshot("a")?.x, 2 * step, "sem crédito acumulado: 1 por tick");
+    assert.strictEqual(zone.getSnapshot("a")?.x, quantizeSteps(2, step), "sem crédito acumulado: 1 por tick");
 
     // Fila de no máximo MAX_INPUT_QUEUE: o excesso (os mais antigos) sai.
     const flood = newZone();
     flood.join(new FakeMember("b"), { x: 0, y: 0, z: 0, rotY: 0 });
     for (let seq = 1; seq <= MAX_INPUT_QUEUE + 10; seq++) flood.queueInput("b", { seq, x: 1, z: 0 });
     for (let i = 0; i < 60; i++) flood.tick();
-    assert.ok(Math.abs((flood.getSnapshot("b")?.x ?? NaN) - MAX_INPUT_QUEUE * step) < 1e-9, "fila limitada");
+    assert.ok(Math.abs((flood.getSnapshot("b")?.x ?? NaN) - quantizeSteps(MAX_INPUT_QUEUE, step)) < 1e-9, "fila limitada");
   });
 
   it("rede que segura os pacotes e solta em rajada: aplica todos (sem puxão para trás), até MAX_INPUTS_PER_TICK por tick", () => {
     const zone = newZone();
     zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
-    const step: number = MOVE_SPEED * TICK_SECONDS;
-    // 400 ms sem chegar nada (8 ticks): o crédito acumula.
+    const step: number = STEP_M;
+    // 8 ticks sem chegar nada (~270 ms): o crédito acumula.
     for (let i = 0; i < 8; i++) zone.tick();
     for (let seq = 1; seq <= 8; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
     zone.tick();
@@ -189,9 +192,9 @@ describe("Zone", () => {
   });
 });
 
-/** Posição depois de [count] passos de [step] m em X (somando como a simulação: arredonda ao cm a cada passo). */
+/** Posição depois de [count] passos de [step] m em X (somando como a simulação: arredonda ao mm a cada passo). */
 function quantizeSteps(count: number, step: number): number {
   let x: number = 0;
-  for (let i = 0; i < count; i++) x = Math.floor((x + step) * 100 + 0.5) / 100;
+  for (let i = 0; i < count; i++) x = quantize(x + step);
   return x;
 }

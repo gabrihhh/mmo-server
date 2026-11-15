@@ -166,8 +166,8 @@ describe("combate (ataque simples)", () => {
     const hit: AbilityDef = { ...SWORD, damage: DUMMY_MAX_HP, cooldown: 0.05, castTime: 0.05 };
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, hit);
     z.setAttackTarget("a", "dummy");
-    z.tick();
-    z.tick();
+    // Golpe de 0,05 s: sai em poucos ticks (quantos depende da taxa de ticks).
+    for (let i = 0; i < 5 && !a.events().some((e) => e["type"] === "death" && e["id"] === "dummy"); i++) z.tick();
     assert.ok(a.events().some((e) => e["type"] === "death" && e["id"] === "dummy" && e["killer"] === "a"));
     assert.strictEqual(z.setAttackTarget("a", "dummy"), "invalid_target", "morto não é alvo");
     for (let i = 0; i < DUMMY_RESPAWN_SECONDS * TICK_RATE_HZ; i++) z.tick();
@@ -197,8 +197,7 @@ describe("combate (ataque simples)", () => {
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, lethal);
     z.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, SWORD);
     z.setAttackTarget("a", "b");
-    z.tick();
-    z.tick();
+    for (let i = 0; i < 5 && z.getSnapshot("b")?.dead !== true; i++) z.tick();
     assert.strictEqual(z.getSnapshot("b")?.dead, true);
     z.queueInput("b", { seq: 1, x: 1, z: 0 });
     z.tick();

@@ -15,15 +15,15 @@ describe("stepMovement (simulação compartilhada)", () => {
     assert.deepStrictEqual(s, { x: 0, y: 0, z: -0.25, rotY: Math.atan2(-0, 1) });
   });
 
-  it("diagonal com comprimento > 1 é normalizada (e arredondada ao centímetro)", () => {
+  it("diagonal com comprimento > 1 é normalizada (e arredondada ao milímetro)", () => {
     const s: MoveState = stepMovement(origin, { x: 1, z: 1 }, 0.05, params);
-    // 0,25 / √2 = 0,1768 m → 0,18 m.
-    assert.deepStrictEqual([s.x, s.z], [0.18, 0.18]);
+    // 0,25 / √2 = 0,17678 m → 0,177 m.
+    assert.deepStrictEqual([s.x, s.z], [0.177, 0.177]);
   });
 
-  it("quantize: centímetro com a conta floor(v × 100 + 0,5) (igual no GDScript), também nos negativos", () => {
-    assert.deepStrictEqual([quantize(0.125), quantize(-0.125), quantize(-0.124), quantize(1.004), quantize(-2.5)], [0.13, -0.12, -0.12, 1, -2.5]);
-    // Andar muitos passos não acumula erro além do centímetro: cada passo cai na grade.
+  it("quantize: milímetro com a conta floor(v × 1000 + 0,5) (igual no GDScript), também nos negativos", () => {
+    assert.deepStrictEqual([quantize(0.0125), quantize(-0.0125), quantize(-0.0124), quantize(1.0004), quantize(-2.5)], [0.013, -0.012, -0.012, 1, -2.5]);
+    // Andar muitos passos não acumula erro além do milímetro: cada passo cai na grade.
     let s: MoveState = origin;
     for (let i = 0; i < 1000; i++) s = stepMovement(s, { x: 0.3, z: -0.7 }, 0.05, params);
     assert.strictEqual(quantize(s.x), s.x);

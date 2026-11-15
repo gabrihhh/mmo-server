@@ -3,6 +3,7 @@ import assert from "assert";
 import { MAX_VIEW_PLAYERS, VIEW_RADIUS, Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { SnapshotView } from "./helpers.js";
 import { UNARMED_ATTACK } from "../src/items/catalog.js";
+import { TICK_RATE_HZ, quantize } from "../src/sim/movement.js";
 
 /** Membro falso: guarda os ids de jogadores e NPCs na vista (montada dos snapshots por diferença, como o cliente). */
 class Member implements ZoneMember {
@@ -75,7 +76,7 @@ describe("área de interesse do snapshot", () => {
     assert.deepStrictEqual(idle?.["me"], {}, "me sem mudança");
     zone.queueInput("b", { seq: 1, x: 1, z: 0 });
     zone.tick();
-    assert.deepStrictEqual(raw.at(-1)?.["players"], [{ id: "b", x: 3.25, rotY: -1.57 }], "só o que mudou de b");
+    assert.deepStrictEqual(raw.at(-1)?.["players"], [{ id: "b", x: quantize(3 + 5 / TICK_RATE_HZ), rotY: -1.57 }], "só o que mudou de b");
     // Antes (versão 21) eram ~700 bytes com os dois jogadores e o boneco inteiros.
     assert.ok((a.sizes.at(-1) ?? 0) < 160, `snapshot pequeno (${a.sizes.at(-1)} bytes)`);
   });

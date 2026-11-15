@@ -10,7 +10,7 @@
  */
 
 /** Ticks de simulação por segundo (servidor e cliente). */
-export const TICK_RATE_HZ = 20;
+export const TICK_RATE_HZ = 30;
 
 /** Duração de um tick, em segundos. */
 export const TICK_SECONDS: number = 1 / TICK_RATE_HZ;
@@ -22,14 +22,16 @@ export const MOVE_SPEED = 5;
 export const MIN_INPUT_LENGTH = 0.01;
 
 /**
- * Posições ficam em **centímetros** ({@link POSITION_STEPS} passos por metro): cada passo da simulação arredonda X e Z
- * com {@link quantize}. Erro máximo de 0,5 cm (menos de meio pixel na tela), e o número vai curto na rede (fase 1 de
- * desempenho, [INFRA-11]). Servidor e cliente arredondam igual, então a previsão continua batendo exato.
+ * Posições ficam em **milímetros** ({@link POSITION_STEPS} passos por metro): cada passo da simulação arredonda X e Z
+ * com {@link quantize}. O número vai curto na rede (fase 1 de desempenho, [INFRA-11]) e servidor e cliente arredondam
+ * igual, então a previsão continua batendo exato.
+ * > mudança (2026-11-15): era centímetro; a 30 Hz o passo tem 16,67 cm e virava 17 (andava 2% mais rápido, e
+ * > diferente em cada direção). Em mm o erro é desprezível.
  */
-export const POSITION_STEPS = 100;
+export const POSITION_STEPS = 1000;
 
 /**
- * Arredonda [value] (m) ao centímetro. `floor(v × 100 + 0,5)` e não `Math.round`: o `round` do GDScript arredonda o
+ * Arredonda [value] (m) ao milímetro. `floor(v × 1000 + 0,5)` e não `Math.round`: o `round` do GDScript arredonda o
  * ,5 negativo para longe do zero e o do JS para cima — com `floor` os dois dão o mesmo double.
  * ATENÇÃO: espelho em mmo-client/scripts/sim/movement.gd (`quantize`).
  */
@@ -61,7 +63,7 @@ export interface MoveParams {
 
 /**
  * Aplica UM tick de input: anda `speed * dt` na direção pedida (comprimento ≤ 1), limita às bordas
- * e vira o personagem para a direção do movimento. X e Z saem arredondados ao centímetro ({@link quantize}).
+ * e vira o personagem para a direção do movimento. X e Z saem arredondados ao milímetro ({@link quantize}).
  */
 export function stepMovement(state: MoveState, input: MoveInput, dt: number, params: MoveParams): MoveState {
   let dx: number = input.x;

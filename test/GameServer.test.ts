@@ -337,7 +337,8 @@ describe("GameServer", () => {
       a.client.send("input", { seq: 1, x: 1, z: 0 });
       const acked: ReceivedMessage = await a.client.nextMatching("snapshot", (m) => m.data["ack"] === 1);
       const after: unknown = entryOf(acked.data["players"], a.playerId)?.["x"];
-      assert.ok(typeof after === "number" && Math.abs(after - (startX + MOVE_SPEED * TICK_SECONDS)) < 1e-9);
+      // Posição em mm (a simulação arredonda): até 1 mm de diferença da conta exata.
+      assert.ok(typeof after === "number" && Math.abs(after - (startX + MOVE_SPEED * TICK_SECONDS)) <= 0.0006);
 
       const seen: ReceivedMessage = await b.client.nextMatching(
         "snapshot",

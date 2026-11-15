@@ -75,10 +75,10 @@ import {
  * A zona não conhece WebSocket, o que permite testá-la sem rede.
  */
 /**
- * Ticks depois do último passo em que o ataque simples ainda não começa um golpe (20 Hz → 0,1 s): o input do
- * joystick pode chegar com buracos de 1 tick sem o jogador ter parado de verdade.
+ * Ticks depois do último passo em que o ataque simples ainda não começa um golpe (0,1 s; a 30 Hz, 3 ticks): o input
+ * do joystick pode chegar com buracos de 1 tick sem o jogador ter parado de verdade.
  */
-const ATTACK_MOVE_GRACE_TICKS = 2;
+const ATTACK_MOVE_GRACE_TICKS: number = Math.max(2, Math.round(0.1 * TICK_RATE_HZ));
 
 /**
  * `ability` do evento `heal` do roubo de vida ([JOGO-16]): não é uma carta, o cliente só mostra o número verde.
@@ -243,11 +243,11 @@ export const MAX_INPUTS_PER_TICK = 4;
 
 /**
  * Crédito de comandos (anti-speedhack sem punir rede ruim, [INFRA-09]): cada tick dá 1 crédito ao jogador, guardado
- * até este máximo (10 = meio segundo); cada PASSO aplicado gasta 1 (habilidade na fila não gasta: tem recarga). Assim, depois de a rede segurar os pacotes por
+ * até este máximo (meio segundo de ticks: 15 a 30 Hz); cada PASSO aplicado gasta 1 (habilidade na fila não gasta: tem recarga). Assim, depois de a rede segurar os pacotes por
  * até meio segundo, a rajada é aplicada inteira (sem o "puxão para trás"), mas na média ninguém passa de 1 comando por
  * tick: só dá para gastar o que acumulou parado/travado.
  */
-export const MAX_INPUT_CREDIT = 10;
+export const MAX_INPUT_CREDIT: number = Math.round(0.5 * TICK_RATE_HZ);
 
 /**
  * Área de interesse (m): cada jogador recebe no snapshot só os jogadores e NPCs a esta distância dele (mais ele
@@ -262,7 +262,7 @@ export const VIEW_RADIUS = 45;
 /**
  * Multidão ([INFRA-11]): no máximo tantos jogadores e NPCs na vista de cada um (os mais perto; ele mesmo, o alvo dele e
  * os membros do grupo dentro do raio entram sempre). Sem limite, 100 pessoas no mesmo lugar = cada uma recebe as outras
- * 99 a 20 Hz. ATENÇÃO: quem fica de fora o cliente trata como longe (mmo-client/scripts/network/network.gd).
+ * 99 a 30 Hz. ATENÇÃO: quem fica de fora o cliente trata como longe (mmo-client/scripts/network/network.gd).
  */
 export const MAX_VIEW_PLAYERS = 40;
 /** Ver {@link MAX_VIEW_PLAYERS}. */
@@ -312,16 +312,16 @@ export const GROUP_XP_RADIUS = VIEW_RADIUS;
 
 /**
  * A cada quantos ticks a zona manda `group_positions` (os membros do grupo longe, para o mapa; [SOC-03], [CLI-11]):
- * {@link GROUP_POSITIONS_HZ} Hz a {@link TICK_RATE_HZ} Hz de simulação = a cada 10 ticks.
+ * {@link GROUP_POSITIONS_HZ} Hz a {@link TICK_RATE_HZ} Hz de simulação (a 30 Hz, a cada 15 ticks).
  */
 export const GROUP_POSITIONS_EVERY_TICKS: number = Math.max(1, Math.round(TICK_RATE_HZ / GROUP_POSITIONS_HZ));
 
 /**
- * Tamanho máximo da fila de comandos por jogador (20 = 1 s de comandos). Excesso descarta os mais antigos (flood).
+ * Tamanho máximo da fila de comandos por jogador (1 s de comandos: 30 a 30 Hz). Excesso descarta os mais antigos (flood).
  * > mudança (2026-11-15): era 4 — qualquer travada de rede de mais de 200 ms jogava passos fora e o jogador era
  * > puxado para trás ([INFRA-09]).
  */
-export const MAX_INPUT_QUEUE = 20;
+export const MAX_INPUT_QUEUE: number = TICK_RATE_HZ;
 
 /** Converte segundos em ticks (arredonda para cima: nunca antes da hora). */
 const secondsToTicks = (seconds: number): number => Math.max(1, Math.ceil(seconds * TICK_RATE_HZ));
@@ -557,7 +557,7 @@ const round1 = (value: number): number => Math.round(value * 10) / 10;
  * Uma zona do mundo: jogadores, bonecos e a simulação autoritativa deles ([INFRA-09], [JOGO-05]).
  *
  * O cliente NÃO diz onde está nem quanto dano deu: manda `input` (direção) e `attack` (alvo). A cada
- * {@link tick} (20 Hz) a zona: renasce quem já pode, aplica os inputs, executa os ataques em alcance,
+ * {@link tick} ({@link TICK_RATE_HZ} Hz) a zona: renasce quem já pode, aplica os inputs, executa os ataques em alcance,
  * regenera vida/mana e manda a cada jogador um `snapshot` com todos os estados, os eventos do tick
  * e os dados só dele (`me`, `ack`).
  */
@@ -851,7 +851,7 @@ export class Zone {
       name: member.name,
       level: progress.level,
       member,
-      // Posição em centímetros desde a entrada (a simulação arredonda assim; o cliente prevê igual).
+      // Posição em milímetros desde a entrada (a simulação arredonda assim; o cliente prevê igual).
       state: { x: quantize(clamp(start.x, -limit, limit)), y: start.y, z: quantize(clamp(start.z, -limit, limit)), rotY: start.rotY },
       hp: round1((PLAYER_MAX_HP + bonusHp) * factor * (1 + effects.health)),
       maxHp: round1((PLAYER_MAX_HP + bonusHp) * factor * (1 + effects.health)),
@@ -2362,7 +2362,7 @@ export class Zone {
    * Manda `group_positions` a cada jogador de verdade que está em grupo: onde estão os membros dele que NÃO vieram no
    * snapshot (longe da área de interesse), para o mapa do Menu ([CLI-11]). Sem grupo, ou com o grupo todo perto,
    * não manda nada: o custo é zero para quem joga sozinho e, com grupo, no máximo 4 posições a
-   * {@link GROUP_POSITIONS_HZ} Hz (uma mensagem própria em vez de um campo no snapshot de 20 Hz).
+   * {@link GROUP_POSITIONS_HZ} Hz (uma mensagem própria em vez de um campo no snapshot de 30 Hz).
    */
   private sendGroupPositions(): void {
     for (const player of this.players.values()) {
@@ -2403,7 +2403,7 @@ export class Zone {
   private static snapshot(entity: Entity): PlayerSnapshot {
     return {
       id: entity.id,
-      // Centímetros e 0,01 rad ([INFRA-11]): jogador já anda em cm (a simulação arredonda); NPC só aqui.
+      // Milímetros e 0,01 rad ([INFRA-11]): jogador já anda em mm (a simulação arredonda); NPC só aqui.
       x: quantize(entity.state.x),
       y: quantize(entity.state.y),
       z: quantize(entity.state.z),
