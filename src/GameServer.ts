@@ -73,6 +73,12 @@ export const CLOSE_DELAY_MS = 1000;
 /** Falhas de login/sessão aceitas por conexão antes de fechá-la (freio contra adivinhar senha). */
 export const MAX_AUTH_FAILURES = 5;
 
+/**
+ * No relógio de ticks ({@link GameServer.startTimers}): quantos ticks atrasados roda de uma vez para alcançar o tempo;
+ * mais atrasado que isso (servidor travou), retoma do agora em vez de despejar uma rajada de ticks.
+ */
+const MAX_TICK_CATCHUP = 5;
+
 /** Uma conexão WebSocket aberta. */
 interface Session {
   /** Id da conexão (só para log/diagnóstico; o jogo usa o `playerId`). */
@@ -140,6 +146,8 @@ export class GameServer {
   /** Usernames já conhecidos (de quem autenticou ou foi buscado no banco): nome dos amigos offline sem ir ao banco. */
   private readonly knownNames: Map<string, string> = new Map();
   private tickTimer: NodeJS.Timeout | null = null;
+  /** O laço de ticks está rodando ({@link startTimers}); `false` depois de parar. */
+  private ticking: boolean = false;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   /** Versões publicadas do pacote do jogo por plataforma; versão nova → manda atualizar quem está na velha. */
   private readonly updates: UpdateWatcher;
@@ -195,7 +203,9 @@ export class GameServer {
 
   /** Salva a posição de quem está online, fecha as conexões e o servidor HTTP. */
   async close(): Promise<void> {
-    if (this.tickTimer !== null) clearInterval(this.tickTimer);
+    if (this.tickTimer !== null) clearTimeout(this.tickTimer);
+    this.tickTimer = null;
+    this.ticking = false;
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
     this.updates.stop();
     await Promise.all(Array.from(this.sessions, (session) => this.leaveZone(session)));
@@ -211,10 +221,28 @@ export class GameServer {
   }
 
   private startTimers(): void {
-    this.tickTimer = setInterval(() => {
-      for (const zone of this.zones.values()) zone.tick();
-      this.friendRequests.expire(Date.now());
-    }, 1000 / TICK_RATE_HZ);
+    // Relógio de jogo com passo fixo: o tick N acontece em início + N × 50 ms, e um atraso é compensado no próximo.
+    // `setInterval` atrasa um pouco a cada volta (medido: 19,86 Hz em vez de 20): o cliente manda 20 comandos por
+    // segundo, então a fila do servidor crescia andando e cada comando a mais era +50 ms de atraso ([INFRA-09]).
+    const tickMs: number = 1000 / TICK_RATE_HZ;
+    let nextAt: number = performance.now() + tickMs;
+    this.ticking = true;
+    const loop = (): void => {
+      if (!this.ticking) return;
+      let now: number = performance.now();
+      // Ficou muito para trás (servidor travou, computador dormiu): retoma do agora, sem rodar uma rajada de ticks.
+      if (now - nextAt > MAX_TICK_CATCHUP * tickMs) nextAt = now;
+      let ran: number = 0;
+      while (now >= nextAt && ran < MAX_TICK_CATCHUP) {
+        for (const zone of this.zones.values()) zone.tick();
+        this.friendRequests.expire(Date.now());
+        nextAt += tickMs;
+        ran++;
+        now = performance.now();
+      }
+      this.tickTimer = setTimeout(loop, Math.max(0, nextAt - performance.now()));
+    };
+    this.tickTimer = setTimeout(loop, tickMs);
 
     // Celular perde rede sem fechar o socket: sem heartbeat, o jogador ficaria "fantasma" na zona.
     this.heartbeatTimer = setInterval(() => {
