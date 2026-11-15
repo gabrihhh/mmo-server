@@ -1,7 +1,7 @@
 import assert from "assert";
 
 import { attributeEffects, diminishing, readPoints, sumPoints, NO_EFFECTS } from "../src/items/attributes.js";
-import { attributeEffectsOf, readInventory, type Inventory } from "../src/items/inventory.js";
+import { attributeEffectsOf, lookLevelsOf, readInventory, type Inventory } from "../src/items/inventory.js";
 import { upgradeChance, upgradeCost, upgradeItem } from "../src/items/upgrade.js";
 import { inventoryView } from "../src/items/view.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
@@ -162,5 +162,27 @@ describe("ferreiro na zona e atributos no combate ([JOGO-16])", () => {
     assert.ok(hit !== undefined);
     assert.strictEqual(hit["crit"], true);
     assert.ok(Math.abs(Number(hit["amount"]) - Math.round(base * 1.1 * 1.5 * 10) / 10) < 0.11, `crítico × 1,5 e +10% (${String(hit["amount"])})`);
+  });
+
+  it("o nível das peças vestidas vai junto da aparência para todos (brilho, [JOGO-17])", () => {
+    const upgraded: Inventory = { ...inventory(), equipped: { ...inventory().equipped, hand: { uid: "sword", itemId: "knight_sword", level: 7, attrs: { damage: 9 } } } };
+    assert.deepStrictEqual(lookLevelsOf(upgraded), { hand: 7 });
+    assert.deepStrictEqual(lookLevelsOf(inventory()), {});
+    const z = zone([bag]);
+    const a = new Member("a");
+    const b = new Member("b");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    z.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, SWORD);
+    const look = { hand: "knight_sword", head: null, chest: null, feet: null };
+    z.setLoadout("a", SWORD, new Map(), look, 0, NO_EFFECTS, { hand: 7 });
+    z.tick();
+    const event = b.events.find((e) => e["type"] === "look" && e["id"] === "a");
+    assert.ok(event !== undefined);
+    assert.deepStrictEqual(event["levels"], { hand: 7 });
+    // Mesmo item, nível novo (melhorou no ferreiro): também avisa.
+    b.events = [];
+    z.setLoadout("a", SWORD, new Map(), look, 0, NO_EFFECTS, { hand: 8 });
+    z.tick();
+    assert.deepStrictEqual(b.events.find((e) => e["type"] === "look")?.["levels"], { hand: 8 });
   });
 });

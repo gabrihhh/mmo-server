@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import type { Look } from "../net/protocol.js";
+import type { Look, LookLevels } from "../net/protocol.js";
 import { attributeEffects, readPoints, sumPoints, type AttributeEffects, type AttributePoints } from "./attributes.js";
 import { EQUIP_SLOTS, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
 
@@ -212,6 +212,16 @@ export function attributeEffectsOf(inventory: Inventory): AttributeEffects {
     if (attrs !== undefined) lists.push(attrs);
   }
   return attributeEffects(sumPoints(lists));
+}
+
+/** Nível de melhoria de cada peça vestida (só as com nível > 0): o brilho que todos veem ([JOGO-17]). */
+export function lookLevelsOf(inventory: Inventory): LookLevels {
+  const levels: Partial<Record<EquipSlot, number>> = {};
+  for (const slot of EQUIP_SLOTS) {
+    const level: number = inventory.equipped[slot]?.level ?? 0;
+    if (level > 0) levels[slot] = level;
+  }
+  return levels;
 }
 
 /** Aparência: o `itemId` vestido em cada slot (o que os outros jogadores veem). */

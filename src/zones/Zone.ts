@@ -11,6 +11,7 @@ import {
   type NpcBodyType,
   type EquipSlotName,
   type Look,
+  type LookLevels,
   type PlayerInfo,
   type PlayerSnapshot,
   type ServerMessage,
@@ -320,6 +321,8 @@ interface ZonePlayer extends Combatant {
   abilities: ReadonlyMap<string, AbilityDef>;
   /** O que veste (aparência que os outros veem). */
   look: Look;
+  /** Nível de melhoria das peças vestidas (brilho que os outros veem, [JOGO-17]). */
+  lookLevels: LookLevels;
   /** Nível e XP do personagem ([JOGO-12]); vão só para ele, no `me` do snapshot. */
   progress: Progress;
   /** Jogador fake de teste ([SOC-01]): como responde e onde renasce. `null` = jogador de verdade. */
@@ -570,6 +573,7 @@ export class Zone {
       maxMana,
       bonusHp,
       effects: NO_EFFECTS,
+      lookLevels: {},
       dead: false,
       respawnTick: 0,
       shield: 0,
@@ -734,6 +738,7 @@ export class Zone {
     bonusHp: number = 0,
     progress: Progress = STARTING_PROGRESS,
     effects: AttributeEffects = NO_EFFECTS,
+    lookLevels: LookLevels = {},
   ): JoinResult {
     if (!this.players.has(member.id) && this.realPlayerCount() >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
@@ -754,6 +759,7 @@ export class Zone {
       maxMana: round1(PLAYER_MAX_MANA * factor * (1 + effects.mana)),
       bonusHp,
       effects,
+      lookLevels,
       dead: false,
       respawnTick: 0,
       shield: 0,
@@ -822,6 +828,7 @@ export class Zone {
     look?: Look,
     bonusHp: number = 0,
     effects: AttributeEffects = NO_EFFECTS,
+    lookLevels: LookLevels = {},
   ): void {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined) return;
@@ -835,9 +842,10 @@ export class Zone {
       player.attackTarget = null;
       if (player.cast?.kind === "attack") player.cast = null;
     }
-    if (look !== undefined && !Zone.sameLook(player.look, look)) {
+    if (look !== undefined && (!Zone.sameLook(player.look, look) || !Zone.sameLevels(player.lookLevels, lookLevels))) {
       player.look = look;
-      this.events.push({ type: "look", id, look });
+      player.lookLevels = lookLevels;
+      this.events.push({ type: "look", id, look, ...(Object.keys(lookLevels).length > 0 ? { levels: lookLevels } : {}) });
     }
   }
 
@@ -2122,11 +2130,23 @@ export class Zone {
 
   /** Snapshot + nome + aparência: para quem está conhecendo o jogador agora (`welcome`, `player_joined`). */
   private static info(player: ZonePlayer): PlayerInfo {
-    return { ...Zone.snapshot(player), name: player.name, look: player.look, body: player.member.body ?? "male" };
+    const levels: LookLevels = player.lookLevels;
+    return {
+      ...Zone.snapshot(player),
+      name: player.name,
+      look: player.look,
+      ...(Object.keys(levels).length > 0 ? { levels } : {}),
+      body: player.member.body ?? "male",
+    };
   }
 
   /** `true` se as duas aparências vestem o mesmo item em todos os slots. */
   private static sameLook(a: Look, b: Look): boolean {
+    return a.hand === b.hand && a.head === b.head && a.chest === b.chest && a.feet === b.feet;
+  }
+
+  /** `true` se as peças têm os mesmos níveis de melhoria (brilho, [JOGO-17]). */
+  private static sameLevels(a: LookLevels, b: LookLevels): boolean {
     return a.hand === b.hand && a.head === b.head && a.chest === b.chest && a.feet === b.feet;
   }
 }

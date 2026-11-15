@@ -20,7 +20,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
  */
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -355,6 +355,12 @@ export type EquipSlotName = (typeof EQUIP_SLOT_NAMES)[number];
  */
 export type Look = Readonly<Record<EquipSlotName, string | null>>;
 
+/**
+ * Nível de melhoria de cada peça vestida ([JOGO-16]), para todos verem o brilho da peça ([JOGO-17]). Só os slots
+ * com nível > 0. ATENÇÃO: lido por mmo-client/scripts/network/player_state.gd (`look_levels`).
+ */
+export type LookLevels = Readonly<Partial<Record<EquipSlotName, number>>>;
+
 /** Payload de `equip`. */
 export interface EquipData {
   /** `uid` do item na mochila. */
@@ -609,7 +615,7 @@ export type CombatEvent =
   /** O jogador `id` subiu para o nível `level` ([JOGO-12]): vida/mana máximas novas já vêm no snapshot. */
   | { readonly type: "level_up"; readonly id: string; readonly level: number }
   /** O jogador `id` trocou o que veste (aparência nova). */
-  | { readonly type: "look"; readonly id: string; readonly look: Look };
+  | { readonly type: "look"; readonly id: string; readonly look: Look; readonly levels?: LookLevels };
 
 /** Só de quem recebe o snapshot (os outros não sabem). */
 export interface OwnStatus {
@@ -639,6 +645,8 @@ export interface PlayerInfo extends PlayerSnapshot {
   readonly name: string;
   /** O que está vestindo (muda depois pelo evento `look`). */
   readonly look: Look;
+  /** Nível de melhoria das peças vestidas (brilho, [JOGO-17]); ausente = nenhuma melhorada. */
+  readonly levels?: LookLevels;
   /** Corpo do personagem (qual modelo desenhar). */
   readonly body: BodyType;
 }

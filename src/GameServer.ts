@@ -38,7 +38,7 @@ import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 import { DEFAULT_UPDATE_POLL_MS, UpdateWatcher } from "./http/updateWatcher.js";
-import { attributeEffectsOf, basicAttackOf, bonusHpOf, equip, equippedAbilities, lookOf, moveInBag, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
+import { attributeEffectsOf, basicAttackOf, bonusHpOf, equip, equippedAbilities, lookLevelsOf, lookOf, moveInBag, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
 import { inventoryView } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
@@ -748,6 +748,7 @@ export class GameServer {
       lookOf(result.inventory),
       bonusHpOf(result.inventory),
       attributeEffectsOf(result.inventory),
+      lookLevelsOf(result.inventory),
     );
     try {
       await this.options.accounts.saveInventory(account.playerId, result.inventory);
@@ -787,6 +788,7 @@ export class GameServer {
         lookOf(result.inventory),
         bonusHpOf(result.inventory),
         attributeEffectsOf(result.inventory),
+        lookLevelsOf(result.inventory),
       );
       try {
         await this.options.accounts.saveInventory(playerId, result.inventory);
@@ -951,6 +953,7 @@ export class GameServer {
       bonusHpOf(account.inventory),
       account.progress,
       attributeEffectsOf(account.inventory),
+      lookLevelsOf(account.inventory),
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");
