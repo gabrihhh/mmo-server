@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, NO_LOOK, Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { MAX_INPUT_CREDIT, MAX_INPUT_QUEUE, MAX_INPUTS_PER_TICK, NO_LOOK, Zone, type ZoneMember } from "../src/zones/Zone.js";
 import { UNARMED_ATTACK } from "../src/items/catalog.js";
 import type { Look } from "../src/net/protocol.js";
 import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
@@ -101,22 +101,44 @@ describe("Zone", () => {
     assert.strictEqual(zone.getSnapshot("a")?.x, MOVE_SPEED * TICK_SECONDS, "sem input, fica parado");
   });
 
-  it("anti-speedhack: normaliza direção > 1, limita inputs por tick e o tamanho da fila", () => {
+  it("anti-speedhack: normaliza direção > 1; rajada sem ter travado não acelera; fila limitada", () => {
     const zone = newZone();
     zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
+    const step: number = MOVE_SPEED * TICK_SECONDS;
 
     zone.queueInput("a", { seq: 1, x: 1000, z: 0 });
     zone.tick();
-    assert.strictEqual(zone.getSnapshot("a")?.x, MOVE_SPEED * TICK_SECONDS, "comprimento normalizado para 1");
+    assert.strictEqual(zone.getSnapshot("a")?.x, step, "comprimento normalizado para 1");
 
+    // Andando a cada tick não sobra crédito: mandar 10 de uma vez não faz andar mais que 1 por tick.
     for (let seq = 2; seq <= 11; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
     zone.tick();
-    const afterBurst: number = zone.getSnapshot("a")?.x ?? NaN;
-    assert.ok(Math.abs(afterBurst - 3 * MOVE_SPEED * TICK_SECONDS) < 1e-9, `no máximo ${MAX_INPUTS_PER_TICK} por tick`);
+    assert.strictEqual(zone.getSnapshot("a")?.x, 2 * step, "sem crédito acumulado: 1 por tick");
+
+    // Fila de no máximo MAX_INPUT_QUEUE: o excesso (os mais antigos) sai.
+    const flood = newZone();
+    flood.join(new FakeMember("b"), { x: 0, y: 0, z: 0, rotY: 0 });
+    for (let seq = 1; seq <= MAX_INPUT_QUEUE + 10; seq++) flood.queueInput("b", { seq, x: 1, z: 0 });
+    for (let i = 0; i < 60; i++) flood.tick();
+    assert.ok(Math.abs((flood.getSnapshot("b")?.x ?? NaN) - MAX_INPUT_QUEUE * step) < 1e-9, "fila limitada");
+  });
+
+  it("rede que segura os pacotes e solta em rajada: aplica todos (sem puxão para trás), até MAX_INPUTS_PER_TICK por tick", () => {
+    const zone = newZone();
+    zone.join(new FakeMember("a"), { x: 0, y: 0, z: 0, rotY: 0 });
+    const step: number = MOVE_SPEED * TICK_SECONDS;
+    // 400 ms sem chegar nada (8 ticks): o crédito acumula.
+    for (let i = 0; i < 8; i++) zone.tick();
+    for (let seq = 1; seq <= 8; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
     zone.tick();
+    assert.strictEqual(zone.getSnapshot("a")?.x, quantizeSteps(MAX_INPUTS_PER_TICK, step), `${MAX_INPUTS_PER_TICK} no primeiro tick`);
     zone.tick();
-    const total: number = zone.getSnapshot("a")?.x ?? NaN;
-    assert.ok(Math.abs(total - (1 + MAX_INPUT_QUEUE) * MOVE_SPEED * TICK_SECONDS) < 1e-9, "fila limitada");
+    assert.strictEqual(zone.getSnapshot("a")?.x, quantizeSteps(8, step), "todos os 8 aplicados, nenhum jogado fora");
+    // O crédito tem teto: parado muito tempo não vira "turbo" infinito.
+    for (let i = 0; i < 200; i++) zone.tick();
+    for (let seq = 9; seq <= 9 + 40; seq++) zone.queueInput("a", { seq, x: 1, z: 0 });
+    for (let i = 0; i < 3; i++) zone.tick();
+    assert.ok((zone.getSnapshot("a")?.x ?? 0) <= quantizeSteps(8 + MAX_INPUT_CREDIT + 3, step) + 1e-9, "no máximo o crédito guardado + 1 por tick");
   });
 
   it("ignora seq repetido ou antigo e limita às bordas", () => {
@@ -166,3 +188,10 @@ describe("Zone", () => {
     }
   });
 });
+
+/** Posição depois de [count] passos de [step] m em X (somando como a simulação: arredonda ao cm a cada passo). */
+function quantizeSteps(count: number, step: number): number {
+  let x: number = 0;
+  for (let i = 0; i < count; i++) x = Math.floor((x + step) * 100 + 0.5) / 100;
+  return x;
+}

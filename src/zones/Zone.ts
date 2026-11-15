@@ -235,10 +235,19 @@ export interface SpawnPoint {
 export type JoinResult = { readonly status: "full" } | { readonly status: "joined"; readonly players: PlayerInfo[] };
 
 /**
- * Quantos inputs de um jogador a zona aplica por tick, no máximo. O cliente manda 1 por tick;
- * aceitar 2 absorve a variação da rede (dois chegam juntos) sem deixar ninguém andar mais rápido.
+ * Quantos passos de movimento de um jogador a zona aplica por tick, no máximo (se houver crédito, ver
+ * {@link MAX_INPUT_CREDIT}). O cliente manda 1 por tick; quando a rede segura os pacotes e solta em rajada (comum no
+ * Wi-Fi do celular), a zona alcança o jogador em poucos ticks em vez de jogar comandos fora ([INFRA-09]).
  */
-export const MAX_INPUTS_PER_TICK = 2;
+export const MAX_INPUTS_PER_TICK = 4;
+
+/**
+ * Crédito de comandos (anti-speedhack sem punir rede ruim, [INFRA-09]): cada tick dá 1 crédito ao jogador, guardado
+ * até este máximo (10 = meio segundo); cada PASSO aplicado gasta 1 (habilidade na fila não gasta: tem recarga). Assim, depois de a rede segurar os pacotes por
+ * até meio segundo, a rajada é aplicada inteira (sem o "puxão para trás"), mas na média ninguém passa de 1 comando por
+ * tick: só dá para gastar o que acumulou parado/travado.
+ */
+export const MAX_INPUT_CREDIT = 10;
 
 /**
  * Área de interesse (m): cada jogador recebe no snapshot só os jogadores e NPCs a esta distância dele (mais ele
@@ -307,8 +316,12 @@ export const GROUP_XP_RADIUS = VIEW_RADIUS;
  */
 export const GROUP_POSITIONS_EVERY_TICKS: number = Math.max(1, Math.round(TICK_RATE_HZ / GROUP_POSITIONS_HZ));
 
-/** Tamanho máximo da fila de inputs por jogador. Excesso descarta os mais antigos (anti-speedhack/flood). */
-export const MAX_INPUT_QUEUE = 4;
+/**
+ * Tamanho máximo da fila de comandos por jogador (20 = 1 s de comandos). Excesso descarta os mais antigos (flood).
+ * > mudança (2026-11-15): era 4 — qualquer travada de rede de mais de 200 ms jogava passos fora e o jogador era
+ * > puxado para trás ([INFRA-09]).
+ */
+export const MAX_INPUT_QUEUE = 20;
 
 /** Converte segundos em ticks (arredonda para cima: nunca antes da hora). */
 const secondsToTicks = (seconds: number): number => Math.max(1, Math.ceil(seconds * TICK_RATE_HZ));
@@ -375,6 +388,8 @@ interface ZonePlayer extends Combatant {
   lastReceivedSeq: number;
   /** Último seq aplicado na simulação; vai como `ack` no snapshot dele. */
   lastAppliedSeq: number;
+  /** Crédito de comandos ({@link MAX_INPUT_CREDIT}): +1 por tick, −1 por comando aplicado. */
+  inputCredit: number;
   /**
    * O que este jogador já recebeu de cada entidade que está na vista dele (id → campos do último envio). O snapshot
    * leva só o que mudou desde então; quem sai da vista vai em `gone` (fase 1 de desempenho, [INFRA-11]).
@@ -663,6 +678,7 @@ export class Zone {
       dash: null,
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
+      inputCredit: 0,
       view: new Map(),
       sentMe: new Map(),
       basicAttack: UNARMED_ATTACK,
@@ -855,6 +871,7 @@ export class Zone {
       dash: null,
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
+      inputCredit: 0,
       view: new Map(),
       sentMe: new Map(),
       basicAttack,
@@ -1178,9 +1195,19 @@ export class Zone {
     for (const player of this.players.values()) {
       if (player.boost !== null && this.currentTick >= player.boost.untilTick) player.boost = null;
       if (player.dash !== null && this.currentTick >= player.dash.untilTick) player.dash = null;
-      for (let i = 0; i < MAX_INPUTS_PER_TICK; i++) {
+      // Crédito: +1 por tick (guarda até MAX_INPUT_CREDIT); cada PASSO gasta 1. Habilidade na fila (Investida,
+      // Disparada) não gasta: tem a recarga dela, e gastar deixaria um passo sobrando na fila a cada uma (atraso).
+      player.inputCredit = Math.min(MAX_INPUT_CREDIT, player.inputCredit + 1);
+      let moves: number = 0;
+      while (player.inputs.length > 0) {
+        const next: Command | undefined = player.inputs[0];
+        if (next !== undefined && next.kind === "move" && (moves >= MAX_INPUTS_PER_TICK || player.inputCredit < 1)) break;
         const command: Command | undefined = player.inputs.shift();
         if (command === undefined) break;
+        if (command.kind === "move") {
+          moves++;
+          player.inputCredit -= 1;
+        }
         player.lastAppliedSeq = command.seq;
         if (player.dead) continue;
         if (command.kind === "move") {
