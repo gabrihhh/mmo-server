@@ -351,7 +351,9 @@ describe("GameServer", () => {
       await join(first);
       for (let seq = 1; seq <= 4; seq++) first.client.send("input", { seq, x: 0, z: 1 });
       const last: ReceivedMessage = await first.client.nextMatching("snapshot", (m) => m.data["ack"] === 4);
-      const where = entryOf(last.data["players"], first.playerId);
+      // Snapshot por diferença ([INFRA-11]): andou só em Z, então só o z (e o que mais mudou) vem nele.
+      const whereZ: unknown = entryOf(last.data["players"], first.playerId)?.["z"];
+      assert.ok(typeof whereZ === "number");
       await first.client.close();
       await sleep(20); // savePosition é assíncrono
 
@@ -361,7 +363,7 @@ describe("GameServer", () => {
       c.send("join", { zone: ZONE });
       const players: unknown = (await c.next("welcome")).data["players"];
       const me = entryOf(players, first.playerId);
-      assert.deepStrictEqual({ ...me, name: undefined, look: undefined, body: undefined }, { ...where, name: undefined, look: undefined, body: undefined });
+      assert.strictEqual(me?.["z"], whereZ, "voltou no mesmo lugar");
       assert.deepStrictEqual(
         me?.["look"],
         { hand: null, head: null, chest: null, feet: null },

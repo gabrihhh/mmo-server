@@ -4,6 +4,7 @@ import { Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, DUMMY_RESPAWN_SECONDS } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
+import { SnapshotView } from "./helpers.js";
 
 /** NPCs de teste ([JOGO-11]): atirador invulnerável, saco de pancadas que não morre e brigão. */
 
@@ -11,6 +12,8 @@ import { TICK_RATE_HZ } from "../src/sim/movement.js";
 class Member implements ZoneMember {
   readonly name: string;
   last: Record<string, unknown> = {};
+  /** Estado inteiro montado dos snapshots por diferença (como o cliente). */
+  private readonly snapshots: SnapshotView = new SnapshotView();
   readonly allEvents: Array<Record<string, unknown>> = [];
   constructor(readonly id: string) {
     this.name = id;
@@ -21,7 +24,7 @@ class Member implements ZoneMember {
     if (decoded.type !== "snapshot" || typeof decoded.data !== "object" || decoded.data === null) return;
     const data: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(decoded.data)) data[k] = v;
-    this.last = data;
+    this.last = this.snapshots.apply(data);
     const events: unknown = data["events"];
     if (Array.isArray(events)) for (const e of events) if (typeof e === "object" && e !== null) this.allEvents.push({ ...e });
   }
@@ -75,8 +78,10 @@ describe("NPCs de teste", () => {
     assert.ok(a.allEvents.some((e) => e["type"] === "projectile" && e["source"] === "shooter"), "bola de fogo voa de verdade");
     const look: unknown = a.allEvents.find((e) => e["type"] === "look" && e["id"] === "shooter")?.["look"];
     assert.ok(typeof look === "object" && look !== null && "hand" in look && look.hand === "training_staff", "veste o conjunto");
-    assert.strictEqual(a.field("shooter", "body"), "male", "vai no snapshot como humano");
-    assert.strictEqual(a.field("shooter", "targetable"), false);
+    // Campos fixos do NPC vão no welcome (npcSnapshots), não no snapshot de cada tick ([INFRA-11]).
+    const info = z.npcSnapshots().find((n) => n.id === "shooter");
+    assert.strictEqual(info?.body, "male", "vai no welcome como humano");
+    assert.strictEqual(info?.targetable, false);
   });
 
   it("tiros e áreas do atirador acertam jogadores no caminho/área (não só o saco)", () => {
@@ -106,12 +111,12 @@ describe("NPCs de teste", () => {
     assert.ok(heal);
     z.join(a, { x: 0, y: 0, z: -3, rotY: 0 }, SWORD, new Map([[heal.id, heal]]));
     assert.strictEqual(z.setAttackTarget("a", "bag"), "invalid_target", "jogador não ataca o aliado");
-    assert.strictEqual(a.field("bag", "ally"), undefined, "sem snapshot ainda");
+    assert.strictEqual(a.field("bag", "hp"), undefined, "sem snapshot ainda");
     ticks(z, 60);
     assert.ok(!a.allEvents.some((e) => e["type"] === "death" && e["id"] === "bag"), "nunca morre");
     const low: unknown = a.field("bag", "hp");
     assert.ok(typeof low === "number" && low >= 1);
-    assert.strictEqual(a.field("bag", "ally"), true);
+    assert.strictEqual(z.npcSnapshots().find((n) => n.id === "bag")?.ally, true, "aliado no welcome");
     // Curar o saco: a Cura maior aceita como aliado.
     const result = z.castAbility("a", { abilityId: heal.id, targetId: "bag", x: null, z: null, seq: null });
     assert.deepStrictEqual(result, { ok: true });

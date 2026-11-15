@@ -117,3 +117,43 @@ export const sleep = (ms: number): Promise<void> => new Promise((resolve) => set
 export const ZONES_WITH_FAKES: readonly ZoneConfig[] = ZONE_CONFIGS.map(
   (zone: ZoneConfig): ZoneConfig => ({ ...zone, fakePlayers: TEST_FAKE_PLAYERS }),
 );
+
+/**
+ * Monta o estado completo a partir dos snapshots por diferença ([INFRA-11]), como o cliente faz
+ * (mmo-client/scripts/network/network.gd): cada entrada de `players`/`npcs` junta os campos que vieram aos já
+ * conhecidos; `gone` tira da vista; `me` junta os campos. {@link apply} devolve o snapshot "inteiro" daquele tick
+ * (`players`/`npcs` = todos na vista, com todos os campos; `events` = os do tick), no formato de antes da versão 22.
+ */
+export class SnapshotView {
+  private readonly players: Map<string, Record<string, unknown>> = new Map();
+  private readonly npcs: Map<string, Record<string, unknown>> = new Map();
+  private me: Record<string, unknown> = {};
+
+  /** Aplica o `data` de um snapshot e devolve o estado inteiro. */
+  apply(data: Record<string, unknown>): Record<string, unknown> {
+    const gone: unknown = data["gone"];
+    if (Array.isArray(gone)) {
+      for (const id of gone) {
+        if (typeof id === "string") {
+          this.players.delete(id);
+          this.npcs.delete(id);
+        }
+      }
+    }
+    for (const [key, map] of [["players", this.players], ["npcs", this.npcs]] as const) {
+      const list: unknown = data[key];
+      if (!Array.isArray(list)) continue;
+      for (const entry of list) {
+        if (!isRecord(entry) || typeof entry["id"] !== "string") continue;
+        map.set(entry["id"], { ...(map.get(entry["id"]) ?? {}), ...entry });
+      }
+    }
+    if (isRecord(data["me"])) this.me = { ...this.me, ...data["me"] };
+    return {
+      ...data,
+      players: Array.from(this.players.values(), (p) => ({ ...p })),
+      npcs: Array.from(this.npcs.values(), (n) => ({ ...n })),
+      me: { ...this.me },
+    };
+  }
+}

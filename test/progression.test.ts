@@ -18,11 +18,14 @@ import { Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import type { Progress } from "../src/progression/level.js";
+import { SnapshotView } from "./helpers.js";
 
 /** Membro falso: guarda o último snapshot e o progresso salvo. */
 class Member implements ZoneMember {
   readonly name: string;
   last: Record<string, unknown> = {};
+  /** Estado inteiro montado dos snapshots por diferença (como o cliente). */
+  private readonly snapshots: SnapshotView = new SnapshotView();
   saved: Progress | null = null;
   constructor(readonly id: string) {
     this.name = id;
@@ -31,7 +34,7 @@ class Member implements ZoneMember {
     const decoded: unknown = JSON.parse(text);
     if (typeof decoded !== "object" || decoded === null || !("type" in decoded) || decoded.type !== "snapshot") return;
     if (!("data" in decoded) || typeof decoded.data !== "object" || decoded.data === null) return;
-    this.last = Object.fromEntries(Object.entries(decoded.data));
+    this.last = this.snapshots.apply(Object.fromEntries(Object.entries(decoded.data)));
   }
   onProgress(progress: Progress): void {
     this.saved = progress;
@@ -181,7 +184,7 @@ describe("zumbis", () => {
     zone.join(a, { x: 0, y: 0, z: 9, rotY: 0 }, SWORD); // 21 m de casa: fora do raio de 8 m
     ticks(zone, 20);
     assert.strictEqual(a.field("zombie", "z"), -12);
-    assert.strictEqual(a.field("zombie", "monster"), true);
+    assert.strictEqual(zone.npcSnapshots().find((n) => n.id === "zombie")?.monster, true, "monstro no welcome");
     assert.strictEqual(a.field("zombie", "level"), 1);
     const zone2 = zoneWith([zombieConfig("fighter", 0, -12)]);
     const b = new Member("b");
@@ -274,8 +277,10 @@ describe("zumbis", () => {
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     zone.tick();
-    assert.strictEqual(a.field("zombie", "scale"), 2.5);
-    assert.strictEqual(a.field("zombie", "boss"), true);
+    // Campos fixos vão no welcome (npcSnapshots), não em todo snapshot ([INFRA-11]).
+    const info = zone.npcSnapshots().find((n) => n.id === "zombie");
+    assert.strictEqual(info?.scale, 2.5);
+    assert.strictEqual(info?.boss, true);
     zone.setAttackTarget("a", "zombie");
     let died = false;
     for (let i = 0; i < 60 && !died; i++) {
@@ -287,13 +292,14 @@ describe("zumbis", () => {
     assert.deepStrictEqual(a.saved, { level: 1, xp: xpReward(1) * 10 - xpToNextLevel(0), gold: goldReward(1) * 10 });
   });
 
-  it("zumbi normal não manda escala nem chefe", () => {
+  it("zumbi normal não tem escala nem chefe no welcome", () => {
     const zone = zoneWith([zombieConfig("fighter", 0, -12)]);
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 });
     zone.tick();
-    assert.strictEqual(a.field("zombie", "scale"), undefined);
-    assert.strictEqual(a.field("zombie", "boss"), undefined);
+    const info = zone.npcSnapshots().find((n) => n.id === "zombie");
+    assert.strictEqual(info?.scale, undefined);
+    assert.strictEqual(info?.boss, undefined);
   });
 
   it("todos que bateram no monstro ganham a XP inteira + bônus de grupo quando ele morre (não divide)", () => {

@@ -19,8 +19,10 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
+ *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -900,23 +902,33 @@ export interface FriendNoticeData {
   readonly message: string;
 }
 
-/** Payload de `snapshot`. */
+/**
+ * Entrada de uma entidade no snapshot (versão 22, [INFRA-11]): `id` + **só os campos que mudaram** desde o último
+ * snapshot que QUEM RECEBE ganhou (todos, quando ela acabou de entrar na vista). Nome, corpo e roupa não vêm aqui:
+ * vão no `welcome`/`player_joined` e no evento `look`.
+ * ATENÇÃO: o cliente junta os campos aos que já conhece (mmo-client/scripts/network/network.gd, `_apply_snapshot`).
+ */
+export type SnapshotEntry = Pick<PlayerSnapshot, "id"> & Partial<Omit<PlayerSnapshot, "id">>;
+
+/** Payload de `snapshot` (versão 22: por diferença, [INFRA-11]). */
 export interface SnapshotData {
   /** Número do tick do servidor que gerou este estado. */
   readonly tick: number;
   /** Último `input.seq` de QUEM RECEBE que já foi aplicado (0 = nenhum). Base da reconciliação. */
   readonly ack: number;
   /**
-   * Jogadores na área de interesse de quem recebe (até `VIEW_RADIUS` m, `Zone.ts`), inclusive ele e o alvo dele.
-   * Quem não vem está longe: o cliente esconde e congela até voltar (desde a versão 12).
+   * Jogadores da vista de quem recebe (até `VIEW_RADIUS` m, no máximo `MAX_VIEW_PLAYERS`, `Zone.ts`; ele mesmo e o
+   * alvo sempre) que **mudaram** neste tick. Quem está na vista e não veio está igual ao último envio.
    */
-  readonly players: readonly PlayerSnapshot[];
-  /** Bonecos/monstros na área de interesse de quem recebe (mesma regra de `players`). */
-  readonly npcs: readonly NpcSnapshot[];
-  /** O que aconteceu neste tick (dano, mortes, renascimentos). */
+  readonly players: readonly SnapshotEntry[];
+  /** Bonecos/monstros da vista que mudaram (mesma regra; no máximo `MAX_VIEW_NPCS`). */
+  readonly npcs: readonly SnapshotEntry[];
+  /** Ids que saíram da vista neste tick (longe, limite da multidão ou saíram da zona): o cliente esconde e congela. */
+  readonly gone: readonly string[];
+  /** O que aconteceu neste tick perto de quem recebe (dano, mortes, projéteis…); `look` vai para todos. */
   readonly events: readonly CombatEvent[];
-  /** Dados só de quem recebe. */
-  readonly me: OwnStatus;
+  /** Dados só de quem recebe: só os campos que mudaram (objeto vazio = nada mudou). */
+  readonly me: Partial<OwnStatus>;
 }
 
 /** Mensagem servidor → cliente. */

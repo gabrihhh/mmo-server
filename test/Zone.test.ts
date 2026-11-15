@@ -83,13 +83,13 @@ describe("Zone", () => {
     zone.queueInput("a", { seq: 1, x: 1, z: 0 });
     zone.tick();
 
-    // 5 m/s * 0,05 s = 0,25 m para +X; virado para +X => rotY = atan2(-1, -0) = -PI/2.
+    // 5 m/s * 0,05 s = 0,25 m para +X; virado para +X => rotY = atan2(-1, -0) = -PI/2 (vai com 2 casas, [INFRA-11]).
     assert.deepStrictEqual(zone.getSnapshot("a"), {
       id: "a",
       x: MOVE_SPEED * TICK_SECONDS,
       y: 0,
       z: 0,
-      rotY: Math.atan2(-1, -0),
+      rotY: Math.round(Math.atan2(-1, -0) * 100) / 100,
       ...FULL,
     });
     assert.strictEqual(lastSnapshot(a).ack, 1);

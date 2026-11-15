@@ -16,12 +16,15 @@ import {
 import { DUMMY_MAX_HP, PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
+import { SnapshotView } from "./helpers.js";
 
 /** Membro falso que guarda os eventos e o último snapshot. */
 class Member implements ZoneMember {
   readonly name: string;
   readonly events: Array<Record<string, unknown>> = [];
   last: Record<string, unknown> = {};
+  /** Estado inteiro montado dos snapshots por diferença (como o cliente). */
+  private readonly snapshots: SnapshotView = new SnapshotView();
   constructor(readonly id: string) {
     this.name = id;
   }
@@ -31,7 +34,7 @@ class Member implements ZoneMember {
     if (decoded.type !== "snapshot" || typeof decoded.data !== "object" || decoded.data === null) return;
     const data: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(decoded.data)) data[k] = v;
-    this.last = data;
+    this.last = this.snapshots.apply(data);
     const events: unknown = data["events"];
     if (Array.isArray(events)) for (const e of events) this.events.push(e);
   }

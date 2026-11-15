@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { dashMovement, stepMovement, type MoveState } from "../src/sim/movement.js";
+import { dashMovement, stepMovement, type MoveState, quantize } from "../src/sim/movement.js";
 
 /**
  * Valores de referência da simulação. O cliente (mmo-client/scripts/sim/movement.gd) tem que
@@ -15,10 +15,19 @@ describe("stepMovement (simulação compartilhada)", () => {
     assert.deepStrictEqual(s, { x: 0, y: 0, z: -0.25, rotY: Math.atan2(-0, 1) });
   });
 
-  it("diagonal com comprimento > 1 é normalizada", () => {
+  it("diagonal com comprimento > 1 é normalizada (e arredondada ao centímetro)", () => {
     const s: MoveState = stepMovement(origin, { x: 1, z: 1 }, 0.05, params);
-    const expected: number = 0.25 / Math.SQRT2;
-    assert.ok(Math.abs(s.x - expected) < 1e-12 && Math.abs(s.z - expected) < 1e-12);
+    // 0,25 / √2 = 0,1768 m → 0,18 m.
+    assert.deepStrictEqual([s.x, s.z], [0.18, 0.18]);
+  });
+
+  it("quantize: centímetro com a conta floor(v × 100 + 0,5) (igual no GDScript), também nos negativos", () => {
+    assert.deepStrictEqual([quantize(0.125), quantize(-0.125), quantize(-0.124), quantize(1.004), quantize(-2.5)], [0.13, -0.12, -0.12, 1, -2.5]);
+    // Andar muitos passos não acumula erro além do centímetro: cada passo cai na grade.
+    let s: MoveState = origin;
+    for (let i = 0; i < 1000; i++) s = stepMovement(s, { x: 0.3, z: -0.7 }, 0.05, params);
+    assert.strictEqual(quantize(s.x), s.x);
+    assert.strictEqual(quantize(s.z), s.z);
   });
 
   it("input quase zero não move nem gira", () => {

@@ -28,6 +28,7 @@ import {
   TICK_SECONDS,
   MIN_INPUT_LENGTH,
   dashMovement,
+  quantize,
   stepMovement,
   type MoveParams,
   type MoveState,
@@ -244,9 +245,55 @@ export const MAX_INPUTS_PER_TICK = 2;
  * mesmo e o alvo dele), como nos MMOs. A câmera mostra ~25 m em volta ([CLI-02]); a folga evita que alguém "pisque"
  * na borda da tela. Menos dados por segundo e o cliente só desenha/anima quem está perto. Ver mmo-docs [INFRA-04].
  *
- * ATENÇÃO: quem some do snapshot o cliente esconde e congela (mmo-client/scripts/network/network.gd, `in_view`).
+ * ATENÇÃO: quem sai da vista vai em `snapshot.gone` e o cliente esconde e congela (mmo-client/scripts/network/network.gd,
+ * `in_view`); a vista também tem limite na multidão ({@link MAX_VIEW_PLAYERS}).
  */
 export const VIEW_RADIUS = 45;
+
+/**
+ * Multidão ([INFRA-11]): no máximo tantos jogadores e NPCs na vista de cada um (os mais perto; ele mesmo, o alvo dele e
+ * os membros do grupo dentro do raio entram sempre). Sem limite, 100 pessoas no mesmo lugar = cada uma recebe as outras
+ * 99 a 20 Hz. ATENÇÃO: quem fica de fora o cliente trata como longe (mmo-client/scripts/network/network.gd).
+ */
+export const MAX_VIEW_PLAYERS = 40;
+/** Ver {@link MAX_VIEW_PLAYERS}. */
+export const MAX_VIEW_NPCS = 50;
+/**
+ * Evento de combate com ponto (impacto, projétil, aviso) vai para quem está a até {@link VIEW_RADIUS} + isto (m) dele,
+ * mesmo sem ver quem lançou: cobre o projétil que entra na vista (alcance máximo hoje 16 m) e o raio das áreas.
+ */
+export const EVENT_VIEW_MARGIN = 20;
+
+/**
+ * Ordem dos campos do snapshot em {@link EntityFields} (os que mudam com o tempo; nome, corpo e roupa vão no
+ * `welcome`/`player_joined` e no evento `look`). `mana`/`maxMana` só nos jogadores.
+ */
+const SNAPSHOT_FIELD_KEYS = ["x", "y", "z", "rotY", "hp", "maxHp", "level", "dead", "shield", "guard", "speed", "mana", "maxMana"] as const;
+
+/**
+ * Campos de snapshot de uma entidade num tick, já prontos para o envio ([INFRA-11]): valores na ordem de
+ * {@link SNAPSHOT_FIELD_KEYS} (posição em cm, giro 0,01 rad), o pedaço de JSON de cada um (`"x":1.25`), todos juntos
+ * (`full`, para quem acabou de ver) e o id em JSON. Imutável: nada mudou de um tick para o outro = o mesmo objeto.
+ */
+interface EntityFields {
+  readonly idJson: string;
+  readonly values: ReadonlyArray<number | boolean>;
+  readonly parts: readonly string[];
+  readonly full: string;
+}
+
+/** Grade espacial de um tick: célula ("cx,cz", lado {@link VIEW_RADIUS} m) → jogadores e NPCs dentro dela. */
+type SpatialGrid = Map<string, { players: Entity[]; npcs: Entity[] }>;
+
+/** Evento do tick já separado para o filtro por vista (`Zone.eventFor`): JSON, ids envolvidos e ponto (ou null). */
+interface PreparedEvent {
+  readonly json: string;
+  /** Vai para todos (troca de roupa). */
+  readonly always: boolean;
+  readonly ids: readonly string[];
+  readonly x: number | null;
+  readonly z: number | null;
+}
 
 /**
  * Distância (m) do monstro, na hora da morte, até onde um membro do grupo de quem lutou ganha a XP mesmo sem ter batido
@@ -328,6 +375,13 @@ interface ZonePlayer extends Combatant {
   lastReceivedSeq: number;
   /** Último seq aplicado na simulação; vai como `ack` no snapshot dele. */
   lastAppliedSeq: number;
+  /**
+   * O que este jogador já recebeu de cada entidade que está na vista dele (id → campos do último envio). O snapshot
+   * leva só o que mudou desde então; quem sai da vista vai em `gone` (fase 1 de desempenho, [INFRA-11]).
+   */
+  view: Map<string, EntityFields>;
+  /** Último valor enviado de cada campo do `me` (JSON pronto): o `me` também só leva o que mudou. */
+  readonly sentMe: Map<string, string>;
   /** Habilidades (cartas) vestidas, por id ([JOGO-06]). */
   abilities: ReadonlyMap<string, AbilityDef>;
   /** O que veste (aparência que os outros veem). */
@@ -495,6 +549,8 @@ const round1 = (value: number): number => Math.round(value * 10) / 10;
 export class Zone {
   private readonly players: Map<string, ZonePlayer> = new Map();
   private readonly dummies: Map<string, ZoneDummy> = new Map();
+  /** Campos de snapshot de cada entidade no tick atual ({@link refreshFields}, [INFRA-11]). */
+  private readonly fieldCache: Map<string, EntityFields> = new Map();
   /** Projéteis em voo ([JOGO-08]). */
   private projectiles: Projectile[] = [];
   private nextProjectileId: number = 1;
@@ -607,6 +663,8 @@ export class Zone {
       dash: null,
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
+      view: new Map(),
+      sentMe: new Map(),
       basicAttack: UNARMED_ATTACK,
       abilities: new Map(),
       look: fake.look,
@@ -777,7 +835,8 @@ export class Zone {
       name: member.name,
       level: progress.level,
       member,
-      state: { x: clamp(start.x, -limit, limit), y: start.y, z: clamp(start.z, -limit, limit), rotY: start.rotY },
+      // Posição em centímetros desde a entrada (a simulação arredonda assim; o cliente prevê igual).
+      state: { x: quantize(clamp(start.x, -limit, limit)), y: start.y, z: quantize(clamp(start.z, -limit, limit)), rotY: start.rotY },
       hp: round1((PLAYER_MAX_HP + bonusHp) * factor * (1 + effects.health)),
       maxHp: round1((PLAYER_MAX_HP + bonusHp) * factor * (1 + effects.health)),
       mana: round1(PLAYER_MAX_MANA * factor * (1 + effects.mana)),
@@ -796,6 +855,8 @@ export class Zone {
       dash: null,
       lastReceivedSeq: 0,
       lastAppliedSeq: 0,
+      view: new Map(),
+      sentMe: new Map(),
       basicAttack,
       abilities,
       look,
@@ -2055,53 +2116,219 @@ export class Zone {
    * mesmo, o alvo dele e os jogadores/NPCs até essa distância. O JSON de cada entidade é montado uma vez por tick; por
    * destinatário só se escolhe quais entram e se montam `ack` e `me`. Eventos vão para todos.
    */
+  /**
+   * Snapshot de cada jogador ([INFRA-04], [INFRA-11]): **só o que mudou** desde o último que ele recebeu.
+   * - `players`/`npcs`: entidades da vista dele ({@link selectView}) com ao menos um campo diferente do último envio
+   *   (só esses campos + `id`); quem acabou de entrar na vista vai com todos os campos. Quem não veio está igual.
+   * - `gone`: ids que estavam na vista e saíram (longe, limite da multidão ou saíram da zona).
+   * - `events`: só os que interessam a ele ({@link eventFor}).
+   * - `me`: só os campos que mudaram.
+   *
+   * Barato de propósito (é o laço mais quente do servidor): os campos de cada entidade são montados UMA vez por tick
+   * ({@link refreshFields}) e, se nada mudou, o objeto do tick anterior é reaproveitado — então "não mudou desde o
+   * último envio" é só comparar referência. Os pedaços de JSON (`"x":1.25`) já vêm prontos; quem está perto sai de
+   * uma grade espacial ({@link buildGrid}), não de comparar todo mundo com todo mundo.
+   */
   private sendSnapshots(): void {
     if (this.realPlayerCount() === 0) return;
-    const players: Array<[Entity, string]> = Array.from(this.players.values(), (p): [Entity, string] => [p, JSON.stringify(Zone.snapshot(p))]);
-    const npcs: Array<[Entity, string]> = this.npcSnapshots().flatMap((snap): Array<[Entity, string]> => {
-      const dummy: ZoneDummy | undefined = this.dummies.get(snap.id);
-      return dummy === undefined ? [] : [[dummy, JSON.stringify(snap)]];
-    });
-    const events: string = JSON.stringify(this.events);
+    this.refreshFields();
+    const grid: SpatialGrid = this.buildGrid();
+    const events: PreparedEvent[] = this.events.map(Zone.prepareEvent);
     for (const player of this.players.values()) {
       // Fake de teste não tem conexão: não precisa de snapshot.
       if (player.fake !== null) continue;
-      const near = ([entity]: [Entity, string]): boolean => Zone.inView(player, entity);
-      const shared: string = [
-        `"players":[${players.filter(near).map(([, json]) => json).join(",")}]`,
-        `"npcs":[${npcs.filter(near).map(([, json]) => json).join(",")}]`,
-        `"events":${events}`,
-      ].join(",");
-      const me: OwnStatus = {
-        mana: round1(player.mana),
-        maxMana: player.maxMana,
-        respawnIn: player.dead ? round1(Math.max(0, player.respawnTick - this.currentTick) * TICK_SECONDS) : 0,
-        target: player.attackTarget,
-        casting:
-          player.cast === null
-            ? null
-            : {
-                ability: player.cast.ability.id,
-                target: player.cast.targetId ?? "",
-                remaining: round1(Math.max(0, player.cast.endTick - this.currentTick) * TICK_SECONDS),
-              },
-        level: player.progress.level,
-        xp: player.progress.xp,
-        xpNext: xpToNextLevel(player.progress.level),
-        gold: player.progress.gold,
-      };
+      const visible: { players: Entity[]; npcs: Entity[] } = this.selectView(player, grid);
+      const next: Map<string, EntityFields> = new Map();
+      const playersJson: string = this.section(player, visible.players, next);
+      const npcsJson: string = this.section(player, visible.npcs, next);
+      let gone: string = "";
+      for (const id of player.view.keys()) {
+        if (!next.has(id)) gone += (gone.length > 0 ? "," : "") + JSON.stringify(id);
+      }
+      player.view = next;
+      let eventsJson: string = "";
+      for (const prepared of events) {
+        if (Zone.eventFor(player, prepared)) eventsJson += (eventsJson.length > 0 ? "," : "") + prepared.json;
+      }
+      const me: string = Zone.meDiff(player, this.ownStatus(player));
       player.member.send(
-        `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},${shared},"me":${JSON.stringify(me)}}}`,
+        `{"type":"${ServerMessageType.Snapshot}","data":{"tick":${this.currentTick},"ack":${player.lastAppliedSeq},` +
+          `"players":[${playersJson}],"npcs":[${npcsJson}],"gone":[${gone}],"events":[${eventsJson}],"me":{${me}}}}`,
       );
     }
   }
 
   /**
-   * `true` se `entity` vai no snapshot de `viewer`: ele mesmo, o alvo dele ou alguém a até {@link VIEW_RADIUS}.
-   * Mesma regra no snapshot e no `group_positions` (que manda justamente quem fica de fora).
+   * Entradas de [list] para [viewer] (`{"id":..,campos que mudaram}` separadas por vírgula) e anota em [next] o que
+   * ele passa a conhecer. Mesmo objeto do último envio = nada mudou = nada vai.
    */
-  private static inView(viewer: ZonePlayer, entity: Entity): boolean {
-    return entity.id === viewer.id || entity.id === viewer.attackTarget || Zone.distance(entity.state, viewer.state) <= VIEW_RADIUS;
+  private section(viewer: ZonePlayer, list: readonly Entity[], next: Map<string, EntityFields>): string {
+    let out: string = "";
+    for (const entity of list) {
+      const now: EntityFields | undefined = this.fieldCache.get(entity.id);
+      if (now === undefined) continue;
+      next.set(entity.id, now);
+      const before: EntityFields | undefined = viewer.view.get(entity.id);
+      if (before === now) continue;
+      let diff: string;
+      if (before === undefined || before.values.length !== now.values.length) {
+        diff = now.full;
+      } else {
+        diff = "";
+        for (let i = 0; i < now.values.length; i++) {
+          if (before.values[i] !== now.values[i]) diff += (diff.length > 0 ? "," : "") + (now.parts[i] ?? "");
+        }
+        if (diff.length === 0) continue;
+      }
+      out += `${out.length > 0 ? "," : ""}{"id":${now.idJson},${diff}}`;
+    }
+    return out;
+  }
+
+  /**
+   * Campos de snapshot de cada entidade neste tick ({@link fieldCache}). Igual ao tick anterior → mantém o MESMO
+   * objeto (é assim que {@link section} sabe, por referência, que nada mudou). Quem saiu da zona sai do cache.
+   */
+  private refreshFields(): void {
+    const alive: Set<string> = new Set();
+    for (const entity of this.entities()) {
+      alive.add(entity.id);
+      const snap: PlayerSnapshot = Zone.snapshot(entity);
+      const values: Array<number | boolean> = [snap.x, snap.y, snap.z, snap.rotY, snap.hp, snap.maxHp, snap.level, snap.dead, snap.shield, snap.guard, snap.speed];
+      if (snap.mana !== undefined && snap.maxMana !== undefined) values.push(snap.mana, snap.maxMana);
+      const cached: EntityFields | undefined = this.fieldCache.get(entity.id);
+      if (cached !== undefined && cached.values.length === values.length && cached.values.every((v, i) => v === values[i])) continue;
+      const parts: string[] = values.map((value, i) => `"${SNAPSHOT_FIELD_KEYS[i] ?? ""}":${String(value)}`);
+      this.fieldCache.set(entity.id, { idJson: JSON.stringify(entity.id), values, parts, full: parts.join(",") });
+    }
+    for (const id of Array.from(this.fieldCache.keys())) if (!alive.has(id)) this.fieldCache.delete(id);
+  }
+
+  /** Grade espacial do tick (células de {@link VIEW_RADIUS} m): quem está perto de alguém fica nas 9 células em volta. */
+  private buildGrid(): SpatialGrid {
+    const grid: SpatialGrid = new Map();
+    const add = (entity: Entity, kind: "players" | "npcs"): void => {
+      const key: string = Zone.cellKey(Math.floor(entity.state.x / VIEW_RADIUS), Math.floor(entity.state.z / VIEW_RADIUS));
+      let cell: { players: Entity[]; npcs: Entity[] } | undefined = grid.get(key);
+      if (cell === undefined) {
+        cell = { players: [], npcs: [] };
+        grid.set(key, cell);
+      }
+      cell[kind].push(entity);
+    };
+    for (const player of this.players.values()) add(player, "players");
+    for (const npc of this.dummies.values()) add(npc, "npcs");
+    return grid;
+  }
+
+  private static cellKey(cx: number, cz: number): string {
+    return `${cx},${cz}`;
+  }
+
+  /** O que vai no `me` de [player] (todos os campos; {@link meDiff} escolhe os que mudaram). */
+  private ownStatus(player: ZonePlayer): OwnStatus {
+    return {
+      mana: round1(player.mana),
+      maxMana: player.maxMana,
+      respawnIn: player.dead ? round1(Math.max(0, player.respawnTick - this.currentTick) * TICK_SECONDS) : 0,
+      target: player.attackTarget,
+      casting:
+        player.cast === null
+          ? null
+          : {
+              ability: player.cast.ability.id,
+              target: player.cast.targetId ?? "",
+              remaining: round1(Math.max(0, player.cast.endTick - this.currentTick) * TICK_SECONDS),
+            },
+      level: player.progress.level,
+      xp: player.progress.xp,
+      xpNext: xpToNextLevel(player.progress.level),
+      gold: player.progress.gold,
+    };
+  }
+
+  /** Campos do `me` que mudaram desde o último envio a [player] (`"chave":valor,...`; vazio = nada mudou). */
+  private static meDiff(player: ZonePlayer, me: OwnStatus): string {
+    let out: string = "";
+    for (const [key, value] of Object.entries(me)) {
+      const json: string = typeof value === "number" ? String(value) : JSON.stringify(value);
+      if (player.sentMe.get(key) === json) continue;
+      player.sentMe.set(key, json);
+      out += `${out.length > 0 ? "," : ""}"${key}":${json}`;
+    }
+    return out;
+  }
+
+  /**
+   * Quem [viewer] vê neste tick ([INFRA-11]): ele mesmo, o alvo dele e quem está a até {@link VIEW_RADIUS} (procurado
+   * só nas 9 células da [grid] em volta); na multidão, os {@link MAX_VIEW_PLAYERS} jogadores e {@link MAX_VIEW_NPCS}
+   * NPCs mais perto (ele, o alvo e os membros do grupo no raio entram sempre, sem contar no limite).
+   */
+  private selectView(viewer: ZonePlayer, grid: SpatialGrid): { players: Entity[]; npcs: Entity[] } {
+    const group: readonly string[] = this.groups.membersOf(viewer.id);
+    const cx: number = Math.floor(viewer.state.x / VIEW_RADIUS);
+    const cz: number = Math.floor(viewer.state.z / VIEW_RADIUS);
+    const pick = (kind: "players" | "npcs", max: number): Entity[] => {
+      const always: Entity[] = [];
+      const near: Array<{ entity: Entity; distance: number }> = [];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const cell: { players: Entity[]; npcs: Entity[] } | undefined = grid.get(Zone.cellKey(cx + dx, cz + dz));
+          if (cell === undefined) continue;
+          for (const entity of cell[kind]) {
+            if (entity.id === viewer.id || entity.id === viewer.attackTarget) continue;
+            const distance: number = Zone.distance(entity.state, viewer.state);
+            if (distance > VIEW_RADIUS) continue;
+            if (group.includes(entity.id)) always.push(entity);
+            else near.push({ entity, distance });
+          }
+        }
+      }
+      // Ele mesmo e o alvo entram sempre, mesmo longe (o alvo pode estar fora das 9 células).
+      for (const id of [viewer.id, viewer.attackTarget]) {
+        if (id === null) continue;
+        const entity: Entity | undefined = kind === "players" ? this.players.get(id) : this.dummies.get(id);
+        if (entity !== undefined && !always.includes(entity)) always.push(entity);
+      }
+      if (near.length > max) near.sort((a, b) => a.distance - b.distance).length = max;
+      for (const { entity } of near) always.push(entity);
+      return always;
+    };
+    return { players: pick("players", MAX_VIEW_PLAYERS), npcs: pick("npcs", MAX_VIEW_NPCS) };
+  }
+
+  /** Separa uma vez por tick o que {@link eventFor} olha em cada evento (ids envolvidos, ponto) e o JSON dele. */
+  private static prepareEvent(event: CombatEvent): PreparedEvent {
+    const ids: string[] = [];
+    for (const key of ["source", "target", "id", "killer"]) {
+      const id: unknown = Reflect.get(event, key);
+      if (typeof id === "string" && id.length > 0) ids.push(id);
+    }
+    const x: unknown = Reflect.get(event, "x");
+    const z: unknown = Reflect.get(event, "z");
+    return {
+      json: JSON.stringify(event),
+      always: event.type === "look",
+      ids,
+      x: typeof x === "number" ? x : null,
+      z: typeof z === "number" ? z : null,
+    };
+  }
+
+  /**
+   * O evento interessa a [viewer]? Troca de roupa (`look`) vai para todos (é rara e o cliente guarda a roupa de todos).
+   * Os outros: se envolve ele ou alguém da vista dele (`source`, `target`, `id`, `killer`), ou se tem um ponto a até
+   * {@link VIEW_RADIUS} + {@link EVENT_VIEW_MARGIN} dele. Chamar depois de atualizar `viewer.view`.
+   */
+  private static eventFor(viewer: ZonePlayer, event: PreparedEvent): boolean {
+    if (event.always) return true;
+    for (const id of event.ids) if (id === viewer.id || viewer.view.has(id)) return true;
+    if (event.x !== null && event.z !== null) {
+      const dx: number = event.x - viewer.state.x;
+      const dz: number = event.z - viewer.state.z;
+      return dx * dx + dz * dz <= (VIEW_RADIUS + EVENT_VIEW_MARGIN) ** 2;
+    }
+    return false;
   }
 
   /**
@@ -2116,7 +2343,8 @@ export class Zone {
       const far: GroupPositionView[] = [];
       for (const memberId of this.groups.membersOf(player.id)) {
         const member: ZonePlayer | undefined = this.players.get(memberId);
-        if (member === undefined || Zone.inView(player, member)) continue;
+        // Quem já veio no snapshot deste tick (está na vista) não precisa.
+        if (member === undefined || player.view.has(member.id)) continue;
         far.push({ id: member.id, x: round1(member.state.x), z: round1(member.state.z) });
       }
       if (far.length > 0) player.member.send(encodeServerMessage({ type: ServerMessageType.GroupPositions, data: { members: far } }));
@@ -2142,16 +2370,17 @@ export class Zone {
   private randomSpawn(): SpawnPoint {
     const angle: number = Math.random() * Math.PI * 2;
     const radius: number = this.config.spawnRadius;
-    return { x: Math.cos(angle) * radius, y: 0, z: Math.sin(angle) * radius, rotY: 0 };
+    return { x: quantize(Math.cos(angle) * radius), y: 0, z: quantize(Math.sin(angle) * radius), rotY: 0 };
   }
 
   private static snapshot(entity: Entity): PlayerSnapshot {
     return {
       id: entity.id,
-      x: entity.state.x,
-      y: entity.state.y,
-      z: entity.state.z,
-      rotY: entity.state.rotY,
+      // Centímetros e 0,01 rad ([INFRA-11]): jogador já anda em cm (a simulação arredonda); NPC só aqui.
+      x: quantize(entity.state.x),
+      y: quantize(entity.state.y),
+      z: quantize(entity.state.z),
+      rotY: Math.round(entity.state.rotY * 100) / 100,
       hp: round1(entity.hp),
       maxHp: entity.maxHp,
       level: entity.level,

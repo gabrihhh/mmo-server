@@ -6,6 +6,7 @@ import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js"
 import { goldReward, groupXp, xpReward, type Progress } from "../src/progression/level.js";
 import { GROUP_INVITE_SECONDS, GROUP_MAX_MEMBERS, GROUP_POSITIONS_HZ, type CastData } from "../src/net/protocol.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
+import { SnapshotView } from "./helpers.js";
 
 /** Grupo ([SOC-03]): convite, líder, saída, sem dano entre membros e XP do grupo. */
 
@@ -20,6 +21,8 @@ class Member implements ZoneMember {
   readonly name: string;
   readonly inbox: Received[] = [];
   last: Record<string, unknown> = {};
+  /** Estado inteiro montado dos snapshots por diferença (como o cliente). */
+  private readonly snapshots: SnapshotView = new SnapshotView();
   saved: Progress | null = null;
   hides: boolean = false;
   constructor(readonly id: string) {
@@ -30,7 +33,7 @@ class Member implements ZoneMember {
     if (typeof decoded !== "object" || decoded === null || !("type" in decoded) || !("data" in decoded)) return;
     if (typeof decoded.type !== "string" || typeof decoded.data !== "object" || decoded.data === null) return;
     const data: Record<string, unknown> = Object.fromEntries(Object.entries(decoded.data));
-    if (decoded.type === "snapshot") this.last = data;
+    if (decoded.type === "snapshot") this.last = this.snapshots.apply(data);
     else this.inbox.push({ type: decoded.type, data });
   }
   onProgress(progress: Progress): void {

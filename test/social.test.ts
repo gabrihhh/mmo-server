@@ -6,6 +6,7 @@ import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js"
 import { PLAYER_MAX_HP, PLAYER_MAX_MANA, PLAYER_RESPAWN_SECONDS } from "../src/combat/stats.js";
 import { playerFactor } from "../src/progression/level.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
+import { SnapshotView } from "./helpers.js";
 
 /** Social, etapa 1 ([SOC-01], [SOC-02]): jogadores fake de teste e a mensagem de Atributos. */
 
@@ -13,6 +14,8 @@ import { TICK_RATE_HZ } from "../src/sim/movement.js";
 class Member implements ZoneMember {
   readonly name: string;
   last: Record<string, unknown> = {};
+  /** Estado inteiro montado dos snapshots por diferença (como o cliente). */
+  private readonly snapshots: SnapshotView = new SnapshotView();
   readonly damaged: string[] = [];
   readonly deaths: string[] = [];
   constructor(readonly id: string) {
@@ -24,7 +27,7 @@ class Member implements ZoneMember {
     if (decoded.type !== "snapshot" || typeof decoded.data !== "object" || decoded.data === null) return;
     const data: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(decoded.data)) data[k] = v;
-    this.last = data;
+    this.last = this.snapshots.apply(data);
     const events: unknown = data["events"];
     if (!Array.isArray(events)) return;
     for (const e of events) {
