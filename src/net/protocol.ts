@@ -19,13 +19,14 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v26: PvP ([JOGO-22]): `levelsLost` no `death_report` (morte para jogador: −1 nível, moedas para quem matou).
  * v25: tela de morte ([JOGO-21]): `death_report` (perdas e a peça da roleta) e `respawn` (renascer pelo botão).
  * v24: fusão no ferreiro ([JOGO-20]): `fuse`/`fuse_result`, `xp`/`xpNext`/`fusionXp` no ItemView.
  * v23: baús dos acampamentos ([JOGO-19]): `chests` no welcome, evento `chest`, `chest_open`/`chest_take`/`chest_loot`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 25;
+export const PROTOCOL_VERSION = 26;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -434,6 +435,8 @@ export interface DeathReportData {
   readonly killer: string;
   readonly goldLost: number;
   readonly xpLost: number;
+  /** Níveis perdidos (morte para jogador, [JOGO-22]). */
+  readonly levelsLost: number;
   readonly equipped: readonly DeathItemView[];
   readonly pickedSlot: EquipSlotName | null;
   readonly broken: boolean;

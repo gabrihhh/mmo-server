@@ -972,6 +972,7 @@ export class GameServer {
           killer: info.killer,
           goldLost: info.goldLost,
           xpLost: info.xpLost,
+          levelsLost: info.levelsLost,
           equipped,
           pickedSlot: roll.slot,
           broken: roll.broken,

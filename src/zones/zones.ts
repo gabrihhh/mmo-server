@@ -1,4 +1,5 @@
 import type { CampConfig, DummyConfig, FakePlayerConfig, ZoneConfig } from "./Zone.js";
+import { SAFE_ZONE_HALF } from "../combat/pvp.js";
 import { parseZoneMap, type MonsterKind, type MonsterSpawn, type ZoneMapData } from "./zoneMap.js";
 // Monstros e lugar dos NPCs de teste: exportados do spawn.blend ([ART-10]). Importado (não lido do disco) para o
 // `tsx watch` recarregar o servidor sozinho quando o arquivo muda.
@@ -187,6 +188,8 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     spawnRadius: 3.5,
     // PvP ligado: é assim que testamos ([JOGO-02]). Zonas seguras virão com `pvp: false`.
     pvp: true,
+    // Em cima das pedras da praça (20 × 20 m) não há PvP ([JOGO-22]).
+    safeZoneHalf: SAFE_ZONE_HALF,
     // NPCs de teste e zumbis ([JOGO-13]) onde estão no mapa do Blender ([ART-10]).
     dummies: [...placeTestNpcs(ZONE_1_MAP), ...ZONE_1_MAP.monsters.map(zombie)],
     // Baús dos acampamentos ([JOGO-19]): cada um com os monstros da subcoleção dele no Blender.

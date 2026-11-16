@@ -52,6 +52,7 @@ import type { Inventory, ItemStack } from "../items/inventory.js";
 import { rollChestLoot, type LootEntry } from "../items/loot.js";
 import { fuseItems, type FusionResult } from "../items/fusion.js";
 import { deathPenalty, type DeathPenalty } from "../combat/death.js";
+import { inSafeZone, pvpKill, pvpLevelsAllowed, type PvpKill } from "../combat/pvp.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
 import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
@@ -237,6 +238,11 @@ export interface ZoneConfig {
   readonly fakePlayers?: readonly FakePlayerConfig[];
   /** Acampamentos com baú ([JOGO-19]); ausente = nenhum. */
   readonly camps?: readonly CampConfig[];
+  /**
+   * Área segura no centro ([JOGO-22]): metade do lado (m) do quadrado onde não há PvP (a praça de pedra da zona 1 =
+   * `SAFE_ZONE_HALF`). Ausente/0 = nenhuma.
+   */
+  readonly safeZoneHalf?: number;
 }
 
 /**
@@ -308,6 +314,8 @@ export interface NetStats {
 export interface DeathInfo {
   readonly goldLost: number;
   readonly xpLost: number;
+  /** Níveis perdidos (morte para jogador: 1, ou 0 no nível 0, [JOGO-22]; morte para monstro: 0). */
+  readonly levelsLost: number;
   /** Nome de quem matou (monstro, NPC ou jogador). */
   readonly killer: string;
 }
@@ -1667,6 +1675,22 @@ export class Zone {
    * avisa todos (`level_up`). XP e moedas só vão para ele (no `me` do snapshot): os outros veem o nível, não quanto
    * falta nem o dinheiro. O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
    */
+  /**
+   * Troca o progresso de [player] por [progress] (PvP, [JOGO-22]): mudou o nível → refaz vida/mana máximas, avisa a
+   * zona (`level_up` quando sobe) e o grupo; salva por `onProgress`.
+   */
+  private setProgress(player: ZonePlayer, progress: Progress): void {
+    const rose: boolean = progress.level > player.level;
+    player.progress = progress;
+    if (progress.level !== player.level) {
+      player.level = progress.level;
+      this.applyPlayerStats(player);
+      if (rose) this.events.push({ type: "level_up", id: player.id, level: progress.level });
+      this.groups.refresh(player.id);
+    }
+    player.member.onProgress?.(progress);
+  }
+
   private grantReward(player: ZonePlayer, amount: number, gold: number): void {
     const progress: Progress = addGold(addXp(player.progress, amount), gold);
     player.progress = progress;
@@ -2050,6 +2074,10 @@ export class Zone {
     if (target.kind === "dummy") return target.behavior.kind !== "punchingBag";
     // Membros do mesmo grupo nunca se atingem, mesmo com PvP ([SOC-03]): vale para alvo, linha, área e projétil.
     if (this.groups.sameGroup(source.id, target.id)) return false;
+    // PvP ([JOGO-22]): só até 10 níveis de diferença e ninguém em cima das pedras da praça (área segura).
+    if (!pvpLevelsAllowed(source.level, target.level)) return false;
+    const safe: number = this.config.safeZoneHalf ?? 0;
+    if (inSafeZone(source.state.x, source.state.z, safe) || inSafeZone(target.state.x, target.state.z, safe)) return false;
     return this.config.pvp;
   }
 
@@ -2230,11 +2258,17 @@ export class Zone {
       // Morreu: sai da tabela de ameaça dos monstros ([JOGO-14]).
       this.forgetThreat(target.id);
       // Perde moedas e XP ([JOGO-21]); a tela de morte (roleta do item) é de quem guarda o inventário. Fake não perde.
-      if (target.fake === null) {
+      if (target.fake === null && source.kind === "player" && source.id !== target.id) {
+        // Morto por jogador ([JOGO-22]): perde 1 nível e 10% das moedas, que vão para quem matou (+1 nível).
+        const kill: PvpKill = pvpKill(source.progress, target.progress);
+        this.setProgress(source, kill.killer);
+        this.setProgress(target, kill.victim);
+        target.member.onDeath?.({ goldLost: kill.goldMoved, xpLost: 0, levelsLost: kill.levelsLost, killer: source.name });
+      } else if (target.fake === null) {
         const penalty: DeathPenalty = deathPenalty(target.progress);
         target.progress = penalty.progress;
         target.member.onProgress?.(target.progress);
-        target.member.onDeath?.({ goldLost: penalty.goldLost, xpLost: penalty.xpLost, killer: source.name });
+        target.member.onDeath?.({ goldLost: penalty.goldLost, xpLost: penalty.xpLost, levelsLost: 0, killer: source.name });
       }
     } else {
       Zone.resetThreat(target);
