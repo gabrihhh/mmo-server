@@ -19,12 +19,13 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v25: tela de morte ([JOGO-21]): `death_report` (perdas e a peça da roleta) e `respawn` (renascer pelo botão).
  * v24: fusão no ferreiro ([JOGO-20]): `fuse`/`fuse_result`, `xp`/`xpNext`/`fusionXp` no ItemView.
  * v23: baús dos acampamentos ([JOGO-19]): `chests` no welcome, evento `chest`, `chest_open`/`chest_take`/`chest_loot`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 24;
+export const PROTOCOL_VERSION = 25;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -75,6 +76,8 @@ export const ClientMessageType = {
    * {@link ServerMessageType.FuseResult} + `inventory`, ou erro.
    */
   Fuse: "fuse",
+  /** Tela de morte → "Renascer" ([JOGO-21]): renasce no spawn agora (sem esperar o automático). Sem payload. */
+  Respawn: "respawn",
   /**
    * Pega um item/moedas do baú. Payload: {@link ChestTakeData}. Resposta: `chest_loot` atualizado (+ `inventory` se foi
    * item; as moedas vêm no `me` do snapshot), ou erro (`bag_full` deixa o item no baú).
@@ -135,6 +138,8 @@ export const ServerMessageType = {
   ChestLoot: "chest_loot",
   /** Resultado de uma fusão no ferreiro ([JOGO-20]). Payload: {@link FuseResultData}. */
   FuseResult: "fuse_result",
+  /** Você morreu ([JOGO-21]): o que perdeu e a peça da roleta. Payload: {@link DeathReportData}. Só para quem morreu. */
+  DeathReport: "death_report",
   /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
   Attributes: "attributes",
   /**
@@ -414,6 +419,27 @@ export interface UnequipData {
 }
 
 /** Payload de `upgrade`: o item (vestido ou na mochila) e o atributo escolhido ([JOGO-16]). */
+/** Uma peça vestida na hora da morte (o que a roleta mostra). */
+export interface DeathItemView {
+  readonly slot: EquipSlotName;
+  readonly item: ItemView;
+}
+
+/**
+ * Payload de `death_report` ([JOGO-21]): quem matou, moedas e XP perdidas, as peças vestidas (a roleta), qual foi
+ * sorteada (`null` = nada vestido) e se quebrou (sumiu), e em quantos segundos renasce sozinho.
+ * ATENÇÃO: lido em mmo-client/scripts/network/network.gd (DeathReport).
+ */
+export interface DeathReportData {
+  readonly killer: string;
+  readonly goldLost: number;
+  readonly xpLost: number;
+  readonly equipped: readonly DeathItemView[];
+  readonly pickedSlot: EquipSlotName | null;
+  readonly broken: boolean;
+  readonly autoRespawnSeconds: number;
+}
+
 /** Payload de `fuse` ([JOGO-20]): o item que sobe e o item igual que é sacrificado (da mochila). */
 export interface FuseData {
   readonly targetUid: string;
@@ -580,6 +606,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
+  | { readonly type: typeof ClientMessageType.Respawn; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ChestTake; readonly data: ChestTakeData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
@@ -1075,6 +1102,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.UpgradeResult; readonly data: UpgradeResultData }
   | { readonly type: typeof ServerMessageType.ChestLoot; readonly data: ChestLootData }
   | { readonly type: typeof ServerMessageType.FuseResult; readonly data: FuseResultData }
+  | { readonly type: typeof ServerMessageType.DeathReport; readonly data: DeathReportData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
@@ -1404,6 +1432,8 @@ export function parseClientMessage(text: string): ClientMessage | null {
       const data = parseUpgradeData(raw);
       return data === null ? null : { type: ClientMessageType.Upgrade, data };
     }
+    case ClientMessageType.Respawn:
+      return { type: ClientMessageType.Respawn, data: {} };
     case ClientMessageType.Fuse: {
       const data = parseFuseData(raw);
       return data === null ? null : { type: ClientMessageType.Fuse, data };

@@ -51,6 +51,7 @@ import { CRIT_MULTIPLIER, NO_EFFECTS, type AttributeEffects, type AttributeId } 
 import type { Inventory, ItemStack } from "../items/inventory.js";
 import { rollChestLoot, type LootEntry } from "../items/loot.js";
 import { fuseItems, type FusionResult } from "../items/fusion.js";
+import { deathPenalty, type DeathPenalty } from "../combat/death.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
 import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
@@ -103,6 +104,11 @@ export interface ZoneMember {
   send(text: string): void;
   /** Nível/XP mudaram (matou um monstro, [JOGO-12]): quem guarda a conta salva. Ausente = não salva (testes). */
   onProgress?(progress: Progress): void;
+  /**
+   * Morreu ([JOGO-21]): a zona já tirou as moedas/XP (e salvou por {@link onProgress}); quem guarda o inventário sorteia
+   * a peça da roleta e manda a tela de morte. `killer` = nome de quem matou. Ausente = nada (testes, fakes).
+   */
+  onDeath?(info: DeathInfo): void;
   /**
    * `true` = este jogador oculta convites de grupo: todo convite é recusado sozinho, sem aparecer para ele, e quem
    * convidou recebe o aviso "X recusou o convite" ([SOC-03]). Ausente = mostra os convites.
@@ -296,6 +302,14 @@ export interface NetStats {
   maxQueue: number;
   /** Passos jogados fora por fila cheia. */
   dropped: number;
+}
+
+/** O que a zona conta a quem guarda a conta quando o jogador morre ([JOGO-21]). */
+export interface DeathInfo {
+  readonly goldLost: number;
+  readonly xpLost: number;
+  /** Nome de quem matou (monstro, NPC ou jogador). */
+  readonly killer: string;
 }
 
 /** Resultado de {@link Zone.join}: lotada, ou aceito com a lista de quem está na zona (inclusive ele). */
@@ -2215,6 +2229,13 @@ export class Zone {
       target.dash = null;
       // Morreu: sai da tabela de ameaça dos monstros ([JOGO-14]).
       this.forgetThreat(target.id);
+      // Perde moedas e XP ([JOGO-21]); a tela de morte (roleta do item) é de quem guarda o inventário. Fake não perde.
+      if (target.fake === null) {
+        const penalty: DeathPenalty = deathPenalty(target.progress);
+        target.progress = penalty.progress;
+        target.member.onProgress?.(target.progress);
+        target.member.onDeath?.({ goldLost: penalty.goldLost, xpLost: penalty.xpLost, killer: source.name });
+      }
     } else {
       Zone.resetThreat(target);
     }
@@ -2302,6 +2323,15 @@ export class Zone {
       }
       this.events.push({ type: "chest", id: camp.config.id, open: false, x: camp.config.x, z: camp.config.z });
     }
+  }
+
+  /**
+   * "Renascer" na tela de morte ([JOGO-21]): o jogador morto renasce no próximo tick (no spawn), sem esperar o
+   * {@link PLAYER_RESPAWN_SECONDS} automático. Vivo ou fora da zona: nada.
+   */
+  requestRespawn(playerId: string): void {
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    if (player !== undefined && player.dead) player.respawnTick = this.currentTick;
   }
 
   /** Baús da zona como vão no `welcome`: onde ficam, nível, chefe e se está aberto agora. */

@@ -28,16 +28,20 @@ import {
   type FriendView,
   type ServerMessage,
   type SocialSettings,
+  type DeathItemView,
+  type ItemView,
 } from "./net/protocol.js";
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
-import { Zone, type CastFailure, type CastResult, type ChestFailure, type JoinResult, type NetStats, type SpawnPoint, type TakenLoot, type ZoneConfig } from "./zones/Zone.js";
+import { Zone, type CastFailure, type CastResult, type ChestFailure, type DeathInfo, type JoinResult, type NetStats, type SpawnPoint, type TakenLoot, type ZoneConfig } from "./zones/Zone.js";
 import type { LootEntry } from "./items/loot.js";
 import { levelXp, type FusionFailure } from "./items/fusion.js";
+import { breakEquipped, rollDeathItem, type ItemRoll } from "./combat/death.js";
+import { PLAYER_RESPAWN_SECONDS } from "./combat/stats.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
-import type { EquipSlot } from "./items/catalog.js";
+import { EQUIP_SLOTS, type EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 import { DEFAULT_UPDATE_POLL_MS, UpdateWatcher } from "./http/updateWatcher.js";
@@ -57,7 +61,7 @@ import {
   type InventoryResult,
   type ItemStack,
 } from "./items/inventory.js";
-import { inventoryView, lootViews } from "./items/view.js";
+import { inventoryView, itemView, lootViews } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
 export interface GameServerOptions {
@@ -454,6 +458,9 @@ export class GameServer {
         return;
       case ClientMessageType.Upgrade:
         void this.handleUpgrade(session, message.data.uid, message.data.attribute);
+        return;
+      case ClientMessageType.Respawn:
+        if (session.zone !== null && session.account !== null) session.zone.requestRespawn(session.account.playerId);
         return;
       case ClientMessageType.Fuse:
         void this.handleFuse(session, message.data.targetUid, message.data.materialUid);
@@ -938,6 +945,43 @@ export class GameServer {
 
   /** Código do protocolo para cada recusa do ferreiro. */
   /**
+   * Morte ([JOGO-21]): a zona já tirou moedas/XP. Aqui sorteia uma peça vestida (a roleta); se quebrou ({@link
+   * ITEM_BREAK_CHANCE}), ela some do inventário (salva e manda o `inventory`). Depois manda o `death_report`.
+   */
+  private async handleDeath(session: Session, info: DeathInfo): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) return;
+    const before = account.inventory;
+    const equipped: DeathItemView[] = [];
+    for (const slot of EQUIP_SLOTS) {
+      const stack: ItemStack | null = before.equipped[slot];
+      const view: ItemView | null = stack === null ? null : itemView(stack);
+      if (view !== null) equipped.push({ slot, item: view });
+    }
+    const roll: ItemRoll = rollDeathItem(before, Math.random);
+    const broken: EquipSlot | null = roll.broken ? roll.slot : null;
+    if (broken !== null) {
+      this.log(`[morte] ${account.username} perdeu ${before.equipped[broken]?.itemId ?? "?"} (quebrou)`);
+      await this.changeInventory(session, (inventory) => ({ ok: true, inventory: breakEquipped(inventory, broken) }));
+    }
+    if (session.socket.readyState !== WebSocket.OPEN) return;
+    session.socket.send(
+      encodeServerMessage({
+        type: ServerMessageType.DeathReport,
+        data: {
+          killer: info.killer,
+          goldLost: info.goldLost,
+          xpLost: info.xpLost,
+          equipped,
+          pickedSlot: roll.slot,
+          broken: roll.broken,
+          autoRespawnSeconds: PLAYER_RESPAWN_SECONDS,
+        },
+      }),
+    );
+  }
+
+  /**
    * Fusão no ferreiro ([JOGO-20]): perto dele, funde o item igual da mochila no escolhido. Aceita → atualiza a zona
    * (atributos/aparência), salva, manda `fuse_result` e o `inventory`.
    */
@@ -1171,6 +1215,10 @@ export class GameServer {
           this.options.accounts.saveProgress(account.playerId, progress).catch((error: unknown) => {
             console.error(`[${session.connectionId}] falha ao salvar nível/XP de ${account.username}:`, error);
           });
+        },
+        // Morreu ([JOGO-21]): sorteia a peça da roleta (pode quebrar) e manda a tela de morte.
+        onDeath: (info: DeathInfo): void => {
+          void this.handleDeath(session, info);
         },
         // Configuração → "Convites de grupo: Ocultar" ([SOC-04]): lido a cada convite, então mudar vale na hora.
         hidesGroupInvites: (): boolean => session.account?.social.groupInvites === "hide",

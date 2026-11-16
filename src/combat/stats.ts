@@ -11,8 +11,11 @@ export const PLAYER_MAX_MANA = 100;
 export const HP_REGEN_PER_SECOND = 2;
 export const MANA_REGEN_PER_SECOND = 5;
 
-/** Tempo até o jogador renascer (no spawn, vida/mana cheias). */
-export const PLAYER_RESPAWN_SECONDS = 5;
+/**
+ * Tempo até o jogador renascer **sozinho** (no spawn, vida/mana cheias). Antes disso ele renasce quando tocar em
+ * "Renascer" na tela de morte ([JOGO-21], mensagem `respawn`). Era 5 s automático até 2026-11-15.
+ */
+export const PLAYER_RESPAWN_SECONDS = 60;
 
 /** Vida do boneco de treino e o tempo até ele reaparecer. Boneco não regenera. */
 export const DUMMY_MAX_HP = 200;
