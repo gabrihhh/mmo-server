@@ -19,11 +19,12 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v24: fusão no ferreiro ([JOGO-20]): `fuse`/`fuse_result`, `xp`/`xpNext`/`fusionXp` no ItemView.
  * v23: baús dos acampamentos ([JOGO-19]): `chests` no welcome, evento `chest`, `chest_open`/`chest_take`/`chest_loot`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 23;
+export const PROTOCOL_VERSION = 24;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -69,6 +70,11 @@ export const ClientMessageType = {
    * {@link ServerMessageType.ChestLoot} com o que sobrou para você, ou erro.
    */
   ChestOpen: "chest_open",
+  /**
+   * Funde um item em outro igual no ferreiro (perto dele, [JOGO-20]). Payload: {@link FuseData}. Resposta:
+   * {@link ServerMessageType.FuseResult} + `inventory`, ou erro.
+   */
+  Fuse: "fuse",
   /**
    * Pega um item/moedas do baú. Payload: {@link ChestTakeData}. Resposta: `chest_loot` atualizado (+ `inventory` se foi
    * item; as moedas vêm no `me` do snapshot), ou erro (`bag_full` deixa o item no baú).
@@ -127,6 +133,8 @@ export const ServerMessageType = {
   UpgradeResult: "upgrade_result",
   /** O que sobrou para você num baú de acampamento ([JOGO-19]). Payload: {@link ChestLootData}. */
   ChestLoot: "chest_loot",
+  /** Resultado de uma fusão no ferreiro ([JOGO-20]). Payload: {@link FuseResultData}. */
+  FuseResult: "fuse_result",
   /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
   Attributes: "attributes",
   /**
@@ -239,6 +247,10 @@ export const ErrorCode = {
   ChestClosed: "chest_closed",
   /** Item/moedas que não estão (mais) no seu baú. A conexão continua. */
   LootNotFound: "loot_not_found",
+  /** Fusão ([JOGO-20]) de dois itens diferentes (só o mesmo item funde). A conexão continua. */
+  NotSameItem: "not_same_item",
+  /** Fusão: o item a sacrificar está vestido (tire antes). A conexão continua. */
+  MaterialEquipped: "material_equipped",
   /** Grupo ([SOC-03]): convidar/expulsar sem ser o líder. A conexão continua. */
   NotGroupLeader: "not_group_leader",
   /** Grupo já tem o máximo de membros ({@link GROUP_MAX_MEMBERS}). A conexão continua. */
@@ -402,6 +414,22 @@ export interface UnequipData {
 }
 
 /** Payload de `upgrade`: o item (vestido ou na mochila) e o atributo escolhido ([JOGO-16]). */
+/** Payload de `fuse` ([JOGO-20]): o item que sobe e o item igual que é sacrificado (da mochila). */
+export interface FuseData {
+  readonly targetUid: string;
+  readonly materialUid: string;
+}
+
+/** Payload de `fuse_result`: o item que subiu, quantos níveis ganhou, experiência recebida e onde ficou. */
+export interface FuseResultData {
+  readonly uid: string;
+  readonly levelsGained: number;
+  readonly xpGained: number;
+  readonly level: number;
+  readonly xp: number;
+  readonly xpNext: number;
+}
+
 /** Payload de `chest_open` ([JOGO-19]). */
 export interface ChestRequestData {
   readonly chestId: string;
@@ -551,6 +579,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
+  | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
   | { readonly type: typeof ClientMessageType.ChestTake; readonly data: ChestTakeData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
@@ -806,6 +835,13 @@ export interface ItemView {
   /** Preço (moedas) e chance (0 a 1) da próxima melhoria. O cliente não calcula. */
   readonly upgradeCost: number;
   readonly upgradeChance: number;
+  /**
+   * Fusão ([JOGO-20]): experiência juntada rumo ao próximo nível, quanto o próximo nível pede e quanto este item vale
+   * se for fundido em outro igual. ATENÇÃO: lido em mmo-client/scripts/items/inventory_state.gd.
+   */
+  readonly xp: number;
+  readonly xpNext: number;
+  readonly fusionXp: number;
 }
 
 /** Payload de `inventory`. */
@@ -1038,6 +1074,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Inventory; readonly data: InventoryView }
   | { readonly type: typeof ServerMessageType.UpgradeResult; readonly data: UpgradeResultData }
   | { readonly type: typeof ServerMessageType.ChestLoot; readonly data: ChestLootData }
+  | { readonly type: typeof ServerMessageType.FuseResult; readonly data: FuseResultData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
@@ -1175,6 +1212,12 @@ const isBagIndex = (value: unknown): value is number => isFiniteNumber(value) &&
 /** Id curto e não vazio (baú, item do baú). */
 function isShortId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 64;
+}
+
+/** Valida o payload de `fuse`. */
+export function parseFuseData(data: unknown): FuseData | null {
+  if (!isRecord(data) || !isShortId(data["targetUid"]) || !isShortId(data["materialUid"])) return null;
+  return { targetUid: data["targetUid"], materialUid: data["materialUid"] };
 }
 
 /** Valida o payload de `chest_open`. */
@@ -1360,6 +1403,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Upgrade: {
       const data = parseUpgradeData(raw);
       return data === null ? null : { type: ClientMessageType.Upgrade, data };
+    }
+    case ClientMessageType.Fuse: {
+      const data = parseFuseData(raw);
+      return data === null ? null : { type: ClientMessageType.Fuse, data };
     }
     case ClientMessageType.ChestOpen: {
       const data = parseChestRequestData(raw);

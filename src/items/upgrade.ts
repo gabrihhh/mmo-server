@@ -88,7 +88,9 @@ export function upgradeItem(inventory: Inventory, uid: string, attribute: Attrib
   const attrs: Partial<Record<AttributeId, number>> = { ...found.stack.attrs };
   const current: number = attrs[attribute] ?? 0;
   attrs[attribute] = current + (current > 0 ? REINFORCE_POINTS : NEW_ATTRIBUTE_POINTS);
-  const stack: ItemStack = { uid: found.stack.uid, itemId: found.stack.itemId, level: level + 1, attrs };
+  // A experiência da fusão ([JOGO-20]) continua com o item.
+  const xp: number | undefined = found.stack.xp;
+  const stack: ItemStack = { uid: found.stack.uid, itemId: found.stack.itemId, level: level + 1, attrs, ...(xp !== undefined ? { xp } : {}) };
   const next: Inventory =
     "slot" in found
       ? { ...inventory, equipped: { ...inventory.equipped, [found.slot]: stack } }

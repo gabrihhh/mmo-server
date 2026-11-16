@@ -2,6 +2,7 @@ import type { AbilityView, InventoryView, ItemView, LootView } from "../net/prot
 import type { LootEntry } from "./loot.js";
 import { BAG_CAPACITY, type Inventory, type ItemStack } from "./inventory.js";
 import { upgradeAttributesOf, upgradeChance, upgradeCost } from "./upgrade.js";
+import { itemXp, levelXp } from "./fusion.js";
 import { SET_PROFILES, UNARMED_ATTACK, getItem, type AbilityDef } from "./catalog.js";
 
 /**
@@ -57,6 +58,10 @@ export function itemView(stack: ItemStack): ItemView | null {
     upgradeAttributes: upgradeAttributesOf(stack),
     upgradeCost: upgradeCost(stack.level ?? 0),
     upgradeChance: upgradeChance(stack.level ?? 0),
+    // Fusão ([JOGO-20]): barrinha rumo ao próximo nível e quanto vale se for fundido.
+    xp: stack.xp ?? 0,
+    xpNext: levelXp(stack.level ?? 0),
+    fusionXp: itemXp(stack),
   };
 }
 

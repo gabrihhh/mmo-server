@@ -20,6 +20,11 @@ export interface ItemStack {
   readonly level?: number;
   /** Pontos de atributo ganhos nas melhorias ([JOGO-16]). Ausente = nenhum. */
   readonly attrs?: AttributePoints;
+  /**
+   * Experiência juntada rumo ao próximo nível pela fusão ([JOGO-20], `src/items/fusion.ts`): o que sobrou depois de
+   * subir. Ausente = 0.
+   */
+  readonly xp?: number;
 }
 
 /** Inventário completo. */
@@ -144,13 +149,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** Lê um ItemStack guardado; `null` se inválido ou de item que não existe mais. */
 function readStack(value: unknown): ItemStack | null {
   if (!isRecord(value)) return null;
-  const { uid, itemId, level, attrs } = value;
+  const { uid, itemId, level, attrs, xp } = value;
   if (typeof uid !== "string" || typeof itemId !== "string" || getItem(itemId) === undefined) return null;
   // Melhoria ([JOGO-16]): só guarda os campos se o item foi melhorado (item +0 continua { uid, itemId }).
   const safeLevel: number = typeof level === "number" && Number.isSafeInteger(level) && level > 0 ? level : 0;
   const points: AttributePoints = readPoints(attrs);
-  if (safeLevel === 0 && Object.keys(points).length === 0) return { uid, itemId };
-  return { uid, itemId, level: safeLevel, attrs: points };
+  // Experiência da fusão ([JOGO-20]): só guarda se tiver.
+  const safeXp: number = typeof xp === "number" && Number.isFinite(xp) && xp > 0 ? Math.round(xp * 10) / 10 : 0;
+  if (safeLevel === 0 && Object.keys(points).length === 0 && safeXp === 0) return { uid, itemId };
+  return { uid, itemId, level: safeLevel, attrs: points, ...(safeXp > 0 ? { xp: safeXp } : {}) };
 }
 
 /**

@@ -50,6 +50,7 @@ import {
 import { CRIT_MULTIPLIER, NO_EFFECTS, type AttributeEffects, type AttributeId } from "../items/attributes.js";
 import type { Inventory, ItemStack } from "../items/inventory.js";
 import { rollChestLoot, type LootEntry } from "../items/loot.js";
+import { fuseItems, type FusionResult } from "../items/fusion.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
 import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
@@ -1678,6 +1679,17 @@ export class Zone {
     player.progress = { ...player.progress, gold: player.progress.gold - result.cost };
     player.member.onProgress?.(player.progress);
     return result;
+  }
+
+  /**
+   * Fusão no ferreiro ([JOGO-20]): [playerId] perto de um ferreiro funde [materialUid] em [targetUid] (os dois o mesmo
+   * item). Sem moedas; o sorteio dos atributos usa o sorteador da zona. Devolve o resultado para quem guarda o
+   * inventário.
+   */
+  fuseItem(playerId: string, inventory: Inventory, targetUid: string, materialUid: string): FusionResult | { readonly ok: false; readonly reason: "too_far" } {
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    if (player === undefined || player.dead || !this.nearBlacksmith(player)) return { ok: false, reason: "too_far" };
+    return fuseItems(inventory, targetUid, materialUid, this.random);
   }
 
   /** `true` se há um ferreiro a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador. */

@@ -32,6 +32,7 @@ import {
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
 import { Zone, type CastFailure, type CastResult, type ChestFailure, type JoinResult, type NetStats, type SpawnPoint, type TakenLoot, type ZoneConfig } from "./zones/Zone.js";
 import type { LootEntry } from "./items/loot.js";
+import { levelXp, type FusionFailure } from "./items/fusion.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
@@ -453,6 +454,9 @@ export class GameServer {
         return;
       case ClientMessageType.Upgrade:
         void this.handleUpgrade(session, message.data.uid, message.data.attribute);
+        return;
+      case ClientMessageType.Fuse:
+        void this.handleFuse(session, message.data.targetUid, message.data.materialUid);
         return;
       case ClientMessageType.ChestOpen:
         this.handleChestOpen(session, message.data.chestId);
@@ -933,6 +937,49 @@ export class GameServer {
   }
 
   /** Código do protocolo para cada recusa do ferreiro. */
+  /**
+   * Fusão no ferreiro ([JOGO-20]): perto dele, funde o item igual da mochila no escolhido. Aceita → atualiza a zona
+   * (atributos/aparência), salva, manda `fuse_result` e o `inventory`.
+   */
+  private async handleFuse(session: Session, targetUid: string, materialUid: string): Promise<void> {
+    const account: Account | null = session.account;
+    const zone: Zone | null = session.zone;
+    if (account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const result = zone.fuseItem(account.playerId, account.inventory, targetUid, materialUid);
+    if (!result.ok) {
+      this.sendError(session, GameServer.FUSE_ERRORS[result.reason], GameServer.FUSE_MESSAGES[result.reason]);
+      return;
+    }
+    await this.changeInventory(session, () => ({ ok: true, inventory: result.inventory }));
+    if (session.socket.readyState === WebSocket.OPEN) {
+      const level: number = result.stack.level ?? 0;
+      session.socket.send(
+        encodeServerMessage({
+          type: ServerMessageType.FuseResult,
+          data: { uid: targetUid, levelsGained: result.levelsGained, xpGained: result.xpGained, level, xp: result.stack.xp ?? 0, xpNext: levelXp(level) },
+        }),
+      );
+    }
+  }
+
+  private static readonly FUSE_ERRORS: Readonly<Record<FusionFailure | "too_far", ErrorCode>> = {
+    item_not_found: ErrorCode.ItemNotFound,
+    not_same_item: ErrorCode.NotSameItem,
+    material_equipped: ErrorCode.MaterialEquipped,
+    too_far: ErrorCode.TooFar,
+  };
+
+  /** Mensagens (em português) das recusas da fusão. */
+  private static readonly FUSE_MESSAGES: Readonly<Record<FusionFailure | "too_far", string>> = {
+    item_not_found: "Esse item não é seu.",
+    not_same_item: "Só dá para fundir itens iguais.",
+    material_equipped: "Tire o item antes de fundir.",
+    too_far: "Chegue perto do ferreiro.",
+  };
+
   /** Abrir o baú ([JOGO-19]): manda o que sobrou para o jogador (ou a recusa). */
   private handleChestOpen(session: Session, chestId: string): void {
     if (session.account === null || session.zone === null) {
