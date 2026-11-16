@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { BAG_CAPACITY, equip, moveInBag, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
+import { BAG_CAPACITY, equip, fullKitInventory, moveInBag, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
 import {
   ABILITIES_PER_SLOT,
   ASSASSIN_SET,
@@ -49,11 +49,13 @@ describe("catálogo e inventário", () => {
     }
   });
 
-  it("conta nova nasce pelada, com todos os conjuntos na mochila", () => {
+  it("conta nova nasce sem nenhum item (nada vestido, mochila vazia) e sem presentes pendentes", () => {
     const inv: Inventory = starterInventory();
     for (const slot of EQUIP_SLOTS) assert.strictEqual(inv.equipped[slot], null, slot);
-    assert.deepStrictEqual(inv.bag.map((s) => s.itemId), [...STARTER_BAG]);
-    assert.ok(inv.bag.length <= BAG_CAPACITY);
+    assert.deepStrictEqual(STARTER_BAG, []);
+    assert.deepStrictEqual(inv.bag, [], "mochila vazia");
+    assert.deepStrictEqual(readInventory(JSON.parse(JSON.stringify(inv))).bag, [], "os presentes (contas antigas) não entram");
+    assert.ok(fullKitInventory().bag.length <= BAG_CAPACITY, "o kit dos testes cabe na mochila");
     assert.ok(MAGE_SET.every((id) => ITEMS[id] !== undefined) && KNIGHT_SET.every((id) => ITEMS[id] !== undefined));
   });
 
@@ -76,7 +78,7 @@ describe("catálogo e inventário", () => {
   });
 
   it("equip em slot vazio tira o item da mochila", () => {
-    const inv: Inventory = starterInventory();
+    const inv: Inventory = fullKitInventory();
     const plate: ItemStack | undefined = inv.bag.find((s) => s.itemId === "knight_plate");
     assert.ok(plate);
     const result = equip(inv, plate.uid);

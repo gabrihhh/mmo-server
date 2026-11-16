@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import type { Look, LookLevels } from "../net/protocol.js";
 import { attributeEffects, readPoints, sumPoints, type AttributeEffects, type AttributePoints } from "./attributes.js";
-import { EQUIP_SLOTS, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
+import { EQUIP_SLOTS, FULL_KIT, GRANTS, STARTER_BAG, UNARMED_ATTACK, getItem, type AbilityDef, type EquipSlot } from "./catalog.js";
 
 /**
  * Inventário de um personagem: 4 slots vestidos + mochila. Regras puras (sem banco nem rede),
@@ -51,6 +51,11 @@ export function addToBag(inventory: Inventory, stack: ItemStack): InventoryResul
   return { ok: true, inventory: { ...inventory, bag: [...inventory.bag, stack] } };
 }
 
+/** Inventário com o kit completo na mochila ({@link FULL_KIT}): o que a conta nova ganhava antes; só para testes. */
+export function fullKitInventory(): Inventory {
+  return { ...starterInventory(), bag: FULL_KIT.map((itemId) => ({ uid: newItemUid(), itemId })) };
+}
+
 /** Id novo de item (12 caracteres). */
 export function newItemUid(): string {
   return randomBytes(9).toString("base64url");
@@ -60,8 +65,8 @@ export function newItemUid(): string {
 const NOTHING_EQUIPPED: Readonly<Record<EquipSlot, ItemStack | null>> = { hand: null, head: null, chest: null, feet: null };
 
 /**
- * Inventário inicial de uma conta nova: **nada vestido** ("nasce pelada") e todos os conjuntos na mochila
- * ([JOGO-04]). Os presentes de `GRANTS` contam como recebidos (os itens deles já estão aqui).
+ * Inventário inicial de uma conta nova ([JOGO-04]): **sem nenhum item** (nada vestido, mochila {@link STARTER_BAG}
+ * vazia). Os presentes de `GRANTS` contam como recebidos (são para contas antigas, não para quem nasce agora).
  */
 export function starterInventory(): Inventory {
   return {

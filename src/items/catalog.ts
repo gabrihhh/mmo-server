@@ -559,10 +559,18 @@ export const ASSASSIN_SET: readonly string[] = ["assassin_daggers", "assassin_ho
 export const HEALER_SET: readonly string[] = ["healer_tome", "healer_circlet", "healer_robe", "healer_sandals"];
 
 /**
- * Conta nova "nasce pelada" (nada vestido, [JOGO-04]) com o treino e todos os conjuntos na mochila, para escolher o
- * que vestir.
+ * Mochila de uma conta NOVA ([JOGO-04]): **vazia** — nasce sem nenhum item (nada vestido nem na mochila) e consegue
+ * os itens nos baús dos acampamentos ([JOGO-19]). Sem arma, bate com o soco.
+ * > mudança (2026-11-16, pedido do dono): antes nascia com o treino e todos os conjuntos na mochila. Contas que já
+ * > existiam ficam com o que têm.
  */
-export const STARTER_BAG: readonly string[] = [
+export const STARTER_BAG: readonly string[] = [];
+
+/**
+ * Kit completo (treino + todos os conjuntos): o que a conta nova ganhava até 2026-11-16. Hoje só os testes usam, para
+ * ter itens para vestir ({@link InMemoryAccountStore} com `newInventory`).
+ */
+export const FULL_KIT: readonly string[] = [
   "training_sword", "training_staff", "training_hood", "training_vest", "training_boots",
   ...MAGE_SET,
   ...KNIGHT_SET,
@@ -574,7 +582,7 @@ export const STARTER_BAG: readonly string[] = [
 /**
  * Presentes únicos para contas que já existiam: id do presente → itens que ela recebe na mochila (só os que ainda
  * não tem e só o que couber). O inventário guarda os ids já recebidos (`grants`) para não dar de novo.
- * Conta nova já nasce com todos marcados ({@link STARTER_BAG} tem tudo).
+ * Conta nova já nasce com todos marcados (não ganha presente nenhum: nasce sem itens).
  */
 export const GRANTS: Readonly<Record<string, readonly string[]>> = {
   sets_v1: [...MAGE_SET, ...KNIGHT_SET],

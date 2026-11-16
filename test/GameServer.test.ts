@@ -7,6 +7,7 @@ import { MOVE_SPEED, TICK_SECONDS } from "../src/sim/movement.js";
 import { TestClient, sleep, type ReceivedMessage, ZONES_WITH_FAKES } from "./helpers.js";
 import { TEST_FAKE_PLAYERS, ZONE_CONFIGS } from "../src/zones/zones.js";
 import { VIEW_RADIUS } from "../src/zones/Zone.js";
+import { fullKitInventory } from "../src/items/inventory.js";
 
 const ZONE = "zone_1";
 const PASSWORD = "senha-forte-123";
@@ -86,7 +87,8 @@ describe("GameServer", () => {
   }
 
   beforeEach(async () => {
-    server = new GameServer({ accounts: new InMemoryAccountStore(), heartbeatIntervalMs: 100, log: false, zones: ZONES_WITH_FAKES });
+    // Contas com o kit completo (a conta nova do jogo nasce vazia, [JOGO-04]): os testes vestem itens.
+    server = new GameServer({ accounts: new InMemoryAccountStore(fullKitInventory), heartbeatIntervalMs: 100, log: false, zones: ZONES_WITH_FAKES });
     port = await server.listen(0);
   });
 

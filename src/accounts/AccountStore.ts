@@ -134,6 +134,12 @@ interface MemoryRecord {
 export class InMemoryAccountStore implements AccountStore {
   private readonly records: MemoryRecord[] = [];
 
+  /**
+   * [newInventory] = com que inventário uma conta nasce (padrão: o do jogo, {@link starterInventory}, sem itens). Os
+   * testes que precisam vestir algo passam o kit completo (`fullKitInventory`).
+   */
+  constructor(private readonly newInventory: () => Inventory = starterInventory) {}
+
   async register(username: string, email: string, password: string): Promise<RegisterResult> {
     const usernameKey: string = normalizeKey(username);
     const emailKey: string = normalizeKey(email);
@@ -147,7 +153,7 @@ export class InMemoryAccountStore implements AccountStore {
       passwordHash: await hashPassword(password),
       sessionHashes: [],
       lastPosition: null,
-      inventory: starterInventory(),
+      inventory: this.newInventory(),
       body: null,
       progress: STARTING_PROGRESS,
       friends: [],
