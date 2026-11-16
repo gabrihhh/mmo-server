@@ -372,6 +372,20 @@ describe("GameServer", () => {
       );
     });
 
+    it("baús dos acampamentos ([JOGO-19]): vêm no welcome; abrir fechado/inexistente é recusado", async () => {
+      const a: Player = await registered();
+      a.client.send("join", { zone: ZONE });
+      const welcome: ReceivedMessage = await a.client.next("welcome");
+      const chests: unknown = welcome.data["chests"];
+      assert.ok(Array.isArray(chests) && chests.length === (ZONE_CONFIGS[0]?.camps?.length ?? 0) && chests.length > 0, "baús no welcome");
+      const first: unknown = chests[0];
+      assert.ok(typeof first === "object" && first !== null && "id" in first && typeof first.id === "string" && "open" in first && first.open === false);
+      a.client.send("chest_open", { chestId: first.id });
+      assert.strictEqual((await a.client.next("error")).data["code"], "chest_closed");
+      a.client.send("chest_take", { chestId: "nao_existe", lootId: "gold" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "chest_not_found");
+    });
+
     it("attack fixa o alvo (aparece em snapshot.me.target) e recusa alvo inexistente", async () => {
       const a: Player = await registered();
       const players: unknown[] = await join(a);

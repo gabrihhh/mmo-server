@@ -19,10 +19,11 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v23: baús dos acampamentos ([JOGO-19]): `chests` no welcome, evento `chest`, `chest_open`/`chest_take`/`chest_loot`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -63,6 +64,16 @@ export const ClientMessageType = {
    * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
    */
   Upgrade: "upgrade",
+  /**
+   * Abre o baú de um acampamento (perto dele e aberto, [JOGO-19]). Payload: {@link ChestRequestData}. Resposta:
+   * {@link ServerMessageType.ChestLoot} com o que sobrou para você, ou erro.
+   */
+  ChestOpen: "chest_open",
+  /**
+   * Pega um item/moedas do baú. Payload: {@link ChestTakeData}. Resposta: `chest_loot` atualizado (+ `inventory` se foi
+   * item; as moedas vêm no `me` do snapshot), ou erro (`bag_full` deixa o item no baú).
+   */
+  ChestTake: "chest_take",
   /** Fixa (ou limpa, com `null`) o alvo do ataque simples; o servidor ataca sozinho quando em alcance. Payload: {@link AttackData}. */
   Attack: "attack",
   /** Lança uma habilidade (carta) vestida. Payload: {@link CastData}. Ver mmo-docs [JOGO-06]. */
@@ -114,6 +125,8 @@ export const ServerMessageType = {
   Inventory: "inventory",
   /** Resultado de uma tentativa de melhoria no ferreiro ([JOGO-16]). Payload: {@link UpgradeResultData}. */
   UpgradeResult: "upgrade_result",
+  /** O que sobrou para você num baú de acampamento ([JOGO-19]). Payload: {@link ChestLootData}. */
+  ChestLoot: "chest_loot",
   /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
   Attributes: "attributes",
   /**
@@ -218,8 +231,14 @@ export const ErrorCode = {
   NotEnoughGold: "not_enough_gold",
   /** Ferreiro: atributo que o conjunto do item não aceita. A conexão continua. */
   InvalidAttribute: "invalid_attribute",
-  /** Ferreiro: longe dele (ou morto). A conexão continua. */
+  /** Ferreiro/baú: longe dele (ou morto). A conexão continua. */
   TooFar: "too_far",
+  /** Baú ([JOGO-19]) que não existe nesta zona. A conexão continua. */
+  ChestNotFound: "chest_not_found",
+  /** Baú ainda fechado (o acampamento não foi todo morto) ou já fechou. A conexão continua. */
+  ChestClosed: "chest_closed",
+  /** Item/moedas que não estão (mais) no seu baú. A conexão continua. */
+  LootNotFound: "loot_not_found",
   /** Grupo ([SOC-03]): convidar/expulsar sem ser o líder. A conexão continua. */
   NotGroupLeader: "not_group_leader",
   /** Grupo já tem o máximo de membros ({@link GROUP_MAX_MEMBERS}). A conexão continua. */
@@ -383,6 +402,41 @@ export interface UnequipData {
 }
 
 /** Payload de `upgrade`: o item (vestido ou na mochila) e o atributo escolhido ([JOGO-16]). */
+/** Payload de `chest_open` ([JOGO-19]). */
+export interface ChestRequestData {
+  readonly chestId: string;
+}
+
+/** Payload de `chest_take`: o baú e o `lootId` do que pegar. */
+export interface ChestTakeData {
+  readonly chestId: string;
+  readonly lootId: string;
+}
+
+/**
+ * Baú de acampamento como vai no `welcome` ([JOGO-19]): onde fica (no chão, m), nível, se o acampamento tem chefe e se
+ * está aberto agora. Depois muda pelo evento `chest`. ATENÇÃO: lido em mmo-client/scripts/network/network.gd.
+ */
+export interface ChestView {
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+  readonly level: number;
+  readonly boss: boolean;
+  readonly open: boolean;
+}
+
+/** Uma coisa do seu baú: item (com a ficha completa, nível e atributos) ou moedas. */
+export type LootView =
+  | { readonly lootId: string; readonly kind: "item"; readonly item: ItemView }
+  | { readonly lootId: string; readonly kind: "gold"; readonly amount: number };
+
+/** Payload de `chest_loot`: o que sobrou para quem pediu (vazio = nada para você neste baú). */
+export interface ChestLootData {
+  readonly chestId: string;
+  readonly entries: readonly LootView[];
+}
+
 export interface UpgradeData {
   readonly uid: string;
   readonly attribute: AttributeId;
@@ -496,6 +550,8 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
   | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
+  | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
+  | { readonly type: typeof ClientMessageType.ChestTake; readonly data: ChestTakeData }
   | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
   | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData }
@@ -631,7 +687,9 @@ export type CombatEvent =
   /** O jogador `id` subiu para o nível `level` ([JOGO-12]): vida/mana máximas novas já vêm no snapshot. */
   | { readonly type: "level_up"; readonly id: string; readonly level: number }
   /** O jogador `id` trocou o que veste (aparência nova). */
-  | { readonly type: "look"; readonly id: string; readonly look: Look; readonly levels?: LookLevels };
+  | { readonly type: "look"; readonly id: string; readonly look: Look; readonly levels?: LookLevels }
+  /** Baú de acampamento abriu (acampamento morto) ou fechou (reset), [JOGO-19]. Vai para todos da zona. */
+  | { readonly type: "chest"; readonly id: string; readonly open: boolean; readonly x: number; readonly z: number };
 
 /** Só de quem recebe o snapshot (os outros não sabem). */
 export interface OwnStatus {
@@ -970,6 +1028,8 @@ export type ServerMessage =
         readonly players: readonly PlayerInfo[];
         /** Bonecos/monstros da zona. */
         readonly npcs: readonly NpcSnapshot[];
+        /** Baús dos acampamentos ([JOGO-19]). */
+        readonly chests: readonly ChestView[];
       };
     }
   | { readonly type: typeof ServerMessageType.PlayerJoined; readonly data: { readonly player: PlayerInfo } }
@@ -977,6 +1037,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Snapshot; readonly data: SnapshotData }
   | { readonly type: typeof ServerMessageType.Inventory; readonly data: InventoryView }
   | { readonly type: typeof ServerMessageType.UpgradeResult; readonly data: UpgradeResultData }
+  | { readonly type: typeof ServerMessageType.ChestLoot; readonly data: ChestLootData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
@@ -1111,6 +1172,23 @@ export function parseUnequipData(data: unknown): UnequipData | null {
 const isBagIndex = (value: unknown): value is number => isFiniteNumber(value) && Number.isInteger(value) && value >= 0 && value < 1000;
 
 /** Valida o payload de `upgrade`. */
+/** Id curto e não vazio (baú, item do baú). */
+function isShortId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 64;
+}
+
+/** Valida o payload de `chest_open`. */
+export function parseChestRequestData(data: unknown): ChestRequestData | null {
+  if (!isRecord(data) || !isShortId(data["chestId"])) return null;
+  return { chestId: data["chestId"] };
+}
+
+/** Valida o payload de `chest_take`. */
+export function parseChestTakeData(data: unknown): ChestTakeData | null {
+  if (!isRecord(data) || !isShortId(data["chestId"]) || !isShortId(data["lootId"])) return null;
+  return { chestId: data["chestId"], lootId: data["lootId"] };
+}
+
 export function parseUpgradeData(data: unknown): UpgradeData | null {
   if (!isRecord(data)) return null;
   const { uid, attribute } = data;
@@ -1282,6 +1360,14 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.Upgrade: {
       const data = parseUpgradeData(raw);
       return data === null ? null : { type: ClientMessageType.Upgrade, data };
+    }
+    case ClientMessageType.ChestOpen: {
+      const data = parseChestRequestData(raw);
+      return data === null ? null : { type: ClientMessageType.ChestOpen, data };
+    }
+    case ClientMessageType.ChestTake: {
+      const data = parseChestTakeData(raw);
+      return data === null ? null : { type: ClientMessageType.ChestTake, data };
     }
     case ClientMessageType.Attack: {
       const data = parseAttackData(raw);

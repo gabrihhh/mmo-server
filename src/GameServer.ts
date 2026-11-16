@@ -30,7 +30,8 @@ import {
   type SocialSettings,
 } from "./net/protocol.js";
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
-import { Zone, type CastFailure, type CastResult, type JoinResult, type NetStats, type SpawnPoint, type ZoneConfig } from "./zones/Zone.js";
+import { Zone, type CastFailure, type CastResult, type ChestFailure, type JoinResult, type NetStats, type SpawnPoint, type TakenLoot, type ZoneConfig } from "./zones/Zone.js";
+import type { LootEntry } from "./items/loot.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
@@ -39,8 +40,23 @@ import type { EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 import { DEFAULT_UPDATE_POLL_MS, UpdateWatcher } from "./http/updateWatcher.js";
-import { attributeEffectsOf, basicAttackOf, bonusHpOf, equip, equippedAbilities, lookLevelsOf, lookOf, moveInBag, unequip, type InventoryFailure, type InventoryResult } from "./items/inventory.js";
-import { inventoryView } from "./items/view.js";
+import {
+  BAG_CAPACITY,
+  addToBag,
+  attributeEffectsOf,
+  basicAttackOf,
+  bonusHpOf,
+  equip,
+  equippedAbilities,
+  lookLevelsOf,
+  lookOf,
+  moveInBag,
+  unequip,
+  type InventoryFailure,
+  type InventoryResult,
+  type ItemStack,
+} from "./items/inventory.js";
+import { inventoryView, lootViews } from "./items/view.js";
 
 /** Opções do {@link GameServer}. Os padrões servem para produção; os testes usam valores menores. */
 export interface GameServerOptions {
@@ -437,6 +453,12 @@ export class GameServer {
         return;
       case ClientMessageType.Upgrade:
         void this.handleUpgrade(session, message.data.uid, message.data.attribute);
+        return;
+      case ClientMessageType.ChestOpen:
+        this.handleChestOpen(session, message.data.chestId);
+        return;
+      case ClientMessageType.ChestTake:
+        void this.handleChestTake(session, message.data.chestId, message.data.lootId);
         return;
       case ClientMessageType.BagMove:
         void this.changeInventory(session, (inventory) => moveInBag(inventory, message.data.from, message.data.to));
@@ -911,6 +933,66 @@ export class GameServer {
   }
 
   /** Código do protocolo para cada recusa do ferreiro. */
+  /** Abrir o baú ([JOGO-19]): manda o que sobrou para o jogador (ou a recusa). */
+  private handleChestOpen(session: Session, chestId: string): void {
+    if (session.account === null || session.zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const loot: readonly LootEntry[] | ChestFailure = session.zone.chestLoot(session.account.playerId, chestId);
+    if (typeof loot === "string") {
+      this.sendError(session, GameServer.CHEST_ERRORS[loot], GameServer.CHEST_MESSAGES[loot]);
+      return;
+    }
+    this.sendChestLoot(session, chestId, loot);
+  }
+
+  /**
+   * Pegar do baú ([JOGO-19]): moedas a zona soma (vêm no `me`); item vai para o fim da mochila (salva e manda o
+   * `inventory`). Mochila cheia recusa antes de tirar do baú. Depois manda o baú atualizado.
+   */
+  private async handleChestTake(session: Session, chestId: string, lootId: string): Promise<void> {
+    const account: Account | null = session.account;
+    const zone: Zone | null = session.zone;
+    if (account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const taken: TakenLoot | ChestFailure = zone.takeLoot(account.playerId, chestId, lootId, account.inventory.bag.length < BAG_CAPACITY);
+    if (typeof taken === "string") {
+      this.sendError(session, GameServer.CHEST_ERRORS[taken], GameServer.CHEST_MESSAGES[taken]);
+      return;
+    }
+    if (taken.kind === "item") {
+      const stack: ItemStack = taken.stack;
+      await this.changeInventory(session, (inventory) => addToBag(inventory, stack));
+    }
+    const left: readonly LootEntry[] | ChestFailure = zone.chestLoot(account.playerId, chestId);
+    this.sendChestLoot(session, chestId, typeof left === "string" ? [] : left);
+  }
+
+  private sendChestLoot(session: Session, chestId: string, entries: readonly LootEntry[]): void {
+    if (session.socket.readyState !== WebSocket.OPEN) return;
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.ChestLoot, data: { chestId, entries: lootViews(entries) } }));
+  }
+
+  private static readonly CHEST_ERRORS: Readonly<Record<ChestFailure, ErrorCode>> = {
+    chest_not_found: ErrorCode.ChestNotFound,
+    chest_closed: ErrorCode.ChestClosed,
+    too_far: ErrorCode.TooFar,
+    loot_not_found: ErrorCode.LootNotFound,
+    bag_full: ErrorCode.BagFull,
+  };
+
+  /** Mensagens (em português) das recusas do baú. */
+  private static readonly CHEST_MESSAGES: Readonly<Record<ChestFailure, string>> = {
+    chest_not_found: "Esse baú não existe.",
+    chest_closed: "O baú está fechado: derrote o acampamento.",
+    too_far: "Chegue perto do baú.",
+    loot_not_found: "Isso não está mais no baú.",
+    bag_full: "Mochila cheia: libere espaço e pegue de novo.",
+  };
+
   private static readonly UPGRADE_ERRORS: Readonly<Record<UpgradeFailure | "too_far", ErrorCode>> = {
     item_not_found: ErrorCode.ItemNotFound,
     invalid_attribute: ErrorCode.InvalidAttribute,
@@ -1072,6 +1154,7 @@ export class GameServer {
           pvp: zone.config.pvp,
           players: result.players,
           npcs: zone.npcSnapshots(),
+          chests: zone.chestViews(),
         },
       }),
     );

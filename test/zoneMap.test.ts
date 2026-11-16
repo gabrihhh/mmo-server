@@ -10,7 +10,8 @@ describe("mapa da zona (maps/*.json)", () => {
   it("aceita um mapa válido", () => {
     const map = parseZoneMap({ monsters: [{ ...ok, level: 3, x: 10, z: -5 }], npcs: [{ id: "test_bag", x: 1, z: 2 }] }, 150);
     // Sem escala/chefe/nome (mapa antigo): padrões.
-    assert.deepStrictEqual(map.monsters, [{ ...ok, level: 3, x: 10, z: -5, scale: 1, boss: false, name: "" }]);
+    assert.deepStrictEqual(map.monsters, [{ ...ok, level: 3, x: 10, z: -5, scale: 1, boss: false, name: "", camp: "" }]);
+    assert.deepStrictEqual(map.camps, [], "mapa sem acampamentos");
     assert.deepStrictEqual(map.npcs, [{ id: "test_bag", x: 1, z: 2 }]);
   });
 
@@ -25,7 +26,7 @@ describe("mapa da zona (maps/*.json)", () => {
     assert.throws(() => parseZoneMap(map({ ...ok, resetRange: 0 }), 150), /resetRange/);
     assert.throws(() => parseZoneMap(map({ ...ok, perception: "5" }), 150), /perception/);
     assert.throws(() => parseZoneMap(map({ ...ok, x: 151 }), 150), /fora do mapa/);
-    assert.throws(() => parseZoneMap({ monsters: [], npcs: [{ id: "b", x: 0, z: 999 }] }, 150), /fora do mapa/);
+    assert.throws(() => parseZoneMap({ monsters: [], npcs: [{ id: "b", x: 0, z: 999 }], camps: [] }, 150), /fora do mapa/);
     assert.throws(() => parseZoneMap(map({ ...ok, scale: 9 }), 150), /escala/);
     assert.throws(() => parseZoneMap(map({ ...ok, boss: 1 }), 150), /boss/);
     assert.throws(() => parseZoneMap(map({ ...ok, name: "x".repeat(41) }), 150), /nome/);
@@ -37,10 +38,10 @@ describe("mapa da zona (maps/*.json)", () => {
   });
 
   it("NPC de teste vai para o lugar do mapa; id desconhecido é erro", () => {
-    const [bag] = placeTestNpcs({ monsters: [], npcs: [{ id: "test_bag", x: -8, z: -1 }] });
+    const [bag] = placeTestNpcs({ monsters: [], npcs: [{ id: "test_bag", x: -8, z: -1 }], camps: [] });
     assert.strictEqual(bag?.name, "Saco de pancadas");
     assert.deepStrictEqual([bag?.x, bag?.z], [-8, -1]);
-    assert.throws(() => placeTestNpcs({ monsters: [], npcs: [{ id: "nada", x: 0, z: 0 }] }), /não existe/);
+    assert.throws(() => placeTestNpcs({ monsters: [], npcs: [{ id: "nada", x: 0, z: 0 }], camps: [] }), /não existe/);
   });
 
   it("a Zone 1 tem os zumbis do arquivo, cada um com nível, percepção e desistência dele", () => {

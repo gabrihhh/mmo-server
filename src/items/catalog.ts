@@ -132,6 +132,11 @@ export interface ItemDef {
   readonly basicAttack: AbilityDef | null;
   /** Habilidades do item: {@link ABILITIES_PER_SLOT} do slot. */
   readonly abilities: readonly AbilityDef[];
+  /**
+   * Pode sair nos baús dos acampamentos ([JOGO-19], `src/items/loot.ts`)? Padrão: sim — item novo entra no sorteio
+   * sozinho. `false` só no que não faz sentido ganhar (o kit de Treino, que toda conta já tem).
+   */
+  readonly lootable?: boolean;
 }
 
 /** Campos obrigatórios de toda habilidade; o resto tem padrão zero / disponível. */
@@ -210,6 +215,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Espada de treino",
     description: "Espada curva de duas mãos, boa para aprender a lutar de perto.",
     set: "Treino",
+    lootable: false,
     slot: "hand",
     bonusHp: 0,
     basicAttack: ability({ id: "sword_attack", title: "Ataque", description: "Golpe de espada no alvo.", aim: "target", range: 2.5, cooldown: 1, castTime: 1, damage: 10 }),
@@ -226,6 +232,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Cajado de treino",
     description: "Cajado de madeira simples para as primeiras magias.",
     set: "Treino",
+    lootable: false,
     slot: "hand",
     bonusHp: 0,
     basicAttack: ability({ id: "staff_attack", title: "Ataque", description: "Faísca mágica no alvo.", aim: "target", range: 8, cooldown: 1.2, castTime: 1.2, damage: 7, releaseTime: 0.3 }),
@@ -240,6 +247,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Capuz de treino",
     description: "Capuz de linho grosso.",
     set: "Treino",
+    lootable: false,
     slot: "head",
     bonusHp: 0,
     basicAttack: null,
@@ -250,6 +258,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Colete de treino",
     description: "Colete de couro acolchoado.",
     set: "Treino",
+    lootable: false,
     slot: "chest",
     bonusHp: 0,
     basicAttack: null,
@@ -260,6 +269,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     name: "Bota de treino",
     description: "Botas de couro para correr.",
     set: "Treino",
+    lootable: false,
     slot: "feet",
     bonusHp: 0,
     basicAttack: null,

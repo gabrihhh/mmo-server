@@ -1,4 +1,5 @@
-import type { AbilityView, InventoryView, ItemView } from "../net/protocol.js";
+import type { AbilityView, InventoryView, ItemView, LootView } from "../net/protocol.js";
+import type { LootEntry } from "./loot.js";
 import { BAG_CAPACITY, type Inventory, type ItemStack } from "./inventory.js";
 import { upgradeAttributesOf, upgradeChance, upgradeCost } from "./upgrade.js";
 import { SET_PROFILES, UNARMED_ATTACK, getItem, type AbilityDef } from "./catalog.js";
@@ -36,7 +37,7 @@ function abilityView(def: AbilityDef): AbilityView {
 }
 
 /** Item visto pelo cliente; `null` se o item não existe no catálogo (não deveria acontecer após readInventory). */
-function itemView(stack: ItemStack): ItemView | null {
+export function itemView(stack: ItemStack): ItemView | null {
   const def = getItem(stack.itemId);
   if (def === undefined) return null;
   return {
@@ -57,6 +58,20 @@ function itemView(stack: ItemStack): ItemView | null {
     upgradeCost: upgradeCost(stack.level ?? 0),
     upgradeChance: upgradeChance(stack.level ?? 0),
   };
+}
+
+/** O que sobrou num baú visto pelo cliente ([JOGO-19]): item com a ficha completa, ou moedas. */
+export function lootViews(entries: readonly LootEntry[]): LootView[] {
+  const views: LootView[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "gold") {
+      views.push({ lootId: entry.lootId, kind: "gold", amount: entry.amount });
+      continue;
+    }
+    const item: ItemView | null = itemView(entry.stack);
+    if (item !== null) views.push({ lootId: entry.lootId, kind: "item", item });
+  }
+  return views;
 }
 
 /** Inventário completo visto pelo cliente. */

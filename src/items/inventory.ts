@@ -40,6 +40,12 @@ export type InventoryResult =
   | { readonly ok: true; readonly inventory: Inventory }
   | { readonly ok: false; readonly reason: InventoryFailure };
 
+/** Põe [stack] no fim da mochila (baú dos acampamentos, [JOGO-19]); recusa com a mochila cheia. */
+export function addToBag(inventory: Inventory, stack: ItemStack): InventoryResult {
+  if (inventory.bag.length >= BAG_CAPACITY) return { ok: false, reason: "bag_full" };
+  return { ok: true, inventory: { ...inventory, bag: [...inventory.bag, stack] } };
+}
+
 /** Id novo de item (12 caracteres). */
 export function newItemUid(): string {
   return randomBytes(9).toString("base64url");

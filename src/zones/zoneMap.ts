@@ -31,6 +31,15 @@ export interface MonsterSpawn {
   readonly boss: boolean;
   /** Nome à vista (`nome` no Blender; chefes). Vazio = o nome padrão do tipo. */
   readonly name: string;
+  /** Acampamento de que faz parte ([JOGO-19]; a subcoleção "Acampamento <id>" no Blender); "" = solto. */
+  readonly camp: string;
+}
+
+/** Acampamento com baú ([JOGO-19]): id e onde fica o baú (a fogueira `fogueira_<id>` no Blender), no chão (m). */
+export interface CampSpawn {
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
 }
 
 /** Menor e maior escala aceitas para o corpo de um monstro (vezes o normal). */
@@ -51,6 +60,8 @@ export interface NpcPlacement {
 export interface ZoneMapData {
   readonly monsters: readonly MonsterSpawn[];
   readonly npcs: readonly NpcPlacement[];
+  /** Acampamentos com baú; mapa antigo (sem a lista) = nenhum. */
+  readonly camps: readonly CampSpawn[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -111,6 +122,8 @@ function readMonster(entry: unknown, where: string, halfSize: number, seen: Set<
   if (typeof name !== "string" || name.length > MAX_NAME_LENGTH) {
     throw new Error(`${where}: nome precisa ser texto de até ${MAX_NAME_LENGTH} letras`);
   }
+  const camp: unknown = entry["camp"] ?? "";
+  if (typeof camp !== "string") throw new Error(`${where}: camp precisa ser texto (${String(camp)})`);
   return {
     id,
     kind,
@@ -118,6 +131,7 @@ function readMonster(entry: unknown, where: string, halfSize: number, seen: Set<
     scale,
     boss,
     name,
+    camp,
     x: readCoordinate(entry["x"], "x", where, halfSize),
     z: readCoordinate(entry["z"], "z", where, halfSize),
     resetRange: readRange(entry["resetRange"], "resetRange", where),
@@ -128,7 +142,8 @@ function readMonster(entry: unknown, where: string, halfSize: number, seen: Set<
 /**
  * Valida o mapa [data] (o JSON lido) de uma zona com metade do lado [halfSize] (m). Erro (com o motivo e o índice) se
  * algo estiver fora do formato: id vazio ou repetido, tipo desconhecido, nível não inteiro ou negativo, alcance ≤ 0,
- * posição fora do mapa, escala fora de {@link MIN_SCALE}..{@link MAX_SCALE}, nome comprido demais. Falha alto de propósito: monstro sumido sem aviso seria pior.
+ * posição fora do mapa, escala fora de {@link MIN_SCALE}..{@link MAX_SCALE}, nome comprido demais, monstro de
+ * acampamento que não existe, acampamento sem monstro. Falha alto de propósito: monstro sumido sem aviso seria pior.
  */
 export function parseZoneMap(data: unknown, halfSize: number): ZoneMapData {
   if (!isRecord(data) || !Array.isArray(data["monsters"]) || !Array.isArray(data["npcs"])) {
@@ -150,5 +165,24 @@ export function parseZoneMap(data: unknown, halfSize: number): ZoneMapData {
       z: readCoordinate(entry["z"], "z", where, halfSize),
     };
   });
-  return { monsters, npcs };
+  const campIds = new Set<string>();
+  const rawCamps: unknown = data["camps"] ?? [];
+  if (!Array.isArray(rawCamps)) throw new Error("mapa: camps precisa ser uma lista");
+  const camps: CampSpawn[] = rawCamps.map((entry: unknown, index: number): CampSpawn => {
+    const where = `camps[${index}]`;
+    if (!isRecord(entry)) throw new Error(`${where}: precisa ser um objeto`);
+    return {
+      id: readId(entry["id"], where, campIds),
+      x: readCoordinate(entry["x"], "x", where, halfSize),
+      z: readCoordinate(entry["z"], "z", where, halfSize),
+    };
+  });
+  // Todo monstro de acampamento aponta para um acampamento que existe, e todo acampamento tem monstro.
+  for (const monster of monsters) {
+    if (monster.camp !== "" && !campIds.has(monster.camp)) throw new Error(`mapa: ${monster.id} é do acampamento ${monster.camp}, que não existe`);
+  }
+  for (const camp of camps) {
+    if (!monsters.some((monster) => monster.camp === camp.id)) throw new Error(`mapa: acampamento ${camp.id} sem monstros`);
+  }
+  return { monsters, npcs, camps };
 }

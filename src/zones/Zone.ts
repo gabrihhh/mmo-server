@@ -20,6 +20,7 @@ import {
   type EquippedItemSummary,
   type GroupView,
   type GroupPositionView,
+  type ChestView,
 } from "../net/protocol.js";
 import { Groups, type GroupResult } from "./groups.js";
 import {
@@ -47,7 +48,8 @@ import {
   type Progress,
 } from "../progression/level.js";
 import { CRIT_MULTIPLIER, NO_EFFECTS, type AttributeEffects, type AttributeId } from "../items/attributes.js";
-import type { Inventory } from "../items/inventory.js";
+import type { Inventory, ItemStack } from "../items/inventory.js";
+import { rollChestLoot, type LootEntry } from "../items/loot.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
 import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
@@ -226,7 +228,46 @@ export interface ZoneConfig {
   readonly dummies: readonly DummyConfig[];
   /** Jogadores fake de teste ([SOC-01]); ausente = nenhum. Não contam em `maxPlayers` nem no "online". */
   readonly fakePlayers?: readonly FakePlayerConfig[];
+  /** Acampamentos com baú ([JOGO-19]); ausente = nenhum. */
+  readonly camps?: readonly CampConfig[];
 }
+
+/**
+ * Acampamento com baú ([JOGO-19]): onde fica o baú (no chão, m) e os monstros dele (ids de `dummies`). O nível do baú
+ * é o maior entre os zumbis comuns; com chefe, o loot aumenta (`src/items/loot.ts`).
+ */
+export interface CampConfig {
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+  readonly monsterIds: readonly string[];
+}
+
+/** Segundos que o baú fica aberto depois de matar o acampamento; depois tudo volta (zumbis e baú fechado). */
+export const CHEST_OPEN_SECONDS = 120;
+/** Distância (m) do baú para abrir/pegar (+ corpo do jogador). ATENÇÃO: = CHEST_RANGE em mmo-client/scripts/world/zone.gd. */
+export const CHEST_RANGE = 3;
+
+/** Estado de um acampamento na zona. */
+interface CampState {
+  readonly config: CampConfig;
+  /** Nível do baú (maior nível entre os zumbis comuns) e se tem chefe. */
+  readonly level: number;
+  readonly boss: boolean;
+  /** Baú aberto (acampamento morto) e até que tick. */
+  open: boolean;
+  openUntilTick: number;
+  /** Quem ajudou a matar o acampamento nesta rodada (ganha baú quando abrir). */
+  readonly eligible: Set<string>;
+  /** O que sobrou no baú de cada jogador (individual). */
+  readonly loot: Map<string, LootEntry[]>;
+}
+
+/** Recusa ao abrir/pegar do baú ([JOGO-19]). */
+export type ChestFailure = "chest_not_found" | "chest_closed" | "too_far" | "loot_not_found" | "bag_full";
+
+/** O que saiu ao pegar: item (o GameServer põe na mochila) ou moedas (a zona já somou). */
+export type TakenLoot = { readonly kind: "item"; readonly stack: ItemStack } | { readonly kind: "gold"; readonly amount: number };
 
 /** Onde e virado para onde o jogador aparece. Metros e radianos. */
 export interface SpawnPoint {
@@ -610,6 +651,9 @@ const round1 = (value: number): number => Math.round(value * 10) / 10;
 export class Zone {
   private readonly players: Map<string, ZonePlayer> = new Map();
   private readonly dummies: Map<string, ZoneDummy> = new Map();
+  /** Acampamentos com baú ([JOGO-19]) e de qual acampamento é cada monstro. */
+  private readonly camps: Map<string, CampState> = new Map();
+  private readonly campOf: Map<string, CampState> = new Map();
   /** Campos de snapshot de cada entidade no tick atual ({@link refreshFields}, [INFRA-11]). */
   private readonly fieldCache: Map<string, EntityFields> = new Map();
   /** Projéteis em voo ([JOGO-08]). */
@@ -683,6 +727,7 @@ export class Zone {
       });
     }
     for (const fake of config.fakePlayers ?? []) this.addFake(fake);
+    for (const camp of config.camps ?? []) this.addCamp(camp);
   }
 
   /**
@@ -1234,6 +1279,7 @@ export class Zone {
     this.currentTick++;
     this.groups.expire(this.currentTick);
     this.respawnDue();
+    this.closeExpiredChests();
     this.applyMovement();
     // Antes dos lançamentos: o projétil que sai neste tick começa a andar só no próximo (o cliente desenha igual).
     this.moveProjectiles();
@@ -1248,6 +1294,8 @@ export class Zone {
   private respawnDue(): void {
     for (const entity of this.entities()) {
       if (!entity.dead || this.currentTick < entity.respawnTick) continue;
+      // Monstro de acampamento com o baú aberto só volta no reset ([JOGO-19]).
+      if (entity.kind === "dummy" && this.campOf.get(entity.id)?.open === true) continue;
       entity.dead = false;
       entity.hp = entity.maxHp;
       entity.shield = 0;
@@ -2188,7 +2236,112 @@ export class Zone {
       const gold: number = Math.round(goldReward(target.level) * target.rewardMultiplier);
       for (const player of winners) this.grantReward(player, reward, gold);
       target.contributors.clear();
+      const camp: CampState | undefined = this.campOf.get(target.id);
+      if (camp !== undefined) {
+        for (const player of winners) camp.eligible.add(player.id);
+        this.openChestIfCleared(camp);
+      }
     }
+  }
+
+  // --- Baús dos acampamentos ([JOGO-19]) ---
+
+  private addCamp(config: CampConfig): void {
+    const monsters: ZoneDummy[] = config.monsterIds.map((id) => {
+      const npc: ZoneDummy | undefined = this.dummies.get(id);
+      if (npc === undefined) throw new Error(`acampamento ${config.id}: monstro ${id} não existe na zona`);
+      return npc;
+    });
+    const regular: ZoneDummy[] = monsters.filter((npc) => !npc.boss);
+    const state: CampState = {
+      config,
+      level: Math.max(0, ...(regular.length > 0 ? regular : monsters).map((npc) => npc.level)),
+      boss: monsters.some((npc) => npc.boss),
+      open: false,
+      openUntilTick: 0,
+      eligible: new Set(),
+      loot: new Map(),
+    };
+    this.camps.set(config.id, state);
+    for (const npc of monsters) this.campOf.set(npc.id, state);
+  }
+
+  /** Todos os monstros do acampamento mortos ao mesmo tempo → abre o baú e sorteia o de cada um que ajudou. */
+  private openChestIfCleared(camp: CampState): void {
+    if (camp.open || !camp.config.monsterIds.every((id) => this.dummies.get(id)?.dead === true)) return;
+    camp.open = true;
+    camp.openUntilTick = this.currentTick + secondsToTicks(CHEST_OPEN_SECONDS);
+    for (const id of camp.eligible) {
+      if (this.players.has(id)) camp.loot.set(id, rollChestLoot({ level: camp.level, boss: camp.boss }, this.random));
+    }
+    this.events.push({ type: "chest", id: camp.config.id, open: true, x: camp.config.x, z: camp.config.z });
+  }
+
+  /** Baú aberto há {@link CHEST_OPEN_SECONDS}: fecha, esquece o que sobrou e os monstros do acampamento voltam juntos. */
+  private closeExpiredChests(): void {
+    for (const camp of this.camps.values()) {
+      if (!camp.open || this.currentTick < camp.openUntilTick) continue;
+      camp.open = false;
+      camp.eligible.clear();
+      camp.loot.clear();
+      for (const id of camp.config.monsterIds) {
+        const npc: ZoneDummy | undefined = this.dummies.get(id);
+        if (npc !== undefined && npc.dead) npc.respawnTick = this.currentTick;
+      }
+      this.events.push({ type: "chest", id: camp.config.id, open: false, x: camp.config.x, z: camp.config.z });
+    }
+  }
+
+  /** Baús da zona como vão no `welcome`: onde ficam, nível, chefe e se está aberto agora. */
+  chestViews(): ChestView[] {
+    return Array.from(this.camps.values(), (camp) => ({
+      id: camp.config.id,
+      x: camp.config.x,
+      z: camp.config.z,
+      level: camp.level,
+      boss: camp.boss,
+      open: camp.open,
+    }));
+  }
+
+  /** Confere se [playerId] pode mexer no baú [chestId] agora (aberto e a até {@link CHEST_RANGE}). */
+  private chestFor(playerId: string, chestId: string): { camp: CampState; player: ZonePlayer } | { failure: ChestFailure } {
+    const camp: CampState | undefined = this.camps.get(chestId);
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    if (camp === undefined || player === undefined) return { failure: "chest_not_found" };
+    if (!camp.open) return { failure: "chest_closed" };
+    const dx: number = player.state.x - camp.config.x;
+    const dz: number = player.state.z - camp.config.z;
+    if (player.dead || Math.sqrt(dx * dx + dz * dz) > CHEST_RANGE + BODY_RADIUS) return { failure: "too_far" };
+    return { camp, player };
+  }
+
+  /** O que sobrou no baú [chestId] para [playerId] (vazio = nada para ele), ou a recusa. */
+  chestLoot(playerId: string, chestId: string): readonly LootEntry[] | ChestFailure {
+    const found = this.chestFor(playerId, chestId);
+    if ("failure" in found) return found.failure;
+    return found.camp.loot.get(playerId) ?? [];
+  }
+
+  /**
+   * Pega [lootId] do baú [chestId] de [playerId]. Moedas: a zona soma ao progresso (salva por `onProgress`). Item: sai
+   * do baú e volta para quem chamou pôr na mochila — com [bagHasRoom] falso, recusa (`bag_full`) e o item fica no baú.
+   */
+  takeLoot(playerId: string, chestId: string, lootId: string, bagHasRoom: boolean): TakenLoot | ChestFailure {
+    const found = this.chestFor(playerId, chestId);
+    if ("failure" in found) return found.failure;
+    const entries: LootEntry[] = found.camp.loot.get(playerId) ?? [];
+    const index: number = entries.findIndex((entry) => entry.lootId === lootId);
+    const entry: LootEntry | undefined = entries[index];
+    if (entry === undefined) return "loot_not_found";
+    if (entry.kind === "item" && !bagHasRoom) return "bag_full";
+    entries.splice(index, 1);
+    if (entry.kind === "gold") {
+      found.player.progress = addGold(found.player.progress, entry.amount);
+      found.player.member.onProgress?.(found.player.progress);
+      return { kind: "gold", amount: entry.amount };
+    }
+    return { kind: "item", stack: entry.stack };
   }
 
   /** Monstro: NPC que luta e dá XP (hoje, o zumbi, [JOGO-13]). */
@@ -2428,7 +2581,8 @@ export class Zone {
     const z: unknown = Reflect.get(event, "z");
     return {
       json: JSON.stringify(event),
-      always: event.type === "look",
+      // Troca de roupa e baú abrindo/fechando vão para todos (raros; o cliente guarda o estado de todos).
+      always: event.type === "look" || event.type === "chest",
       ids,
       x: typeof x === "number" ? x : null,
       z: typeof z === "number" ? z : null,

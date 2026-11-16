@@ -1,4 +1,4 @@
-import type { DummyConfig, FakePlayerConfig, ZoneConfig } from "./Zone.js";
+import type { CampConfig, DummyConfig, FakePlayerConfig, ZoneConfig } from "./Zone.js";
 import { parseZoneMap, type MonsterKind, type MonsterSpawn, type ZoneMapData } from "./zoneMap.js";
 // Monstros e lugar dos NPCs de teste: exportados do spawn.blend ([ART-10]). Importado (não lido do disco) para o
 // `tsx watch` recarregar o servidor sozinho quando o arquivo muda.
@@ -68,6 +68,16 @@ function zombie(spawn: MonsterSpawn): DummyConfig {
       speed: boss ? BOSS_SPEED : ZOMBIE_SPEED,
     },
   };
+}
+
+/** Acampamentos do mapa [map] para a zona: onde fica o baú e os ids dos monstros de cada um ([JOGO-19]). */
+export function campsOf(map: ZoneMapData): CampConfig[] {
+  return map.camps.map((camp) => ({
+    id: camp.id,
+    x: camp.x,
+    z: camp.z,
+    monsterIds: map.monsters.filter((monster) => monster.camp === camp.id).map((monster) => monster.id),
+  }));
 }
 
 /** Mapa da Zone 1 (validado: erro ao subir se o arquivo estiver errado). */
@@ -179,6 +189,8 @@ export const ZONE_CONFIGS: readonly ZoneConfig[] = [
     pvp: true,
     // NPCs de teste e zumbis ([JOGO-13]) onde estão no mapa do Blender ([ART-10]).
     dummies: [...placeTestNpcs(ZONE_1_MAP), ...ZONE_1_MAP.monsters.map(zombie)],
+    // Baús dos acampamentos ([JOGO-19]): cada um com os monstros da subcoleção dele no Blender.
+    camps: campsOf(ZONE_1_MAP),
     // Sem jogadores fake (tirados em 2026-11-14, [SOC-01]); para voltar: fakePlayers: placeFakePlayers(ZONE_1_MAP).
   },
 ];

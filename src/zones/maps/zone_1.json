@@ -7,7 +7,8 @@
       "x": -25.5,
       "z": -27.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_1"
     },
     {
       "id": "zombie_0_2",
@@ -16,7 +17,8 @@
       "x": -30.5,
       "z": -26.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_1"
     },
     {
       "id": "zombie_0_3",
@@ -52,7 +54,8 @@
       "x": 28.0,
       "z": -31.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_2"
     },
     {
       "id": "zombie_1_2",
@@ -61,7 +64,8 @@
       "x": -28.0,
       "z": -30.8,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_1"
     },
     {
       "id": "zombie_1_3",
@@ -70,7 +74,8 @@
       "x": 30.5,
       "z": -27.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_2"
     },
     {
       "id": "zombie_1_4",
@@ -79,7 +84,8 @@
       "x": 25.5,
       "z": -26.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_2"
     },
     {
       "id": "zombie_1_5",
@@ -133,7 +139,8 @@
       "x": 28.0,
       "z": 25.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_3"
     },
     {
       "id": "zombie_2_4",
@@ -142,7 +149,8 @@
       "x": 30.5,
       "z": 29.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_3"
     },
     {
       "id": "zombie_2_5",
@@ -151,7 +159,8 @@
       "x": 25.5,
       "z": 29.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_3"
     },
     {
       "id": "zombie_2_6",
@@ -187,7 +196,8 @@
       "x": -28.0,
       "z": 25.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_4"
     },
     {
       "id": "zombie_3_4",
@@ -196,28 +206,21 @@
       "x": -25.0,
       "z": 25.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_4"
     },
     {
       "id": "zombie_3_5",
       "kind": "fighter",
       "level": 3,
-      "x": -25.5,
-      "z": 29.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_3_6",
-      "kind": "fighter",
-      "level": 3,
       "x": -30.5,
       "z": 29.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "novatos_4"
     },
     {
-      "id": "zombie_3_7",
+      "id": "zombie_3_6",
       "kind": "fighter",
       "level": 3,
       "x": -40.0,
@@ -232,7 +235,8 @@
       "x": -3.5,
       "z": 33.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "parrudo"
     },
     {
       "id": "zombie_4_2",
@@ -241,7 +245,8 @@
       "x": 3.5,
       "z": 33.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "parrudo"
     },
     {
       "id": "zombie_4_3",
@@ -250,7 +255,8 @@
       "x": 0.0,
       "z": 38.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "parrudo"
     },
     {
       "id": "zombie_5_1",
@@ -259,19 +265,11 @@
       "x": -3.0,
       "z": -60.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "gemidos"
     },
     {
       "id": "zombie_5_2",
-      "kind": "fighter",
-      "level": 5,
-      "x": 3.0,
-      "z": -60.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_5_3",
       "kind": "fighter",
       "level": 5,
       "x": -22.0,
@@ -280,7 +278,7 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_5_4",
+      "id": "zombie_5_3",
       "kind": "fighter",
       "level": 5,
       "x": 0.0,
@@ -289,7 +287,8 @@
       "perception": 9.0,
       "scale": 1.4,
       "boss": true,
-      "name": "Parrudo"
+      "name": "Parrudo",
+      "camp": "parrudo"
     },
     {
       "id": "zombie_6_1",
@@ -302,24 +301,16 @@
     },
     {
       "id": "zombie_6_2",
-      "kind": "fighter",
-      "level": 6,
-      "x": -4.0,
-      "z": -64.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_6_3",
       "kind": "shooter",
       "level": 6,
       "x": 4.0,
       "z": -64.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "gemidos"
     },
     {
-      "id": "zombie_6_4",
+      "id": "zombie_6_3",
       "kind": "fighter",
       "level": 6,
       "x": 24.0,
@@ -329,24 +320,16 @@
     },
     {
       "id": "zombie_7_1",
-      "kind": "fighter",
-      "level": 7,
-      "x": 0.0,
-      "z": -66.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_7_2",
       "kind": "shooter",
       "level": 7,
       "x": 0.0,
       "z": -57.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "gemidos"
     },
     {
-      "id": "zombie_7_3",
+      "id": "zombie_7_2",
       "kind": "fighter",
       "level": 7,
       "x": 56.0,
@@ -355,13 +338,14 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_7_4",
+      "id": "zombie_7_3",
       "kind": "fighter",
       "level": 7,
       "x": 59.0,
       "z": 2.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "ossos"
     },
     {
       "id": "zombie_8_1",
@@ -370,28 +354,11 @@
       "x": 58.0,
       "z": -2.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "ossos"
     },
     {
       "id": "zombie_8_2",
-      "kind": "fighter",
-      "level": 8,
-      "x": 66.0,
-      "z": -2.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_8_3",
-      "kind": "fighter",
-      "level": 8,
-      "x": 65.0,
-      "z": 2.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_8_4",
       "kind": "fighter",
       "level": 8,
       "x": 55.0,
@@ -406,7 +373,8 @@
       "x": 62.0,
       "z": 4.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "ossos"
     },
     {
       "id": "zombie_9_2",
@@ -427,7 +395,8 @@
       "perception": 9.0,
       "scale": 1.6,
       "boss": true,
-      "name": "Carniceiro"
+      "name": "Carniceiro",
+      "camp": "ossos"
     },
     {
       "id": "zombie_10_2",
@@ -445,16 +414,8 @@
       "x": -3.0,
       "z": 64.0,
       "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_10_4",
-      "kind": "fighter",
-      "level": 10,
-      "x": 3.0,
-      "z": 64.0,
-      "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "vala"
     },
     {
       "id": "zombie_11_1",
@@ -467,21 +428,13 @@
     },
     {
       "id": "zombie_11_2",
-      "kind": "shooter",
-      "level": 11,
-      "x": -4.0,
-      "z": 59.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_11_3",
       "kind": "fighter",
       "level": 11,
       "x": 4.0,
       "z": 59.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "vala"
     },
     {
       "id": "zombie_12_1",
@@ -490,19 +443,11 @@
       "x": 0.0,
       "z": 57.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "vala"
     },
     {
       "id": "zombie_12_2",
-      "kind": "shooter",
-      "level": 12,
-      "x": 0.0,
-      "z": 66.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_12_3",
       "kind": "shooter",
       "level": 12,
       "x": 40.0,
@@ -517,19 +462,11 @@
       "x": -65.0,
       "z": 2.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "charco"
     },
     {
       "id": "zombie_13_2",
-      "kind": "fighter",
-      "level": 13,
-      "x": -59.0,
-      "z": 2.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_13_3",
       "kind": "fighter",
       "level": 13,
       "x": -56.0,
@@ -553,16 +490,8 @@
       "x": -66.0,
       "z": -2.5,
       "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_14_3",
-      "kind": "shooter",
-      "level": 14,
-      "x": -58.0,
-      "z": -2.5,
-      "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "charco"
     },
     {
       "id": "zombie_15_1",
@@ -580,7 +509,8 @@
       "x": -62.0,
       "z": 4.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "charco"
     },
     {
       "id": "zombie_16_1",
@@ -589,7 +519,8 @@
       "x": -3.5,
       "z": -95.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "ruinas"
     },
     {
       "id": "zombie_16_2",
@@ -601,28 +532,11 @@
       "perception": 9.0,
       "scale": 1.8,
       "boss": true,
-      "name": "Gosmento"
+      "name": "Gosmento",
+      "camp": "charco"
     },
     {
       "id": "zombie_17_1",
-      "kind": "shooter",
-      "level": 17,
-      "x": -5.0,
-      "z": -100.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_17_2",
-      "kind": "fighter",
-      "level": 17,
-      "x": 3.5,
-      "z": -95.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_17_3",
       "kind": "fighter",
       "level": 17,
       "x": -30.0,
@@ -637,7 +551,8 @@
       "x": 5.0,
       "z": -100.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "ruinas"
     },
     {
       "id": "zombie_18_2",
@@ -649,22 +564,14 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_19_1",
-      "kind": "fighter",
-      "level": 19,
-      "x": 0.0,
-      "z": -92.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
       "id": "zombie_20_1",
       "kind": "fighter",
       "level": 20,
       "x": -6.0,
       "z": -94.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "ruinas"
     },
     {
       "id": "zombie_21_1",
@@ -676,7 +583,8 @@
       "perception": 9.0,
       "scale": 2.0,
       "boss": true,
-      "name": "Guardião das Ruínas"
+      "name": "Guardião das Ruínas",
+      "camp": "ruinas"
     },
     {
       "id": "zombie_21_2",
@@ -685,7 +593,8 @@
       "x": 94.5,
       "z": 2.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "cemiterio"
     },
     {
       "id": "zombie_22_1",
@@ -697,31 +606,14 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_22_2",
-      "kind": "shooter",
-      "level": 22,
-      "x": 93.0,
-      "z": -2.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_22_3",
-      "kind": "fighter",
-      "level": 22,
-      "x": 101.5,
-      "z": 2.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
       "id": "zombie_23_1",
       "kind": "shooter",
       "level": 23,
       "x": 103.0,
       "z": -2.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "cemiterio"
     },
     {
       "id": "zombie_23_2",
@@ -733,22 +625,14 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_24_1",
-      "kind": "fighter",
-      "level": 24,
-      "x": 98.0,
-      "z": 5.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
       "id": "zombie_25_1",
       "kind": "fighter",
       "level": 25,
       "x": 104.0,
       "z": 4.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "cemiterio"
     },
     {
       "id": "zombie_26_1",
@@ -760,7 +644,8 @@
       "perception": 9.0,
       "scale": 2.1,
       "boss": true,
-      "name": "Coveiro"
+      "name": "Coveiro",
+      "camp": "cemiterio"
     },
     {
       "id": "zombie_26_2",
@@ -769,7 +654,8 @@
       "x": -3.5,
       "z": 100.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "forte"
     },
     {
       "id": "zombie_27_1",
@@ -781,24 +667,6 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_27_2",
-      "kind": "shooter",
-      "level": 27,
-      "x": -5.0,
-      "z": 96.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_27_3",
-      "kind": "fighter",
-      "level": 27,
-      "x": 3.5,
-      "z": 100.5,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
       "id": "zombie_28_1",
       "kind": "fighter",
       "level": 28,
@@ -808,31 +676,14 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_28_2",
-      "kind": "shooter",
-      "level": 28,
-      "x": 5.0,
-      "z": 96.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
       "id": "zombie_29_1",
       "kind": "fighter",
       "level": 29,
       "x": 0.0,
       "z": 103.5,
       "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_30_1",
-      "kind": "fighter",
-      "level": 30,
-      "x": -6.0,
-      "z": 93.0,
-      "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "forte"
     },
     {
       "id": "zombie_31_1",
@@ -841,16 +692,8 @@
       "x": 0.0,
       "z": 91.5,
       "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_31_2",
-      "kind": "fighter",
-      "level": 31,
-      "x": 6.0,
-      "z": 93.0,
-      "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "forte"
     },
     {
       "id": "zombie_32_1",
@@ -859,19 +702,11 @@
       "x": -102.5,
       "z": 3.0,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "trono"
     },
     {
       "id": "zombie_33_1",
-      "kind": "fighter",
-      "level": 33,
-      "x": -93.5,
-      "z": 3.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_33_2",
       "kind": "fighter",
       "level": 33,
       "x": -92.0,
@@ -889,31 +724,14 @@
       "perception": 6.0
     },
     {
-      "id": "zombie_34_2",
-      "kind": "shooter",
-      "level": 34,
-      "x": -104.0,
-      "z": -3.0,
-      "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
       "id": "zombie_35_1",
       "kind": "shooter",
       "level": 35,
       "x": -92.0,
       "z": -3.0,
       "resetRange": 22.0,
-      "perception": 7.0
-    },
-    {
-      "id": "zombie_36_1",
-      "kind": "fighter",
-      "level": 36,
-      "x": -101.0,
-      "z": 6.5,
-      "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "trono"
     },
     {
       "id": "zombie_37_1",
@@ -922,7 +740,8 @@
       "x": -95.0,
       "z": 6.5,
       "resetRange": 22.0,
-      "perception": 7.0
+      "perception": 7.0,
+      "camp": "trono"
     },
     {
       "id": "zombie_40_1",
@@ -934,7 +753,8 @@
       "perception": 9.0,
       "scale": 2.6,
       "boss": true,
-      "name": "Rei Zumbi"
+      "name": "Rei Zumbi",
+      "camp": "trono"
     }
   ],
   "npcs": [
@@ -957,6 +777,73 @@
       "id": "test_shooter",
       "x": -8.15,
       "z": -9.11
+    }
+  ],
+  "camps": [
+    {
+      "id": "cemiterio",
+      "x": 98.0,
+      "z": -0.0
+    },
+    {
+      "id": "charco",
+      "x": -62.0,
+      "z": -0.0
+    },
+    {
+      "id": "forte",
+      "x": 0.0,
+      "z": 98.0
+    },
+    {
+      "id": "gemidos",
+      "x": 0.0,
+      "z": -62.0
+    },
+    {
+      "id": "novatos_1",
+      "x": -28.0,
+      "z": -28.0
+    },
+    {
+      "id": "novatos_2",
+      "x": 28.0,
+      "z": -28.0
+    },
+    {
+      "id": "novatos_3",
+      "x": 28.0,
+      "z": 28.0
+    },
+    {
+      "id": "novatos_4",
+      "x": -28.0,
+      "z": 28.0
+    },
+    {
+      "id": "ossos",
+      "x": 62.0,
+      "z": -0.0
+    },
+    {
+      "id": "parrudo",
+      "x": 0.0,
+      "z": 34.0
+    },
+    {
+      "id": "ruinas",
+      "x": 0.0,
+      "z": -98.0
+    },
+    {
+      "id": "trono",
+      "x": -98.0,
+      "z": -0.0
+    },
+    {
+      "id": "vala",
+      "x": 0.0,
+      "z": 62.0
     }
   ]
 }
