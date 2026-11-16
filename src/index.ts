@@ -3,15 +3,22 @@
  *
  * Variáveis de ambiente: `PORT` (padrão 2567), `MONGO_URL` (padrão mongodb://localhost:27017/mmo,
  * o banco do docker-compose.yml — subir com `npm run db:up`) e `UPDATES_DIR` (padrão `updates`,
- * a pasta com o manifesto e os pacotes do jogo, mmo-docs [INFRA-08]).
+ * a pasta com o manifesto e os pacotes do jogo, mmo-docs [INFRA-08]). E-mail do recuperar senha ([INFRA-13]):
+ * `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` (sem eles, o código vai para o log).
+ * Lê o arquivo `.env` da pasta do servidor, se existir (variáveis já definidas no ambiente têm prioridade).
  * Também responde à descoberta na rede local (UDP 2568, [INFRA-10]): aparelhos no mesmo Wi-Fi acham o servidor sozinhos.
  */
+import { existsSync } from "node:fs";
+
 import { GameServer } from "./GameServer.js";
+import { mailerFromEnv, type Mailer } from "./mail/mailer.js";
 import { DEFAULT_MONGO_URL, MongoAccountStore } from "./accounts/MongoAccountStore.js";
 import { DISCOVERY_PORT, startDiscovery } from "./net/discovery.js";
 
 /** Porta padrão. ATENÇÃO: o cliente usa ws://localhost:2567 (mmo-client/scripts/network/network_config.gd). */
 const DEFAULT_PORT = 2567;
+
+if (existsSync(".env")) process.loadEnvFile(".env");
 
 const port: number = Number(process.env["PORT"] ?? DEFAULT_PORT);
 const mongoUrl: string = process.env["MONGO_URL"] ?? DEFAULT_MONGO_URL;
@@ -26,7 +33,9 @@ try {
 }
 
 const updatesDir: string | undefined = process.env["UPDATES_DIR"];
-const server: GameServer = new GameServer(updatesDir === undefined ? { accounts } : { accounts, updatesDir });
+const mailer: Mailer = mailerFromEnv(process.env);
+console.log(`E-mail (recuperar senha): ${mailer.label}`);
+const server: GameServer = new GameServer(updatesDir === undefined ? { accounts, mailer } : { accounts, mailer, updatesDir });
 const actualPort: number = await server.listen(port);
 console.log(`Servidor no ar: ws://localhost:${actualPort} (health: http://localhost:${actualPort}/health)`);
 const discovery = await startDiscovery(actualPort);

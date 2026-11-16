@@ -53,7 +53,7 @@ describe("MongoAccountStore (MongoDB real)", function () {
 
     const resumedInventory = resumed?.inventory;
     assert.strictEqual(resumedInventory?.equipped.hand, null, "conta nova nasce pelada");
-    assert.ok(resumedInventory?.bag.some((s) => s.itemId === "training_sword"), "com o kit na mochila");
+    assert.deepStrictEqual(resumedInventory?.bag, [], "e sem nada na mochila ([JOGO-04])");
     const sword = { uid: "espada", itemId: "training_sword" };
     await store.saveInventory(byName.account.playerId, { ...resumedInventory, equipped: { ...resumedInventory.equipped, hand: sword } });
     assert.deepStrictEqual((await store.resume(byName.sessionToken))?.inventory.equipped.hand, sword, "inventário salvo");
@@ -110,5 +110,22 @@ describe("MongoAccountStore (MongoDB real)", function () {
     const old = await store.resume("token-antigo");
     assert.deepStrictEqual(old?.friends, []);
     assert.deepStrictEqual(old?.social, { friendRequests: "always", groupInvites: "always" });
+  });
+
+  it("recuperar senha ([INFRA-13]): acha por username/e-mail, guarda o código e a senha nova derruba as sessões", async () => {
+    assert.ok(store);
+    const created = await store.register("Rita_Reset", "Rita@Reset.com", "senha-antiga-1");
+    assert.ok(created.ok);
+    const target = await store.findForReset("RITA@reset.com");
+    assert.deepStrictEqual(target, { playerId: created.account.playerId, username: "Rita_Reset", email: "rita@reset.com", reset: null });
+    const record = { codeHash: "abc", expiresAt: 10, attempts: 1, sentAt: 5 };
+    await store.saveReset(created.account.playerId, record);
+    assert.deepStrictEqual((await store.findForReset("rita_reset"))?.reset, record);
+    await store.setPassword(created.account.playerId, "senha-nova-123");
+    assert.strictEqual(await store.resume(created.sessionToken), null, "sessão encerrada");
+    assert.strictEqual(await store.login("rita_reset", "senha-antiga-1"), null);
+    assert.ok(await store.login("rita_reset", "senha-nova-123"));
+    assert.strictEqual((await store.findForReset("rita_reset"))?.reset, null, "código apagado");
+    assert.strictEqual(await store.findForReset("ninguem"), null);
   });
 });

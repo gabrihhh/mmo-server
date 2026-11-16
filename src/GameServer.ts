@@ -22,6 +22,8 @@ import {
   type JoinData,
   type LoginData,
   type PlayerSnapshot,
+  type PasswordResetConfirmData,
+  type PasswordResetRequestData,
   type RegisterData,
   type ResumeData,
   type EquipSlotName,
@@ -41,6 +43,8 @@ import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
+import { PasswordReset, type ResetConfirmResult, type ResetRequestResult } from "./accounts/passwordReset.js";
+import { LogMailer, type Mailer } from "./mail/mailer.js";
 import { EQUIP_SLOTS, type EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
@@ -80,6 +84,8 @@ export interface GameServerOptions {
    * `src/http/updateWatcher.ts`). Padrão: {@link DEFAULT_UPDATE_POLL_MS}.
    */
   readonly updatePollIntervalMs?: number;
+  /** Envio do código de recuperar senha ([INFRA-13]). Padrão: {@link LogMailer} (escreve no log). */
+  readonly mailer?: Mailer;
 }
 
 /** Tamanho máximo de uma mensagem do cliente, em bytes. Maior que isso, o `ws` fecha a conexão (1009). */
@@ -147,6 +153,7 @@ const AUTH_MESSAGES = {
   [ErrorCode.EmailTaken]: "Esse e-mail já está cadastrado.",
   [ErrorCode.InvalidCredentials]: "Usuário/e-mail ou senha incorretos.",
   [ErrorCode.InvalidSession]: "Sua sessão expirou. Entre novamente.",
+  [ErrorCode.InvalidResetCode]: "Código inválido ou vencido. Confira o e-mail ou peça um novo.",
 } as const;
 
 /**
@@ -165,6 +172,8 @@ export class GameServer {
   /** Sessão autenticada de cada jogador. Garante uma conexão por conta. */
   private readonly online: Map<string, Session> = new Map();
   private readonly options: Required<GameServerOptions>;
+  /** Recuperar senha por código no e-mail ([INFRA-13]). */
+  private readonly passwordReset: PasswordReset;
   /** Pedidos de amizade pendentes (só na memória; amizade vale entre zonas, [SOC-04]). */
   private readonly friendRequests: FriendRequests;
   /**
@@ -195,7 +204,9 @@ export class GameServer {
       log: options.log ?? true,
       updatesDir: options.updatesDir ?? DEFAULT_UPDATES_DIR,
       updatePollIntervalMs: options.updatePollIntervalMs ?? DEFAULT_UPDATE_POLL_MS,
+      mailer: options.mailer ?? new LogMailer(),
     };
+    this.passwordReset = new PasswordReset(this.options.accounts, this.options.mailer);
     this.updates = new UpdateWatcher({
       dir: this.options.updatesDir,
       pollIntervalMs: this.options.updatePollIntervalMs,
@@ -437,6 +448,12 @@ export class GameServer {
         return;
       case ClientMessageType.Logout:
         void this.handleLogout(session);
+        return;
+      case ClientMessageType.PasswordResetRequest:
+        void this.handleResetRequest(session, message.data);
+        return;
+      case ClientMessageType.PasswordResetConfirm:
+        void this.handleResetConfirm(session, message.data);
         return;
       case ClientMessageType.KeepAlive:
         // Só mantém o Wi-Fi do celular acordado ([INFRA-12]); nada a fazer.
@@ -780,6 +797,44 @@ export class GameServer {
     if (result === undefined) return;
     if (result === null) return this.authError(session, ErrorCode.InvalidCredentials, true);
     this.authenticated(session, result.account, result.sessionToken, "login");
+  }
+
+  /**
+   * Esqueci a senha ([INFRA-13]): manda o código se a conta existir, e responde `password_reset_sent` SEMPRE (não diz
+   * se a conta existe). Falha do e-mail só vai para o log.
+   */
+  private async handleResetRequest(session: Session, data: PasswordResetRequestData): Promise<void> {
+    if (!this.canAuthenticate(session, data)) return;
+    const result: ResetRequestResult | undefined = await this.runAuth(session, async (): Promise<ResetRequestResult> => {
+      try {
+        return await this.passwordReset.request(data.login.trim());
+      } catch (error: unknown) {
+        console.error(`[${session.connectionId}] falha ao mandar o e-mail de recuperar senha:`, error);
+        return "failed";
+      }
+    });
+    if (result === undefined) return;
+    if (this.options.log) console.log(`[${session.connectionId}] recuperar senha: ${result}`);
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.PasswordResetSent, data: {} }));
+  }
+
+  /** Troca a senha com o código: errado conta como falha de autenticação (freio de {@link MAX_AUTH_FAILURES}). */
+  private async handleResetConfirm(session: Session, data: PasswordResetConfirmData): Promise<void> {
+    if (!this.canAuthenticate(session, data)) return;
+    if (!isValidPassword(data.password)) return this.authError(session, ErrorCode.InvalidPassword, false);
+    const result: ResetConfirmResult | undefined = await this.runAuth(session, () =>
+      this.passwordReset.confirm(data.login.trim(), data.code, data.password),
+    );
+    if (result === undefined) return;
+    if (!result.ok) return this.authError(session, ErrorCode.InvalidResetCode, true);
+    if (this.options.log) console.log(`[${session.connectionId}] senha trocada pelo código do e-mail`);
+    // As sessões salvas já caíram no banco; quem estiver jogando com esta conta agora também sai.
+    const online: Session | undefined = this.online.get(result.playerId);
+    if (online !== undefined) {
+      void this.leaveZone(online);
+      online.socket.close(CloseCode.Replaced, "senha trocada");
+    }
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.PasswordResetDone, data: {} }));
   }
 
   private async handleResume(session: Session, data: ResumeData): Promise<void> {

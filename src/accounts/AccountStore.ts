@@ -60,6 +60,25 @@ export type RegisterFailure = "username_taken" | "email_taken";
 /** Resultado de {@link AccountStore.register}. */
 export type RegisterResult = AuthSuccess | { readonly ok: false; readonly reason: RegisterFailure };
 
+/** Código de recuperar senha guardado na conta ([INFRA-13]); só o hash do código. Tempos em ms (`Date.now()`). */
+export interface PasswordResetRecord {
+  readonly codeHash: string;
+  readonly expiresAt: number;
+  /** Códigos errados digitados para este código. */
+  readonly attempts: number;
+  /** Quando o e-mail foi mandado (freio de reenvio). */
+  readonly sentAt: number;
+}
+
+/** Conta achada para recuperar a senha: para onde mandar o código e o código pendente. */
+export interface ResetTarget {
+  readonly playerId: string;
+  readonly username: string;
+  /** E-mail da conta (como guardado: minúsculas). */
+  readonly email: string;
+  readonly reset: PasswordResetRecord | null;
+}
+
 /** Quantas sessões (aparelhos) uma conta guarda; a mais antiga sai quando passa disso. */
 export const MAX_SESSIONS_PER_ACCOUNT = 5;
 
@@ -92,6 +111,12 @@ export interface AccountStore {
   usernamesOf(playerIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
   /** Salva a Configuração social da conta ([SOC-04]). */
   saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void>;
+  /** Conta por username OU e-mail, para recuperar a senha ([INFRA-13]). `null` = não existe. */
+  findForReset(usernameOrEmail: string): Promise<ResetTarget | null>;
+  /** Grava (ou apaga, com `null`) o código de recuperar senha da conta. */
+  saveReset(playerId: string, reset: PasswordResetRecord | null): Promise<void>;
+  /** Troca a senha (já validada), apaga o código e ENCERRA todas as sessões da conta. */
+  setPassword(playerId: string, password: string): Promise<void>;
   /** `true` se o armazenamento está acessível (usado pelo `/health`). */
   isHealthy(): Promise<boolean>;
 }
@@ -128,6 +153,7 @@ interface MemoryRecord {
   progress: Progress;
   friends: string[];
   social: SocialSettings;
+  passwordReset: PasswordResetRecord | null;
 }
 
 /** Implementação em memória, para testes (não precisa de MongoDB). Mesmas regras da versão Mongo. */
@@ -158,6 +184,7 @@ export class InMemoryAccountStore implements AccountStore {
       progress: STARTING_PROGRESS,
       friends: [],
       social: DEFAULT_SOCIAL_SETTINGS,
+      passwordReset: null,
     };
     this.records.push(record);
     return this.openSession(record);
@@ -226,6 +253,25 @@ export class InMemoryAccountStore implements AccountStore {
   async saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void> {
     const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
     if (record !== undefined) record.social = settings;
+  }
+
+  async findForReset(usernameOrEmail: string): Promise<ResetTarget | null> {
+    const key: string = normalizeKey(usernameOrEmail);
+    const record: MemoryRecord | undefined = this.records.find((r) => r.usernameKey === key || r.emailKey === key);
+    return record === undefined ? null : { playerId: record.playerId, username: record.username, email: record.emailKey, reset: record.passwordReset };
+  }
+
+  async saveReset(playerId: string, reset: PasswordResetRecord | null): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.passwordReset = reset;
+  }
+
+  async setPassword(playerId: string, password: string): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record === undefined) return;
+    record.passwordHash = await hashPassword(password);
+    record.sessionHashes = [];
+    record.passwordReset = null;
   }
 
   async isHealthy(): Promise<boolean> {

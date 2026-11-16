@@ -14,7 +14,9 @@ import {
   type Account,
   type AccountStore,
   type AuthSuccess,
+  type PasswordResetRecord,
   type RegisterResult,
+  type ResetTarget,
   type SavedPosition,
 } from "./AccountStore.js";
 
@@ -48,6 +50,21 @@ interface AccountDocument {
   friends?: string[];
   /** Configuração social ([SOC-04]). Pode faltar em conta antiga (= mostra tudo). Lido sempre por readSocialSettings. */
   social?: SocialSettings;
+  /** Código de recuperar senha pendente ([INFRA-13]); falta/null = nenhum. */
+  passwordReset?: PasswordResetRecord | null;
+}
+
+/** Objeto comum (não nulo, não lista). */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Lê o código de recuperar senha do banco (formato estranho = nenhum). */
+function readResetRecord(raw: unknown): PasswordResetRecord | null {
+  if (!isPlainRecord(raw)) return null;
+  const { codeHash, expiresAt, attempts, sentAt } = raw;
+  if (typeof codeHash !== "string" || typeof expiresAt !== "number" || typeof attempts !== "number" || typeof sentAt !== "number") return null;
+  return { codeHash, expiresAt, attempts, sentAt };
 }
 
 /** Código de erro do MongoDB para violação de índice único. */
@@ -191,6 +208,23 @@ export class MongoAccountStore implements AccountStore {
 
   async saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void> {
     await this.accounts.updateOne({ playerId }, { $set: { social: settings } });
+  }
+
+  async findForReset(usernameOrEmail: string): Promise<ResetTarget | null> {
+    const key: string = normalizeKey(usernameOrEmail);
+    const doc: AccountDocument | null = await this.accounts.findOne({ $or: [{ usernameKey: key }, { emailKey: key }] });
+    if (doc === null) return null;
+    return { playerId: doc.playerId, username: doc.username, email: doc.emailKey, reset: readResetRecord(doc.passwordReset) };
+  }
+
+  async saveReset(playerId: string, reset: PasswordResetRecord | null): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { passwordReset: reset } });
+  }
+
+  async setPassword(playerId: string, password: string): Promise<void> {
+    const passwordHash: string = await hashPassword(password);
+    // Senha nova: todos os aparelhos logados saem (quem roubou a sessão também).
+    await this.accounts.updateOne({ playerId }, { $set: { passwordHash, sessionHashes: [], passwordReset: null } });
   }
 
   async isHealthy(): Promise<boolean> {

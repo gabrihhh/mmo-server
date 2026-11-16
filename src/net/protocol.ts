@@ -19,6 +19,8 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v27: recuperar senha ([INFRA-13]): `password_reset_request`/`password_reset_confirm` → `password_reset_sent`/
+ *   `password_reset_done`, erro `invalid_reset_code`.
  * v26: PvP ([JOGO-22]): `levelsLost` no `death_report` (morte para jogador: −1 nível, moedas para quem matou).
  * v25: tela de morte ([JOGO-21]): `death_report` (perdas e a peça da roleta) e `respawn` (renascer pelo botão).
  * v24: fusão no ferreiro ([JOGO-20]): `fuse`/`fuse_result`, `xp`/`xpNext`/`fusionXp` no ItemView.
@@ -26,7 +28,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 26;
+export const PROTOCOL_VERSION = 27;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -38,6 +40,16 @@ export const ClientMessageType = {
   Resume: "resume",
   /** Encerra a sessão deste aparelho (o token deixa de valer) e fecha a conexão. Payload: `{}`. */
   Logout: "logout",
+  /**
+   * Esqueci a senha ([INFRA-13]): manda um código para o e-mail da conta (username ou e-mail). Antes de autenticar.
+   * Payload: {@link PasswordResetRequestData}. Resposta: sempre {@link ServerMessageType.PasswordResetSent}.
+   */
+  PasswordResetRequest: "password_reset_request",
+  /**
+   * Troca a senha com o código do e-mail. Payload: {@link PasswordResetConfirmData}. Resposta:
+   * {@link ServerMessageType.PasswordResetDone} ou erro `invalid_reset_code` / `invalid_password`.
+   */
+  PasswordResetConfirm: "password_reset_confirm",
   /**
    * Sinal de vida do celular parado ([INFRA-12]): mensagem vazia a cada ~100 ms quando não manda passos, para o Wi-Fi do
    * Android não entrar em economia de energia (que entrega os snapshots em lotes e faz os outros andarem aos trancos).
@@ -121,6 +133,10 @@ export const ClientMessageType = {
 export const ServerMessageType = {
   /** Autenticação aceita: quem é o jogador e o token de sessão a guardar. */
   AuthOk: "auth_ok",
+  /** "Se a conta existe, mandamos o código" (não diz se existe, [INFRA-13]). Payload: `{}`. */
+  PasswordResetSent: "password_reset_sent",
+  /** Senha trocada; todas as sessões da conta foram encerradas. O cliente entra com a senha nova. Payload: `{}`. */
+  PasswordResetDone: "password_reset_done",
   /** Corpo escolhido e salvo (resposta ao `choose_body`); o cliente já pode mandar `join`. */
   BodyChosen: "body_chosen",
   /** Entrada na zona aceita: tick, parâmetros da simulação e todos os jogadores (inclusive o próprio). */
@@ -203,6 +219,8 @@ export const ErrorCode = {
   InvalidCredentials: "invalid_credentials",
   /** Token de sessão desconhecido ou encerrado: o cliente apaga o token e mostra o login. A conexão continua. */
   InvalidSession: "invalid_session",
+  /** Código de recuperar senha errado, vencido ou queimado (ou conta inexistente; não diz qual). A conexão continua. */
+  InvalidResetCode: "invalid_reset_code",
   /** Tentativas de autenticação demais nesta conexão. A conexão é fechada. */
   TooManyAttempts: "too_many_attempts",
   /** Autenticar de novo numa conexão já autenticada. A conexão continua. */
@@ -340,6 +358,28 @@ export interface LoginData {
   readonly client?: ClientBuild;
   /** Username ou e-mail (sem diferenciar maiúsculas). */
   readonly login: string;
+  readonly password: string;
+}
+
+/** Payload de `password_reset_request` ([INFRA-13]). */
+export interface PasswordResetRequestData {
+  readonly version: number;
+  /** Ver {@link RegisterData.client}. */
+  readonly client?: ClientBuild;
+  /** Username ou e-mail da conta. */
+  readonly login: string;
+}
+
+/** Payload de `password_reset_confirm` ([INFRA-13]). */
+export interface PasswordResetConfirmData {
+  readonly version: number;
+  /** Ver {@link RegisterData.client}. */
+  readonly client?: ClientBuild;
+  /** O mesmo username ou e-mail do pedido. */
+  readonly login: string;
+  /** Código de 6 dígitos do e-mail. */
+  readonly code: string;
+  /** Senha nova (regras de `credentials.ts`). */
   readonly password: string;
 }
 
@@ -599,6 +639,8 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Login; readonly data: LoginData }
   | { readonly type: typeof ClientMessageType.Resume; readonly data: ResumeData }
   | { readonly type: typeof ClientMessageType.Logout; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.PasswordResetRequest; readonly data: PasswordResetRequestData }
+  | { readonly type: typeof ClientMessageType.PasswordResetConfirm; readonly data: PasswordResetConfirmData }
   | { readonly type: typeof ClientMessageType.KeepAlive; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ChooseBody; readonly data: ChooseBodyData }
   | { readonly type: typeof ClientMessageType.Join; readonly data: JoinData }
@@ -1080,6 +1122,8 @@ export type ServerMessage =
       };
     }
   | { readonly type: typeof ServerMessageType.BodyChosen; readonly data: { readonly body: BodyType } }
+  | { readonly type: typeof ServerMessageType.PasswordResetSent; readonly data: Record<string, never> }
+  | { readonly type: typeof ServerMessageType.PasswordResetDone; readonly data: Record<string, never> }
   | {
       readonly type: typeof ServerMessageType.Welcome;
       readonly data: {
@@ -1176,6 +1220,24 @@ export function parseLoginData(data: unknown): LoginData | null {
   const client: ClientBuild | null | undefined = parseClientBuild(data["client"]);
   if (!isVersion(version) || client === null || !isStringUpTo(login, MAX_AUTH_FIELD) || !isStringUpTo(password, MAX_AUTH_FIELD)) return null;
   return { version, login, password, ...(client === undefined ? {} : { client }) };
+}
+
+/** Valida o formato de `password_reset_request`. */
+export function parsePasswordResetRequestData(data: unknown): PasswordResetRequestData | null {
+  if (!isRecord(data)) return null;
+  const { version, login } = data;
+  const client: ClientBuild | null | undefined = parseClientBuild(data["client"]);
+  if (!isVersion(version) || client === null || !isStringUpTo(login, MAX_AUTH_FIELD)) return null;
+  return { version, login, ...(client === undefined ? {} : { client }) };
+}
+
+/** Valida o formato de `password_reset_confirm` (código: até 16 caracteres; o conteúdo quem confere é o servidor). */
+export function parsePasswordResetConfirmData(data: unknown): PasswordResetConfirmData | null {
+  if (!isRecord(data)) return null;
+  const { version, login, code, password } = data;
+  const client: ClientBuild | null | undefined = parseClientBuild(data["client"]);
+  if (!isVersion(version) || client === null || !isStringUpTo(login, MAX_AUTH_FIELD) || !isStringUpTo(code, 16) || !isStringUpTo(password, MAX_AUTH_FIELD)) return null;
+  return { version, login, code, password, ...(client === undefined ? {} : { client }) };
 }
 
 /** Valida o formato de `resume`. */
@@ -1405,6 +1467,14 @@ export function parseClientMessage(text: string): ClientMessage | null {
     }
     case ClientMessageType.Logout:
       return { type: ClientMessageType.Logout, data: {} };
+    case ClientMessageType.PasswordResetRequest: {
+      const data = parsePasswordResetRequestData(raw);
+      return data === null ? null : { type: ClientMessageType.PasswordResetRequest, data };
+    }
+    case ClientMessageType.PasswordResetConfirm: {
+      const data = parsePasswordResetConfirmData(raw);
+      return data === null ? null : { type: ClientMessageType.PasswordResetConfirm, data };
+    }
     case ClientMessageType.KeepAlive:
       return { type: ClientMessageType.KeepAlive, data: {} };
     case ClientMessageType.ChooseBody: {
