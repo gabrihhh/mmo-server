@@ -23,6 +23,8 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v34: troca entre jogadores ([SOC-05]): `trade_request`/`trade_answer`/`trade_offer`/`trade_confirm`/`trade_cancel` →
  *   `trade_requested`/`trade_state`/`trade_done`/`trade_notice`; `tradeRequests` na Configuração social.
  * v35: `item_destroy { uid }` (botão Destruir da ficha do item; mmo-docs [JOGO-24]).
+ * v36: Loja do Ferreiro ([JOGO-23]): `shop_open`/`shop_buy`/`shop_sell` → `shop`/`shop_result`; `sellPrice` no
+ *   ItemView; erro `item_equipped`.
  * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
@@ -43,7 +45,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 35;
+export const PROTOCOL_VERSION = 36;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -91,6 +93,12 @@ export const ClientMessageType = {
   BagMove: "bag_move",
   /** Destrói um item para sempre (botão Destruir da ficha, [JOGO-24]). Payload: {@link ItemDestroyData}. */
   ItemDestroy: "item_destroy",
+  /** Abre a aba Loja do Ferreiro ([JOGO-23]): pede a lista do que está à venda. Sem payload. Resposta: `shop`. */
+  ShopOpen: "shop_open",
+  /** Compra uma peça +0 na Loja do Ferreiro. Payload: {@link ShopBuyData}. Resposta: `shop_result` + `inventory`. */
+  ShopBuy: "shop_buy",
+  /** Vende um item da mochila na Loja do Ferreiro. Payload: {@link ShopSellData}. Resposta: `shop_result` + `inventory`. */
+  ShopSell: "shop_sell",
   /**
    * Tenta melhorar um item no ferreiro (perto dele, com moedas, [JOGO-16]). Payload: {@link UpgradeData}.
    * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
@@ -212,6 +220,10 @@ export const ServerMessageType = {
   ChestLoot: "chest_loot",
   /** Resultado de uma fusão no ferreiro ([JOGO-20]). Payload: {@link FuseResultData}. */
   FuseResult: "fuse_result",
+  /** O que a Loja do Ferreiro vende ([JOGO-23]). Payload: {@link ShopData}. */
+  Shop: "shop",
+  /** Compra/venda feita na Loja do Ferreiro. Payload: {@link ShopResultData}. As moedas vêm no `me` do snapshot. */
+  ShopResult: "shop_result",
   /** Você morreu ([JOGO-21]): o que perdeu e a peça da roleta. Payload: {@link DeathReportData}. Só para quem morreu. */
   DeathReport: "death_report",
   /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesData}. */
@@ -326,6 +338,8 @@ export const ErrorCode = {
   AlreadyJoined: "already_joined",
   /** `equip` de item que não está na mochila. A conexão continua. */
   ItemNotFound: "item_not_found",
+  /** Vender item vestido na Loja do Ferreiro (tirar antes, [JOGO-23]). A conexão continua. */
+  ItemEquipped: "item_equipped",
   /** Mochila cheia (não dá para tirar o item do slot). A conexão continua. */
   BagFull: "bag_full",
   /** `unequip` de slot vazio. A conexão continua. */
@@ -679,6 +693,34 @@ export interface UpgradeResultData {
   readonly points: number;
 }
 
+/** Payload de `shop_buy` ([JOGO-23]): a peça do catálogo a comprar (+0). */
+export interface ShopBuyData {
+  readonly itemId: string;
+}
+
+/** Payload de `shop_sell` ([JOGO-23]): o item da mochila a vender. */
+export interface ShopSellData {
+  readonly uid: string;
+}
+
+/** Uma peça à venda: a ficha (+0) e o preço em moedas. */
+export interface ShopOfferView {
+  readonly item: ItemView;
+  readonly price: number;
+}
+
+/** Payload de `shop`. ATENÇÃO: lido em mmo-client/scripts/network/network.gd (shop_received). */
+export interface ShopData {
+  readonly offers: readonly ShopOfferView[];
+}
+
+/** Payload de `shop_result`: o que foi comprado/vendido e por quanto (moedas). */
+export interface ShopResultData {
+  readonly action: "buy" | "sell";
+  readonly itemId: string;
+  readonly gold: number;
+}
+
 /** Payload de `item_destroy`: o item (vestido ou na mochila) a destruir ([JOGO-24]). */
 export interface ItemDestroyData {
   readonly uid: string;
@@ -799,6 +841,9 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
   | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
   | { readonly type: typeof ClientMessageType.ItemDestroy; readonly data: ItemDestroyData }
+  | { readonly type: typeof ClientMessageType.ShopOpen; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ShopBuy; readonly data: ShopBuyData }
+  | { readonly type: typeof ClientMessageType.ShopSell; readonly data: ShopSellData }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
@@ -1088,6 +1133,8 @@ export interface ItemView {
   readonly xp: number;
   readonly xpNext: number;
   readonly fusionXp: number;
+  /** Quanto a Loja do Ferreiro paga por este item ([JOGO-23], `sellPrice`). ATENÇÃO: lido em inventory_state.gd. */
+  readonly sellPrice: number;
 }
 
 /** Payload de `inventory`. */
@@ -1645,6 +1692,8 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.UpgradeResult; readonly data: UpgradeResultData }
   | { readonly type: typeof ServerMessageType.ChestLoot; readonly data: ChestLootData }
   | { readonly type: typeof ServerMessageType.FuseResult; readonly data: FuseResultData }
+  | { readonly type: typeof ServerMessageType.Shop; readonly data: ShopData }
+  | { readonly type: typeof ServerMessageType.ShopResult; readonly data: ShopResultData }
   | { readonly type: typeof ServerMessageType.DeathReport; readonly data: DeathReportData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesData }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
@@ -2109,6 +2158,17 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.ItemDestroy: {
       const data = parseItemDestroyData(raw);
       return data === null ? null : { type: ClientMessageType.ItemDestroy, data };
+    }
+    case ClientMessageType.ShopOpen:
+      return { type: ClientMessageType.ShopOpen, data: {} };
+    case ClientMessageType.ShopBuy: {
+      if (!isRecord(raw)) return null;
+      const { itemId } = raw;
+      return typeof itemId === "string" && itemId.length > 0 && itemId.length <= 64 ? { type: ClientMessageType.ShopBuy, data: { itemId } } : null;
+    }
+    case ClientMessageType.ShopSell: {
+      const data = parseItemDestroyData(raw);
+      return data === null ? null : { type: ClientMessageType.ShopSell, data };
     }
     case ClientMessageType.Upgrade: {
       const data = parseUpgradeData(raw);

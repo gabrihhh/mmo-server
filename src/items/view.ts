@@ -1,4 +1,5 @@
 import type { AbilityView, InventoryView, ItemView, LootView } from "../net/protocol.js";
+import { sellPrice } from "./shop.js";
 import type { LootEntry } from "./loot.js";
 import { BAG_CAPACITY, type Inventory, type ItemStack } from "./inventory.js";
 import { upgradeAttributesOf, upgradeChance, upgradeCost } from "./upgrade.js";
@@ -62,6 +63,7 @@ export function itemView(stack: ItemStack): ItemView | null {
     xp: stack.xp ?? 0,
     xpNext: levelXp(stack.level ?? 0),
     fusionXp: itemXp(stack),
+    sellPrice: sellPrice(stack),
   };
 }
 

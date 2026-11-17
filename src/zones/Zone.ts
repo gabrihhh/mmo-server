@@ -56,6 +56,7 @@ import { fuseItems, type FusionResult } from "../items/fusion.js";
 import { deathPenalty, type DeathPenalty } from "../combat/death.js";
 import { inSafeZone, pvpKill, pvpLevelsAllowed, type PvpKill } from "../combat/pvp.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
+import { buyItem, sellItem, type ShopResult } from "../items/shop.js";
 import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
@@ -1950,6 +1951,21 @@ export class Zone {
     const player: ZonePlayer | undefined = this.players.get(playerId);
     if (player === undefined || player.dead || !this.nearBlacksmith(player)) return { ok: false, reason: "too_far" };
     return fuseItems(inventory, targetUid, materialUid, this.random);
+  }
+
+  /**
+   * Loja do Ferreiro ([JOGO-23]): [playerId] perto de um ferreiro compra [itemId] (`buy`) ou vende o item [uid] da
+   * mochila (`sell`). Aceita → as moedas mudam no progresso (salvo por {@link ZoneMember.onProgress}); devolve o
+   * resultado para quem guarda o inventário.
+   */
+  shopTrade(playerId: string, inventory: Inventory, action: "buy" | "sell", id: string): ShopResult | { readonly ok: false; readonly reason: "too_far" } {
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    if (player === undefined || player.dead || !this.nearBlacksmith(player)) return { ok: false, reason: "too_far" };
+    const result: ShopResult = action === "buy" ? buyItem(inventory, id, player.progress.gold) : sellItem(inventory, id);
+    if (!result.ok) return result;
+    player.progress = { ...player.progress, gold: player.progress.gold + result.goldDelta };
+    player.member.onProgress?.(player.progress);
+    return result;
   }
 
   /** `true` se há um ferreiro a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador. */

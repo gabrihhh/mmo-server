@@ -129,6 +129,22 @@ describe("ferreiro na zona e atributos no combate ([JOGO-16])", () => {
     assert.deepStrictEqual(z.upgradeItem("near", again.inventory, "sword", "damage"), { ok: false, reason: "not_enough_gold" });
   });
 
+  it("loja do ferreiro ([JOGO-23]): só perto; compra cobra e venda paga no progresso", () => {
+    const z = zone([blacksmith]);
+    const near = new Member("near");
+    const far = new Member("far");
+    z.join(near, { x: 2, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 0, gold: 600 });
+    z.join(far, { x: 20, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 0, gold: 600 });
+    assert.deepStrictEqual(z.shopTrade("far", inventory(), "buy", "knight_sword"), { ok: false, reason: "too_far" });
+    const bought = z.shopTrade("near", inventory(), "buy", "knight_sword");
+    assert.ok(bought.ok);
+    assert.strictEqual(near.saved?.gold, 100, "600 − 500");
+    const uid: string = bought.inventory.bag.at(-1)?.uid ?? "";
+    const sold = z.shopTrade("near", bought.inventory, "sell", uid);
+    assert.ok(sold.ok);
+    assert.strictEqual(near.saved?.gold, 200, "100 + 20% de 500");
+  });
+
   it("ferreiro não é alvo nem leva dano", () => {
     const z = zone([blacksmith]);
     const a = new Member("a");

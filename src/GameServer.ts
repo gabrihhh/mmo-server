@@ -3,6 +3,7 @@ import type { PlayerStats } from "./progression/stats.js";
 import { RankingBoards, addToPeriods, secondsUntilReset, type PeriodCounters, type RankRow, type RankingCategory, type RankingPeriod } from "./progression/ranking.js";
 import type { AttributeId } from "./items/attributes.js";
 import type { UpgradeFailure } from "./items/upgrade.js";
+import { buyPrice, shopItems, type ShopFailure } from "./items/shop.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -537,6 +538,15 @@ export class GameServer {
         return;
       case ClientMessageType.BagMove:
         void this.changeInventory(session, (inventory) => moveInBag(inventory, message.data.from, message.data.to));
+        return;
+      case ClientMessageType.ShopOpen:
+        this.sendShop(session);
+        return;
+      case ClientMessageType.ShopBuy:
+        void this.handleShop(session, "buy", message.data.itemId);
+        return;
+      case ClientMessageType.ShopSell:
+        void this.handleShop(session, "sell", message.data.uid);
         return;
       case ClientMessageType.ItemDestroy:
         // Item numa troca aberta: changeInventory avisa a troca (tradeBelongingsChanged), que tira ele da oferta.
@@ -1277,6 +1287,69 @@ export class GameServer {
     // Moedas gastas e, se subiu, o item mudou: a troca aberta confere a oferta ([SOC-05]).
     zone.tradeBelongingsChanged(playerId);
   }
+
+  /** Manda a lista da Loja do Ferreiro ([JOGO-23]): todas as peças +0 com o preço. */
+  private sendShop(session: Session): void {
+    if (session.socket.readyState !== WebSocket.OPEN) return;
+    const offers = shopItems().flatMap((def) => {
+      const item: ItemView | null = itemView({ uid: `shop-${def.id}`, itemId: def.id });
+      return item === null ? [] : [{ item, price: buyPrice(def) }];
+    });
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.Shop, data: { offers } }));
+  }
+
+  /**
+   * Compra/venda na Loja do Ferreiro ([JOGO-23]): a zona confere a distância e mexe nas moedas (`Zone.shopTrade`);
+   * aqui salva o inventário e responde `shop_result` + `inventory`. Só a mochila muda (nada vestido), então o
+   * loadout da zona fica igual.
+   */
+  private async handleShop(session: Session, action: "buy" | "sell", id: string): Promise<void> {
+    const zone: Zone | null = session.zone;
+    if (session.account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const playerId: string = session.account.playerId;
+    const result = zone.shopTrade(playerId, session.account.inventory, action, id);
+    if (!result.ok) {
+      this.sendError(session, GameServer.SHOP_ERRORS[result.reason], GameServer.SHOP_MESSAGES[result.reason]);
+      return;
+    }
+    // O onProgress da zona já trocou as moedas na sessão: lê a conta de novo antes de mexer nela.
+    const account: Account | null = session.account;
+    if (account === null) return;
+    session.account = { ...account, inventory: result.inventory };
+    try {
+      await this.options.accounts.saveInventory(playerId, result.inventory);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar inventário (loja) de ${account.username}:`, error);
+    }
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(
+        encodeServerMessage({ type: ServerMessageType.ShopResult, data: { action, itemId: result.itemId, gold: Math.abs(result.goldDelta) } }),
+      );
+    }
+    this.sendInventory(session);
+    zone.tradeBelongingsChanged(playerId);
+  }
+
+  /** Código do protocolo para cada recusa da Loja do Ferreiro. */
+  private static readonly SHOP_ERRORS: Readonly<Record<ShopFailure | "too_far", ErrorCode>> = {
+    item_not_found: ErrorCode.ItemNotFound,
+    not_enough_gold: ErrorCode.NotEnoughGold,
+    bag_full: ErrorCode.BagFull,
+    item_equipped: ErrorCode.ItemEquipped,
+    too_far: ErrorCode.TooFar,
+  };
+
+  /** Mensagens (em português) das recusas da Loja do Ferreiro. */
+  private static readonly SHOP_MESSAGES: Readonly<Record<ShopFailure | "too_far", string>> = {
+    item_not_found: "Esse item não existe ou não é seu.",
+    not_enough_gold: "Moedas insuficientes.",
+    bag_full: "Mochila cheia.",
+    item_equipped: "Tire o item antes de vender.",
+    too_far: "Chegue perto do ferreiro.",
+  };
 
   /** Pontos que o item `uid` tinha em `attribute` (antes da melhoria). */
   private static pointsBefore(inventory: Account["inventory"], uid: string, attribute: AttributeId): number {
