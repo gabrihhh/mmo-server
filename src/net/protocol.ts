@@ -25,6 +25,8 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v35: `item_destroy { uid }` (botão Destruir da ficha do item; mmo-docs [JOGO-24]).
  * v36: Loja do Ferreiro ([JOGO-23]): `shop_open`/`shop_buy`/`shop_sell` → `shop`/`shop_result`; `sellPrice` no
  *   ItemView; erro `item_equipped`.
+ * v37: Armazém ([JOGO-26]): `storage_put`/`storage_take`/`storage_buy_tab` → `inventory` (com `storage`,
+ *   `storageCapacity`, `storageTabCost`); NPC com `service: "storage"`; erro `storage_full`.
  * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
@@ -45,7 +47,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 36;
+export const PROTOCOL_VERSION = 37;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -99,6 +101,12 @@ export const ClientMessageType = {
   ShopBuy: "shop_buy",
   /** Vende um item da mochila na Loja do Ferreiro. Payload: {@link ShopSellData}. Resposta: `shop_result` + `inventory`. */
   ShopSell: "shop_sell",
+  /** Guarda um item da mochila no Armazém ([JOGO-26]). Payload: {@link ItemDestroyData} ({ uid }). Resposta: `inventory`. */
+  StoragePut: "storage_put",
+  /** Tira um item do Armazém para a mochila. Payload: { uid }. Resposta: `inventory`. */
+  StorageTake: "storage_take",
+  /** Compra mais uma aba de 20 espaços no Armazém. Sem payload. Resposta: `inventory` (moedas no snapshot). */
+  StorageBuyTab: "storage_buy_tab",
   /**
    * Tenta melhorar um item no ferreiro (perto dele, com moedas, [JOGO-16]). Payload: {@link UpgradeData}.
    * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
@@ -340,6 +348,8 @@ export const ErrorCode = {
   ItemNotFound: "item_not_found",
   /** Vender item vestido na Loja do Ferreiro (tirar antes, [JOGO-23]). A conexão continua. */
   ItemEquipped: "item_equipped",
+  /** Armazém cheio (comprar outra aba, [JOGO-26]). A conexão continua. */
+  StorageFull: "storage_full",
   /** Mochila cheia (não dá para tirar o item do slot). A conexão continua. */
   BagFull: "bag_full",
   /** `unequip` de slot vazio. A conexão continua. */
@@ -844,6 +854,9 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.ShopOpen; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ShopBuy; readonly data: ShopBuyData }
   | { readonly type: typeof ClientMessageType.ShopSell; readonly data: ShopSellData }
+  | { readonly type: typeof ClientMessageType.StoragePut; readonly data: ItemDestroyData }
+  | { readonly type: typeof ClientMessageType.StorageTake; readonly data: ItemDestroyData }
+  | { readonly type: typeof ClientMessageType.StorageBuyTab; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
@@ -933,8 +946,11 @@ export interface NpcSnapshot extends PlayerSnapshot {
   readonly scale?: number;
   /** Chefe ([JOGO-18]): o cliente mostra o nome em dourado acima dele e o mapa marca diferente. Ausente = não é. */
   readonly boss?: boolean;
-  /** Serviço do NPC: `"blacksmith"` = ferreiro (tocar nele abre a tela de melhoria, [JOGO-16]). Ausente = nenhum. */
-  readonly service?: "blacksmith";
+  /**
+   * Serviço do NPC: `"blacksmith"` = ferreiro (tela de melhoria, [JOGO-16]); `"storage"` = baú do Armazém
+   * ([JOGO-26]). Ausente = nenhum. ATENÇÃO: lido em mmo-client (hud/zone).
+   */
+  readonly service?: "blacksmith" | "storage";
 }
 
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
@@ -1144,6 +1160,12 @@ export interface InventoryView {
   readonly bagCapacity: number;
   /** Ataque simples quando não há arma na mão. */
   readonly unarmedAttack: AbilityView;
+  /** Itens no Armazém ([JOGO-26]). ATENÇÃO: lidos em mmo-client/scripts/items/inventory_state.gd. */
+  readonly storage: readonly ItemView[];
+  /** Espaços do Armazém (20 por aba). */
+  readonly storageCapacity: number;
+  /** Preço (moedas) da próxima aba do Armazém. */
+  readonly storageTabCost: number;
 }
 
 /** Item vestido como aparece nos Atributos de um jogador: só o que se mostra (sem uid nem habilidades). */
@@ -2170,6 +2192,16 @@ export function parseClientMessage(text: string): ClientMessage | null {
       const data = parseItemDestroyData(raw);
       return data === null ? null : { type: ClientMessageType.ShopSell, data };
     }
+    case ClientMessageType.StoragePut: {
+      const data = parseItemDestroyData(raw);
+      return data === null ? null : { type: ClientMessageType.StoragePut, data };
+    }
+    case ClientMessageType.StorageTake: {
+      const data = parseItemDestroyData(raw);
+      return data === null ? null : { type: ClientMessageType.StorageTake, data };
+    }
+    case ClientMessageType.StorageBuyTab:
+      return { type: ClientMessageType.StorageBuyTab, data: {} };
     case ClientMessageType.Upgrade: {
       const data = parseUpgradeData(raw);
       return data === null ? null : { type: ClientMessageType.Upgrade, data };

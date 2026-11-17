@@ -35,6 +35,10 @@ export interface Inventory {
   readonly bag: readonly ItemStack[];
   /** Presentes únicos já recebidos (ids de `GRANTS` do catálogo): não são dados de novo. */
   readonly grants: readonly string[];
+  /** Itens guardados no Armazém ([JOGO-26], `src/items/storage.ts`). Ausente = vazio. */
+  readonly storage?: readonly ItemStack[];
+  /** Abas do Armazém compradas além da 1ª (grátis). Ausente = 0. */
+  readonly storageTabs?: number;
 }
 
 /** Motivo de recusa de uma troca. */
@@ -94,7 +98,7 @@ export function applyGrants(inventory: Inventory): Inventory {
       owned.add(itemId);
     }
   }
-  return { equipped: inventory.equipped, bag, grants: [...inventory.grants, ...missing] };
+  return { ...inventory, bag, grants: [...inventory.grants, ...missing] };
 }
 
 /**
@@ -202,7 +206,18 @@ export function readInventory(raw: unknown): Inventory {
   }
   const rawGrants: unknown = raw["grants"];
   const grants: string[] = Array.isArray(rawGrants) ? rawGrants.filter((grant): grant is string => typeof grant === "string") : [];
-  return applyGrants({ equipped, bag, grants });
+  // Armazém ([JOGO-26]): itens desconhecidos somem; abas compradas = inteiro ≥ 0.
+  const rawTabs: unknown = raw["storageTabs"];
+  const storageTabs: number = typeof rawTabs === "number" && Number.isSafeInteger(rawTabs) && rawTabs > 0 ? rawTabs : 0;
+  const rawStorage: unknown = raw["storage"];
+  const storage: ItemStack[] = [];
+  if (Array.isArray(rawStorage)) {
+    for (const value of rawStorage) {
+      const stack: ItemStack | null = readStack(value);
+      if (stack !== null) storage.push(stack);
+    }
+  }
+  return applyGrants({ equipped, bag, grants, ...(storage.length > 0 ? { storage } : {}), ...(storageTabs > 0 ? { storageTabs } : {}) });
 }
 
 

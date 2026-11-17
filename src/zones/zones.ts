@@ -114,6 +114,13 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
     look: { hand: null, head: null, chest: "knight_plate", feet: "training_boots" },
     behavior: { kind: "blacksmith" },
   },
+  // Armazém ([JOGO-26]): o baú grande da praça (não é pessoa); perto dele guarda itens além da mochila.
+  {
+    id: "storage",
+    name: "Armazém",
+    body: "male",
+    behavior: { kind: "storage" },
+  },
   // Brigão: parado, bate com o ataque da espada longa em quem chegar perto; tem vida e morre.
   {
     id: "test_brawler",

@@ -145,6 +145,21 @@ describe("ferreiro na zona e atributos no combate ([JOGO-16])", () => {
     assert.strictEqual(near.saved?.gold, 200, "100 + 20% de 500");
   });
 
+  it("armazém ([JOGO-26]): só perto do baú; aba comprada desconta as moedas", () => {
+    const storage: DummyConfig = { id: "storage", name: "Armazém", x: 0, z: 10, behavior: { kind: "storage" } };
+    const z = zone([blacksmith, storage]);
+    const near = new Member("near");
+    z.join(near, { x: 0, y: 0, z: 8, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 0, gold: 6000 });
+    const put = z.storageAction("near", inventory(), "put", "staff");
+    assert.ok(put.ok);
+    const tab = z.storageAction("near", put.inventory, "buyTab", "");
+    assert.ok(tab.ok);
+    assert.strictEqual(near.saved?.gold, 1000, "6000 − 5000");
+    const far = new Member("far");
+    z.join(far, { x: 2, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 0, gold: 0 });
+    assert.deepStrictEqual(z.storageAction("far", inventory(), "put", "staff"), { ok: false, reason: "too_far" }, "perto do ferreiro não vale");
+  });
+
   it("ferreiro não é alvo nem leva dano", () => {
     const z = zone([blacksmith]);
     const a = new Member("a");

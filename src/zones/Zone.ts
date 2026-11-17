@@ -57,6 +57,7 @@ import { deathPenalty, type DeathPenalty } from "../combat/death.js";
 import { inSafeZone, pvpKill, pvpLevelsAllowed, type PvpKill } from "../combat/pvp.js";
 import { upgradeItem, type UpgradeResult } from "../items/upgrade.js";
 import { buyItem, sellItem, type ShopResult } from "../items/shop.js";
+import { buyStorageTab, putInStorage, takeFromStorage, type StorageResult } from "../items/storage.js";
 import { EQUIP_SLOTS, ITEMS, MONSTER_ABILITIES, UNARMED_ATTACK, dashSteps, getItem, isMovementAbility, type AbilityDef, type ItemDef } from "../items/catalog.js";
 import {
   DUMMY_MAX_HP,
@@ -163,6 +164,8 @@ export type NpcBehavior =
   | { readonly kind: "brawler"; readonly weapon: string }
   /** Ferreiro ([JOGO-16]): parado, invulnerável, não é alvo; perto dele dá para melhorar itens. */
   | { readonly kind: "blacksmith" }
+  /** Armazém ([JOGO-26]): baú parado, invulnerável, não é alvo; perto dele guarda/tira itens. */
+  | { readonly kind: "storage" }
   | {
       readonly kind: "zombie";
       /** Ataque simples: id em {@link MONSTER_ABILITIES} (ex. `zombie_punch`). */
@@ -1109,8 +1112,9 @@ export class Zone {
       ...(dummy.body !== null ? { body: dummy.body, look: dummy.look } : {}),
       // Aliado (saco de pancadas: dá para curar) e quem não serve de alvo de ataque (atirador invulnerável, aliado).
       ...(dummy.behavior.kind === "punchingBag" ? { ally: true } : {}),
-      ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" || dummy.behavior.kind === "blacksmith" ? { targetable: false } : {}),
+      ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" || Zone.isService(dummy.behavior) ? { targetable: false } : {}),
       ...(dummy.behavior.kind === "blacksmith" ? { service: "blacksmith" as const } : {}),
+      ...(dummy.behavior.kind === "storage" ? { service: "storage" as const } : {}),
       // Monstro ([JOGO-13]): o cliente mostra só vida, nível e lançamento (sem nome).
       ...(dummy.behavior.kind === "zombie" ? { monster: true } : {}),
       // Chefe ([JOGO-18]): maior (escala do modelo) e com o nome à vista.
@@ -1968,10 +1972,37 @@ export class Zone {
     return result;
   }
 
+  /**
+   * Armazém ([JOGO-26]): [playerId] perto do baú guarda (`put`) ou tira (`take`) o item [uid], ou compra uma aba
+   * (`buyTab`, gasta moedas do progresso). Devolve o resultado para quem guarda o inventário.
+   */
+  storageAction(playerId: string, inventory: Inventory, action: "put" | "take" | "buyTab", uid: string): StorageResult | { readonly ok: false; readonly reason: "too_far" } {
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    if (player === undefined || player.dead || !this.nearService(player, "storage")) return { ok: false, reason: "too_far" };
+    const result: StorageResult =
+      action === "put" ? putInStorage(inventory, uid) : action === "take" ? takeFromStorage(inventory, uid) : buyStorageTab(inventory, player.progress.gold);
+    if (!result.ok) return result;
+    if (result.goldDelta !== 0) {
+      player.progress = { ...player.progress, gold: player.progress.gold + result.goldDelta };
+      player.member.onProgress?.(player.progress);
+    }
+    return result;
+  }
+
+  /** NPC de serviço (ferreiro, armazém): parado, invulnerável, não é alvo. */
+  private static isService(behavior: NpcBehavior): boolean {
+    return behavior.kind === "blacksmith" || behavior.kind === "storage";
+  }
+
   /** `true` se há um ferreiro a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador. */
   private nearBlacksmith(player: ZonePlayer): boolean {
+    return this.nearService(player, "blacksmith");
+  }
+
+  /** `true` se há um NPC de serviço [kind] a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador (mesmo alcance p/ todos). */
+  private nearService(player: ZonePlayer, kind: "blacksmith" | "storage"): boolean {
     for (const npc of this.dummies.values()) {
-      if (npc.behavior.kind === "blacksmith" && Zone.distance(player.state, npc.state) <= BLACKSMITH_RANGE + BODY_RADIUS) return true;
+      if (npc.behavior.kind === kind && Zone.distance(player.state, npc.state) <= BLACKSMITH_RANGE + BODY_RADIUS) return true;
     }
     return false;
   }
@@ -2299,7 +2330,7 @@ export class Zone {
    */
   private isEnemy(source: Entity, target: Entity): boolean {
     if (target.dead || target.id === source.id) return false;
-    if (target.kind === "dummy" && (target.behavior.kind === "shooter" || target.behavior.kind === "blacksmith")) return false;
+    if (target.kind === "dummy" && (target.behavior.kind === "shooter" || Zone.isService(target.behavior))) return false;
     // Jogador fake de teste: NPCs e monstros não o atacam (senão ele sumia no meio do teste, [SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return false;
     if (source.kind === "dummy") {
@@ -2439,7 +2470,7 @@ export class Zone {
   private damage(source: Entity, target: Entity, amount: number, abilityId: string): void {
     if (target.dead || amount <= 0) return;
     // Atirador de teste e ferreiro: invulneráveis ([JOGO-11], [JOGO-16]).
-    if (target.kind === "dummy" && (target.behavior.kind === "shooter" || target.behavior.kind === "blacksmith")) return;
+    if (target.kind === "dummy" && (target.behavior.kind === "shooter" || Zone.isService(target.behavior))) return;
     // Fake de teste não leva dano de NPC/monstro, nem de área/projétil que passe por ele ([SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return;
     // Membro do grupo não leva dano de outro membro ([SOC-03]; segurança além do isEnemy).

@@ -4,6 +4,7 @@ import { RankingBoards, addToPeriods, secondsUntilReset, type PeriodCounters, ty
 import type { AttributeId } from "./items/attributes.js";
 import type { UpgradeFailure } from "./items/upgrade.js";
 import { buyPrice, shopItems, type ShopFailure } from "./items/shop.js";
+import type { StorageFailure } from "./items/storage.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -547,6 +548,15 @@ export class GameServer {
         return;
       case ClientMessageType.ShopSell:
         void this.handleShop(session, "sell", message.data.uid);
+        return;
+      case ClientMessageType.StoragePut:
+        void this.handleStorage(session, "put", message.data.uid);
+        return;
+      case ClientMessageType.StorageTake:
+        void this.handleStorage(session, "take", message.data.uid);
+        return;
+      case ClientMessageType.StorageBuyTab:
+        void this.handleStorage(session, "buyTab", "");
         return;
       case ClientMessageType.ItemDestroy:
         // Item numa troca aberta: changeInventory avisa a troca (tradeBelongingsChanged), que tira ele da oferta.
@@ -1332,6 +1342,55 @@ export class GameServer {
     this.sendInventory(session);
     zone.tradeBelongingsChanged(playerId);
   }
+
+  /**
+   * Armazém ([JOGO-26]): a zona confere a distância do baú e, na compra de aba, as moedas (`Zone.storageAction`);
+   * aqui salva o inventário (mochila + armazém juntos) e manda o `inventory` novo. Nada vestido muda.
+   */
+  private async handleStorage(session: Session, action: "put" | "take" | "buyTab", uid: string): Promise<void> {
+    const zone: Zone | null = session.zone;
+    if (session.account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const playerId: string = session.account.playerId;
+    const result = zone.storageAction(playerId, session.account.inventory, action, uid);
+    if (!result.ok) {
+      this.sendError(session, GameServer.STORAGE_ERRORS[result.reason], GameServer.STORAGE_MESSAGES[result.reason]);
+      return;
+    }
+    // O onProgress da zona pode ter trocado as moedas na sessão: lê a conta de novo antes de mexer nela.
+    const account: Account | null = session.account;
+    if (account === null) return;
+    session.account = { ...account, inventory: result.inventory };
+    try {
+      await this.options.accounts.saveInventory(playerId, result.inventory);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar inventário (armazém) de ${account.username}:`, error);
+    }
+    this.sendInventory(session);
+    zone.tradeBelongingsChanged(playerId);
+  }
+
+  /** Código do protocolo para cada recusa do Armazém. */
+  private static readonly STORAGE_ERRORS: Readonly<Record<StorageFailure | "too_far", ErrorCode>> = {
+    item_not_found: ErrorCode.ItemNotFound,
+    item_equipped: ErrorCode.ItemEquipped,
+    storage_full: ErrorCode.StorageFull,
+    bag_full: ErrorCode.BagFull,
+    not_enough_gold: ErrorCode.NotEnoughGold,
+    too_far: ErrorCode.TooFar,
+  };
+
+  /** Mensagens (em português) das recusas do Armazém. */
+  private static readonly STORAGE_MESSAGES: Readonly<Record<StorageFailure | "too_far", string>> = {
+    item_not_found: "Esse item não está aí.",
+    item_equipped: "Tire o item antes de guardar.",
+    storage_full: "Armazém cheio: compre outra aba.",
+    bag_full: "Mochila cheia.",
+    not_enough_gold: "Moedas insuficientes.",
+    too_far: "Chegue perto do Armazém.",
+  };
 
   /** Código do protocolo para cada recusa da Loja do Ferreiro. */
   private static readonly SHOP_ERRORS: Readonly<Record<ShopFailure | "too_far", ErrorCode>> = {

@@ -1,5 +1,6 @@
 import type { AbilityView, InventoryView, ItemView, LootView } from "../net/protocol.js";
 import { sellPrice } from "./shop.js";
+import { storageCapacity, storageOf, storageTabCost } from "./storage.js";
 import type { LootEntry } from "./loot.js";
 import { BAG_CAPACITY, type Inventory, type ItemStack } from "./inventory.js";
 import { upgradeAttributesOf, upgradeChance, upgradeCost } from "./upgrade.js";
@@ -94,5 +95,8 @@ export function inventoryView(inventory: Inventory): InventoryView {
     bag: inventory.bag.map(itemView).filter((view): view is ItemView => view !== null),
     bagCapacity: BAG_CAPACITY,
     unarmedAttack: abilityView(UNARMED_ATTACK),
+    storage: storageOf(inventory).map(itemView).filter((view): view is ItemView => view !== null),
+    storageCapacity: storageCapacity(inventory),
+    storageTabCost: storageTabCost(inventory.storageTabs ?? 0),
   };
 }
