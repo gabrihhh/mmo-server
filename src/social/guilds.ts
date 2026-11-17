@@ -388,10 +388,15 @@ export class Guilds {
     this.host.send(playerId, { type: ServerMessageType.Guild, data: { guild: guild === undefined ? null : this.view(guild, playerId) } });
   }
 
-  /** Procurar guilda: as que não estão cheias, da mais cheia para a mais vazia (empate: nome), até {@link GUILD_LIST_MAX}. */
-  list(): GuildSummaryView[] {
+  /**
+   * Procurar guilda: sem [query], as que não estão cheias; com [query], as que têm o texto no nome ou na tag (sem ligar
+   * para maiúsculas/acentos; cheias incluídas, o cliente marca). Da mais cheia para a mais vazia (empate: nome), até
+   * {@link GUILD_LIST_MAX}.
+   */
+  list(query: string = ""): GuildSummaryView[] {
+    const key: string = guildNameKey(query.trim());
     return Array.from(this.guilds.values())
-      .filter((g) => g.members.length < GUILD_MAX_MEMBERS)
+      .filter((g) => (key === "" ? g.members.length < GUILD_MAX_MEMBERS : guildNameKey(g.name).includes(key) || g.tag.toLowerCase().includes(key)))
       .sort((a, b) => b.members.length - a.members.length || a.name.localeCompare(b.name, "pt-BR"))
       .slice(0, GUILD_LIST_MAX)
       .map((g) => ({ id: g.id, name: g.name, tag: g.tag, members: g.members.length }));

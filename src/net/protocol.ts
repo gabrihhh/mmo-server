@@ -20,6 +20,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
  * v31: rankings ([SOC-07]): `ranking_request { category, period }` → `ranking` (top 100, sua posição, quando vira).
@@ -39,7 +40,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 32;
+export const PROTOCOL_VERSION = 33;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -150,7 +151,10 @@ export const ClientMessageType = {
   GuildKick: "guild_kick",
   /** Líder promove a oficial / rebaixa a membro. Payload: {@link GuildRoleData}. */
   GuildRole: "guild_role",
-  /** Lista as guildas que aceitam gente (Procurar guilda, [SOC-06]). Payload: `{}`. Resposta: {@link ServerMessageType.GuildList}. */
+  /**
+   * Lista as guildas (Procurar guilda, [SOC-06]). Payload: {@link GuildListRequestData} (`query` vazia = as que aceitam
+   * gente; com texto = busca por nome/tag, cheias incluídas). Resposta: {@link ServerMessageType.GuildList}.
+   */
   GuildList: "guild_list",
   /** Ficha de uma guilda (Procurar guilda). Payload: {@link GuildIdData}. Resposta: {@link ServerMessageType.GuildInfo}. */
   GuildInfo: "guild_info",
@@ -760,7 +764,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.GuildKick; readonly data: GuildTargetData }
   | { readonly type: typeof ClientMessageType.GuildRole; readonly data: GuildRoleData }
   | { readonly type: typeof ClientMessageType.RankingRequest; readonly data: RankingRequestData }
-  | { readonly type: typeof ClientMessageType.GuildList; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.GuildList; readonly data: GuildListRequestData }
   | { readonly type: typeof ClientMessageType.GuildInfo; readonly data: GuildIdData }
   | { readonly type: typeof ClientMessageType.GuildRequest; readonly data: GuildIdData }
   | { readonly type: typeof ClientMessageType.GuildRequestAnswer; readonly data: GuildRequestAnswerData }
@@ -1173,6 +1177,11 @@ export const GUILD_REQUEST_DAYS = 7;
 /** Máximo de guildas no Procurar guilda. */
 export const GUILD_LIST_MAX = 50;
 
+/** Payload de `guild_list`: o texto da busca (vazio = lista normal). */
+export interface GuildListRequestData {
+  readonly query: string;
+}
+
 /** Payload de `guild_info` e `guild_request`: a guilda. */
 export interface GuildIdData {
   readonly guildId: string;
@@ -1206,8 +1215,10 @@ export interface GuildSummaryView {
   readonly members: number;
 }
 
-/** Payload de `guild_list`. */
+/** Payload de `guild_list` (resposta). */
 export interface GuildListData {
+  /** O texto buscado (igual ao do pedido; vazio = lista normal). */
+  readonly query: string;
   readonly guilds: readonly GuildSummaryView[];
 }
 
@@ -1987,8 +1998,12 @@ export function parseClientMessage(text: string): ClientMessage | null {
       const data = parseGuildRoleData(raw);
       return data === null ? null : { type: ClientMessageType.GuildRole, data };
     }
-    case ClientMessageType.GuildList:
-      return { type: ClientMessageType.GuildList, data: {} };
+    case ClientMessageType.GuildList: {
+      // Cliente antigo manda `{}`: vira busca vazia.
+      const query: unknown = isRecord(raw) ? raw["query"] : undefined;
+      if (query !== undefined && (typeof query !== "string" || query.length > 40)) return null;
+      return { type: ClientMessageType.GuildList, data: { query: typeof query === "string" ? query : "" } };
+    }
     case ClientMessageType.GuildInfo: {
       const data = parseGuildIdData(raw);
       return data === null ? null : { type: ClientMessageType.GuildInfo, data };

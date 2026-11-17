@@ -212,6 +212,9 @@ describe("guilda ([SOC-06])", () => {
     env.auto.set("c", "accept");
     env.guilds.invite("b", "c", 0);
     assert.deepStrictEqual(env.guilds.list().map((g) => [g.tag, g.members]), [["GRA", 2], ["PEQ", 1]]);
+    assert.deepStrictEqual(env.guilds.list("quêna").map((g) => g.tag), ["PEQ"], "busca no nome sem acento/caixa");
+    assert.deepStrictEqual(env.guilds.list("gr").map((g) => g.tag), ["GRA"], "busca na tag");
+    assert.deepStrictEqual(env.guilds.list("zzz"), []);
     const id: string = env.guilds.guildOf("a")?.id ?? "";
     const info = env.guilds.info(id, "x", { monsterXp: 12, kills: 3 }, 0);
     assert.deepStrictEqual([info?.description, info?.leaderName, info?.members, info?.monsterXp, info?.requested], ["Só amigos", "A", 1, 12, false]);

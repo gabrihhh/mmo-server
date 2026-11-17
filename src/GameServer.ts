@@ -620,7 +620,7 @@ export class GameServer {
         this.guildRequest(session, (id) => this.guilds.setRole(id, message.data.playerId, message.data.role));
         return;
       case ClientMessageType.GuildList:
-        if (session.account !== null) this.sendTo(session.account.playerId, { type: ServerMessageType.GuildList, data: { guilds: this.guilds.list() } });
+        if (session.account !== null) this.sendTo(session.account.playerId, { type: ServerMessageType.GuildList, data: { query: message.data.query, guilds: this.guilds.list(message.data.query) } });
         return;
       case ClientMessageType.GuildInfo:
         void this.sendGuildInfo(session, message.data.guildId);
