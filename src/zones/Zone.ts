@@ -23,6 +23,7 @@ import {
   type ChestView,
 } from "../net/protocol.js";
 import { Groups, type GroupResult } from "./groups.js";
+import { Trades, type TradeChange, type TradeResult } from "./trades.js";
 import {
   MOVE_SPEED,
   TICK_RATE_HZ,
@@ -124,6 +125,18 @@ export interface ZoneMember {
    * {@link Zone.groupInviteAutoAnswer}.
    */
   hidesGroupInvites?(): boolean;
+  /**
+   * `true` = "Pedidos de troca: Ocultar" ([SOC-05], Configuração): todo pedido de troca é recusado sozinho. Lido a cada
+   * pedido (como {@link hidesGroupInvites}). Ausente = mostra os pedidos.
+   */
+  hidesTradeRequests?(): boolean;
+  /** Mochila atual da conta (a troca, [SOC-05], confere e mostra os itens oferecidos). Ausente = mochila vazia (testes). */
+  bag?(): readonly ItemStack[];
+  /**
+   * A troca aconteceu ([SOC-05]): esta é a mochila nova (as moedas novas já vão por {@link onProgress}). Quem guarda a
+   * conta troca a mochila, salva e manda o `inventory`. Ausente = nada (testes).
+   */
+  onTradeBag?(bag: readonly ItemStack[]): void;
 }
 
 /**
@@ -731,6 +744,23 @@ export class Zone {
     levelOf: (playerId): number => this.players.get(playerId)?.level ?? 0,
     autoAnswer: (playerId): "accept" | "reject" | null => this.groupInviteAutoAnswer(playerId),
   });
+  /** Mochila de mentira dos fakes de teste ([SOC-01]): recebe o que se troca com eles (some ao reiniciar). */
+  private readonly fakeBags: Map<string, readonly ItemStack[]> = new Map();
+  /** Trocas e pedidos de troca desta zona ([SOC-05]). */
+  private readonly trades: Trades = new Trades({
+    send: (playerId, message): void => this.players.get(playerId)?.member.send(encodeServerMessage(message)),
+    nameOf: (playerId): string | undefined => this.players.get(playerId)?.name,
+    distance: (a, b): number | undefined => {
+      const pa: ZonePlayer | undefined = this.players.get(a);
+      const pb: ZonePlayer | undefined = this.players.get(b);
+      return pa === undefined || pb === undefined ? undefined : Zone.distance(pa.state, pb.state);
+    },
+    bagOf: (playerId): readonly ItemStack[] => this.bagOf(playerId),
+    goldOf: (playerId): number => this.players.get(playerId)?.progress.gold ?? 0,
+    autoAnswer: (playerId): "accept" | "reject" | null => this.tradeAutoAnswer(playerId),
+    autoConfirms: (playerId): boolean => this.players.get(playerId)?.fake?.autoReply === "accept",
+    apply: (changes): void => this.applyTrade(changes),
+  });
 
   /** Sorteio (0 a <1) do crítico ([JOGO-16]) e da melhoria no ferreiro; os testes trocam por um fixo. */
   random: () => number = Math.random;
@@ -894,6 +924,7 @@ export class Zone {
     if (player === undefined || player.progress.gold < amount) return false;
     player.progress = { ...player.progress, gold: player.progress.gold - amount };
     player.member.onProgress?.(player.progress);
+    this.trades.belongingsChanged(id, this.currentTick);
     return true;
   }
 
@@ -920,6 +951,78 @@ export class Zone {
     if (player.fake !== null) return player.fake.autoReply;
     if (player.member.hidesGroupInvites?.() === true) return "reject";
     return null;
+  }
+
+  /**
+   * Resposta automática do jogador `id` a um pedido de troca ([SOC-05]), ou `null` = mostrar a janela: fake de teste
+   * responde o configurado dele; "Pedidos de troca: Ocultar" ({@link ZoneMember.hidesTradeRequests}) recusa sozinho.
+   */
+  tradeAutoAnswer(id: string): AutoReply | null {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return null;
+    if (player.fake !== null) return player.fake.autoReply;
+    if (player.member.hidesTradeRequests?.() === true) return "reject";
+    return null;
+  }
+
+  /** `from` pede para trocar com `to` ([SOC-05]; regras em {@link Trades.request}). */
+  requestTrade(from: string, to: string): TradeResult {
+    return this.trades.request(from, to, this.currentTick);
+  }
+
+  /** `to` responde ao pedido de troca de `from` ({@link Trades.answer}). */
+  answerTrade(to: string, from: string, accept: boolean): TradeResult {
+    return this.trades.answer(to, from, accept, this.currentTick);
+  }
+
+  /** `id` troca a oferta dele ({@link Trades.offer}). */
+  offerTrade(id: string, uids: readonly string[], gold: number): TradeResult {
+    return this.trades.offer(id, uids, gold, this.currentTick);
+  }
+
+  /** `id` confirma a troca ({@link Trades.confirm}). */
+  confirmTrade(id: string): TradeResult {
+    return this.trades.confirm(id, this.currentTick);
+  }
+
+  /** `id` fecha a janela de troca ({@link Trades.cancel}). */
+  cancelTrade(id: string): TradeResult {
+    return this.trades.cancel(id, this.currentTick);
+  }
+
+  /** `true` se `id` está numa troca aberta. */
+  inTrade(id: string): boolean {
+    return this.trades.inTrade(id);
+  }
+
+  /**
+   * A mochila/moedas de `id` mudaram fora da troca (vestir, ferreiro, baú, morte...): a troca dele confere a oferta
+   * ({@link Trades.belongingsChanged}). O `GameServer` chama depois de cada mudança no inventário.
+   */
+  tradeBelongingsChanged(id: string): void {
+    this.trades.belongingsChanged(id, this.currentTick);
+  }
+
+  /** Mochila do jogador para a troca: a da conta ({@link ZoneMember.bag}) ou, fake, a de mentira. */
+  private bagOf(id: string): readonly ItemStack[] {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return [];
+    if (player.fake !== null) return this.fakeBags.get(id) ?? [];
+    return player.member.bag?.() ?? [];
+  }
+
+  /** Aplica uma troca ([SOC-05]): moedas (salvas por `onProgress`) e mochila de cada lado. */
+  private applyTrade(changes: readonly TradeChange[]): void {
+    for (const change of changes) {
+      const player: ZonePlayer | undefined = this.players.get(change.playerId);
+      if (player === undefined) continue;
+      if (player.progress.gold !== change.gold) {
+        player.progress = { ...player.progress, gold: change.gold };
+        player.member.onProgress?.(player.progress);
+      }
+      if (player.fake !== null) this.fakeBags.set(player.id, change.bag);
+      else player.member.onTradeBag?.(change.bag);
+    }
   }
 
   /** `from` convida `to` para o grupo ([SOC-03]; regras em {@link Groups.invite}). */
@@ -1094,6 +1197,8 @@ export class Zone {
     if (!this.players.has(id)) return;
     // Sai do grupo e os convites somem ([SOC-03]); antes de sair da lista (os avisos usam o nome).
     this.groups.removePlayer(id);
+    // A troca dele acaba e os pedidos somem ([SOC-05]).
+    this.trades.removePlayer(id);
     this.players.delete(id);
     for (const other of this.players.values()) if (other.attackTarget === id) other.attackTarget = null;
     // Saiu da zona: sai da tabela de ameaça dos monstros ([JOGO-14]).
@@ -1388,6 +1493,8 @@ export class Zone {
     this.npcThink();
     this.applyCasts();
     this.regenerate();
+    // Trocas ([SOC-05]): pedidos vencidos, distância, contagem final.
+    this.trades.tick(this.currentTick);
     this.sendSnapshots();
     if (this.currentTick % GROUP_POSITIONS_EVERY_TICKS === 0) this.sendGroupPositions();
     this.events = [];
@@ -2340,6 +2447,8 @@ export class Zone {
     const unkillable: boolean = target.kind === "dummy" && target.behavior.kind === "punchingBag";
     const dealt: number = Math.min(unkillable ? Math.max(0, target.hp - 1) : target.hp, remaining);
     target.hp -= dealt;
+    // Levou dano (mesmo só no escudo): a troca dele acaba ([SOC-05]).
+    if (target.kind === "player" && dealt + absorbed > 0) this.trades.damaged(target.id);
     if (target.kind === "dummy") {
       target.lastHitTick = this.currentTick;
       if (source.kind === "player" && Zone.isMonster(target)) target.contributors.add(source.id);

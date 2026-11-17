@@ -86,8 +86,8 @@ describe("MongoAccountStore (MongoDB real)", function () {
     assert.deepStrictEqual((await store.resume(a.sessionToken))?.friends, []);
     assert.deepStrictEqual((await store.resume(b.sessionToken))?.friends, []);
 
-    await store.saveSocialSettings(idA, { friendRequests: "hide", groupInvites: "hide", guildInvites: "hide", profile: "friends" });
-    assert.deepStrictEqual((await store.resume(a.sessionToken))?.social, { friendRequests: "hide", groupInvites: "hide", guildInvites: "hide", profile: "friends" });
+    await store.saveSocialSettings(idA, { friendRequests: "hide", groupInvites: "hide", guildInvites: "hide", profile: "friends", tradeRequests: "always" });
+    assert.deepStrictEqual((await store.resume(a.sessionToken))?.social, { friendRequests: "hide", groupInvites: "hide", guildInvites: "hide", profile: "friends", tradeRequests: "always" });
 
     // Conta antiga (de antes da amizade): sem `friends` nem `social`.
     const admin: MongoClient = new MongoClient(TEST_MONGO_URL);
@@ -109,7 +109,7 @@ describe("MongoAccountStore (MongoDB real)", function () {
     }
     const old = await store.resume("token-antigo");
     assert.deepStrictEqual(old?.friends, []);
-    assert.deepStrictEqual(old?.social, { friendRequests: "always", groupInvites: "always", guildInvites: "always", profile: "public" });
+    assert.deepStrictEqual(old?.social, { friendRequests: "always", groupInvites: "always", guildInvites: "always", profile: "public", tradeRequests: "always" });
     assert.deepStrictEqual(old?.stats, { monsterXp: 0, kills: 0, deaths: 0 }, "conta antiga: contadores zerados");
   });
 

@@ -47,6 +47,7 @@ import { breakEquipped, rollDeathItem, type ItemRoll } from "./combat/death.js";
 import { PLAYER_RESPAWN_SECONDS } from "./combat/stats.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
+import type { TradeFailure, TradeResult } from "./zones/trades.js";
 import { Guilds, type GuildFailure, type GuildResult } from "./social/guilds.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
@@ -587,6 +588,22 @@ export class GameServer {
       case ClientMessageType.GroupLeave:
         this.groupRequest(session, (zone, id) => zone.leaveGroup(id));
         return;
+      // Troca ([SOC-05]): as regras ficam na zona (src/zones/trades.ts); aqui só repassa e devolve a recusa.
+      case ClientMessageType.TradeRequest:
+        this.tradeRequest(session, (zone, id) => zone.requestTrade(id, message.data.playerId));
+        return;
+      case ClientMessageType.TradeAnswer:
+        this.tradeRequest(session, (zone, id) => zone.answerTrade(id, message.data.fromId, message.data.accept));
+        return;
+      case ClientMessageType.TradeOffer:
+        this.tradeRequest(session, (zone, id) => zone.offerTrade(id, message.data.uids, message.data.gold));
+        return;
+      case ClientMessageType.TradeConfirm:
+        this.tradeRequest(session, (zone, id) => zone.confirmTrade(id));
+        return;
+      case ClientMessageType.TradeCancel:
+        this.tradeRequest(session, (zone, id) => zone.cancelTrade(id));
+        return;
       // Amizade ([SOC-04]): pedidos em src/social/friends.ts; a amizade em si fica na conta.
       case ClientMessageType.FriendRequest:
         this.friendRequest(session, (id) => this.friendRequests.request(id, message.data.playerId, Date.now()));
@@ -949,6 +966,44 @@ export class GameServer {
     if (!result.ok) this.sendError(session, GameServer.GROUP_ERRORS[result.reason], result.message);
   }
 
+  /** Pedido de troca de quem está numa zona; recusado vira `error` só para ele ([SOC-05]). */
+  private tradeRequest(session: Session, request: (zone: Zone, playerId: string) => TradeResult): void {
+    if (session.zone === null || session.account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const result: TradeResult = request(session.zone, session.account.playerId);
+    if (!result.ok) this.sendError(session, GameServer.TRADE_ERRORS[result.reason], result.message);
+  }
+
+  /** Código do protocolo para cada recusa de pedido de troca (mesmos nomes). */
+  private static readonly TRADE_ERRORS: Readonly<Record<TradeFailure, ErrorCode>> = {
+    player_not_found: ErrorCode.PlayerNotFound,
+    invalid_trade: ErrorCode.InvalidTrade,
+    trade_too_far: ErrorCode.TradeTooFar,
+    trade_busy: ErrorCode.TradeBusy,
+    trade_request_not_found: ErrorCode.TradeRequestNotFound,
+    not_in_trade: ErrorCode.NotInTrade,
+    trade_not_ready: ErrorCode.TradeNotReady,
+  };
+
+  /**
+   * A troca aconteceu ([SOC-05]): troca a mochila da conta (as moedas já vieram pelo `onProgress`), salva e manda o
+   * `inventory`. O vestido não muda, então a zona não precisa refazer arma/cartas/aparência.
+   */
+  private async applyTradeBag(session: Session, bag: readonly ItemStack[]): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) return;
+    const inventory: Account["inventory"] = { ...account.inventory, bag: [...bag] };
+    session.account = { ...account, inventory };
+    this.sendInventory(session);
+    try {
+      await this.options.accounts.saveInventory(account.playerId, inventory);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar inventário (troca) de ${account.username}:`, error);
+    }
+  }
+
   /** Código do protocolo para cada recusa de pedido de grupo (mesmos nomes). */
   private static readonly GROUP_ERRORS: Readonly<Record<GroupFailure, ErrorCode>> = {
     player_not_found: ErrorCode.PlayerNotFound,
@@ -1160,6 +1215,8 @@ export class GameServer {
       attributeEffectsOf(result.inventory),
       lookLevelsOf(result.inventory),
     );
+    // Item oferecido numa troca aberta pode ter sido vestido/fundido/movido ([SOC-05]).
+    session.zone?.tradeBelongingsChanged(account.playerId);
     try {
       await this.options.accounts.saveInventory(account.playerId, result.inventory);
     } catch (error: unknown) {
@@ -1212,6 +1269,8 @@ export class GameServer {
       );
     }
     if (result.success) this.sendInventory(session);
+    // Moedas gastas e, se subiu, o item mudou: a troca aberta confere a oferta ([SOC-05]).
+    zone.tradeBelongingsChanged(playerId);
   }
 
   /** Pontos que o item `uid` tinha em `attribute` (antes da melhoria). */
@@ -1514,6 +1573,12 @@ export class GameServer {
         },
         // Configuração → "Convites de grupo: Ocultar" ([SOC-04]): lido a cada convite, então mudar vale na hora.
         hidesGroupInvites: (): boolean => session.account?.social.groupInvites === "hide",
+        // Troca ([SOC-05]): "Pedidos de troca: Ocultar", a mochila da conta e o resultado.
+        hidesTradeRequests: (): boolean => session.account?.social.tradeRequests === "hide",
+        bag: (): readonly ItemStack[] => session.account?.inventory.bag ?? [],
+        onTradeBag: (bag: readonly ItemStack[]): void => {
+          void this.applyTradeBag(session, bag);
+        },
       },
       GameServer.spawnFrom(account.lastPosition, zone),
       basicAttackOf(account.inventory),

@@ -20,6 +20,8 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v34: troca entre jogadores ([SOC-05]): `trade_request`/`trade_answer`/`trade_offer`/`trade_confirm`/`trade_cancel` →
+ *   `trade_requested`/`trade_state`/`trade_done`/`trade_notice`; `tradeRequests` na Configuração social.
  * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
@@ -40,7 +42,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 33;
+export const PROTOCOL_VERSION = 34;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -166,6 +168,19 @@ export const ClientMessageType = {
   GuildDescription: "guild_description",
   /** Pede uma tabela de ranking ([SOC-07]). Payload: {@link RankingRequestData}. Resposta: {@link ServerMessageType.Ranking}. */
   RankingRequest: "ranking_request",
+  /**
+   * Pede para trocar com um jogador a até {@link TRADE_RANGE} m ([SOC-05]). Payload: {@link TradeTargetData}. O outro
+   * recebe {@link ServerMessageType.TradeRequested}; a resposta volta como `trade_state` (aceitou) ou `trade_notice`.
+   */
+  TradeRequest: "trade_request",
+  /** Responde a um pedido de troca recebido. Payload: {@link TradeAnswerData}. */
+  TradeAnswer: "trade_answer",
+  /** Troca a SUA oferta inteira (itens da mochila + moedas); zera as confirmações dos dois. Payload: {@link TradeOfferData}. */
+  TradeOffer: "trade_offer",
+  /** Confirma a troca como está (só {@link TRADE_CONFIRM_DELAY_SECONDS} s depois da última mudança). Payload: `{}`. */
+  TradeConfirm: "trade_confirm",
+  /** Fecha a janela de troca (cancela para os dois). Payload: `{}`. */
+  TradeCancel: "trade_cancel",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -244,6 +259,20 @@ export const ServerMessageType = {
   GuildInfo: "guild_info",
   /** Uma tabela de ranking (resposta ao `ranking_request`, [SOC-07]). Payload: {@link RankingData}. */
   Ranking: "ranking",
+  /** Alguém quer trocar com você ([SOC-05]; janela Aceitar/Recusar). Payload: {@link TradeRequestedData}. */
+  TradeRequested: "trade_requested",
+  /**
+   * Estado da SUA troca aberta (vai aos dois a cada mudança: ofertas, confirmações, contagem). Payload:
+   * {@link TradeStateData}.
+   */
+  TradeState: "trade_state",
+  /** A troca aconteceu (logo depois vêm `inventory` e as moedas novas no `me`). Payload: {@link TradeDoneData}. */
+  TradeDone: "trade_done",
+  /**
+   * Aviso de troca (recusou, expirou, ocupado, cancelada, longe, levou dano, saiu): a janela de troca fecha, se aberta.
+   * Payload: {@link TradeNoticeData}.
+   */
+  TradeNotice: "trade_notice",
   /**
    * Há um pacote do jogo mais novo para a plataforma do cliente (mmo-docs [INFRA-08]): vai no lugar do `auth_ok` (cliente
    * que entra com pacote velho) ou a quem já está jogando quando uma versão nova é publicada. Logo depois o servidor fecha
@@ -376,6 +405,18 @@ export const ErrorCode = {
   FriendListFull: "friend_list_full",
   /** Remover quem não é seu amigo. A conexão continua. */
   NotFriends: "not_friends",
+  /** Troca ([SOC-05]): pedido inválido (você mesmo, oferta com item que não está na mochila, moedas demais). A conexão continua. */
+  InvalidTrade: "invalid_trade",
+  /** Troca: os dois não estão a até {@link TRADE_RANGE} m. A conexão continua. */
+  TradeTooFar: "trade_too_far",
+  /** Troca: você já está numa troca. A conexão continua. */
+  TradeBusy: "trade_busy",
+  /** Resposta a um pedido de troca que não existe mais. A conexão continua. */
+  TradeRequestNotFound: "trade_request_not_found",
+  /** Oferta/confirmação/cancelamento sem troca aberta. A conexão continua. */
+  NotInTrade: "not_in_trade",
+  /** Confirmar antes dos {@link TRADE_CONFIRM_DELAY_SECONDS} s ou com uma mochila sem espaço. A conexão continua. */
+  TradeNotReady: "trade_not_ready",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -721,10 +762,18 @@ export interface SocialSettings {
   readonly guildInvites: SocialVisibility;
   /** "Perfil: Público / Só amigos / Ninguém" ([SOC-08]). */
   readonly profile: ProfileVisibility;
+  /** "Pedidos de troca: Sempre / Ocultar" ([SOC-05]). */
+  readonly tradeRequests: SocialVisibility;
 }
 
 /** Configuração de conta nova (e de conta antiga, sem o campo): mostra tudo. */
-export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = { friendRequests: "always", groupInvites: "always", guildInvites: "always", profile: "public" };
+export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = {
+  friendRequests: "always",
+  groupInvites: "always",
+  guildInvites: "always",
+  profile: "public",
+  tradeRequests: "always",
+};
 
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
@@ -764,6 +813,11 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.GuildKick; readonly data: GuildTargetData }
   | { readonly type: typeof ClientMessageType.GuildRole; readonly data: GuildRoleData }
   | { readonly type: typeof ClientMessageType.RankingRequest; readonly data: RankingRequestData }
+  | { readonly type: typeof ClientMessageType.TradeRequest; readonly data: TradeTargetData }
+  | { readonly type: typeof ClientMessageType.TradeAnswer; readonly data: TradeAnswerData }
+  | { readonly type: typeof ClientMessageType.TradeOffer; readonly data: TradeOfferData }
+  | { readonly type: typeof ClientMessageType.TradeConfirm; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.TradeCancel; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.GuildList; readonly data: GuildListRequestData }
   | { readonly type: typeof ClientMessageType.GuildInfo; readonly data: GuildIdData }
   | { readonly type: typeof ClientMessageType.GuildRequest; readonly data: GuildIdData }
@@ -1321,6 +1375,91 @@ export interface GuildNoticeData {
   readonly message: string;
 }
 
+/** Distância máxima (m) entre os dois para pedir, aceitar e manter uma troca ([SOC-05]). ATENÇÃO: = TRADE_RANGE em mmo-client/scripts/network/protocol.gd. */
+export const TRADE_RANGE = 10;
+/** Segundos que um pedido de troca espera resposta (como o convite de grupo). */
+export const TRADE_REQUEST_SECONDS = 30;
+/** Segundos depois da última mudança (de qualquer oferta) até "Confirmar" valer ([SOC-05]). */
+export const TRADE_CONFIRM_DELAY_SECONDS = 2;
+/** Segundos da contagem (5, 4, 3, 2, 1) depois que os dois confirmaram, até a troca acontecer. */
+export const TRADE_COUNTDOWN_SECONDS = 5;
+/** Máximo de itens numa oferta (o tamanho da mochila). */
+export const TRADE_MAX_ITEMS = 30;
+
+/** Payload de `trade_request`: com quem trocar. */
+export interface TradeTargetData {
+  readonly playerId: string;
+}
+
+/** Payload de `trade_answer`. */
+export interface TradeAnswerData {
+  /** Quem pediu (o `fromId` do {@link TradeRequestedData}). */
+  readonly fromId: string;
+  readonly accept: boolean;
+}
+
+/** Payload de `trade_offer`: a oferta inteira (substitui a anterior). */
+export interface TradeOfferData {
+  /** `uid` dos itens da MOCHILA oferecidos (vestido não entra), sem repetir; até {@link TRADE_MAX_ITEMS}. */
+  readonly uids: readonly string[];
+  /** Moedas oferecidas (inteiro ≥ 0, até o que você tem). */
+  readonly gold: number;
+}
+
+/** Payload de `trade_requested`. */
+export interface TradeRequestedData {
+  readonly fromId: string;
+  readonly fromName: string;
+  /** Segundos até expirar ({@link TRADE_REQUEST_SECONDS}). */
+  readonly expiresIn: number;
+}
+
+/** Uma oferta como aparece na janela: os itens (ficha completa, para a ficha do item) e as moedas. */
+export interface TradeOfferView {
+  readonly items: readonly ItemView[];
+  readonly gold: number;
+}
+
+/**
+ * Payload de `trade_state`: a troca do ponto de vista de quem recebe. ATENÇÃO: lido em
+ * mmo-client/scripts/network/trade_state.gd (TradeState.from_dict).
+ */
+export interface TradeStateData {
+  readonly partnerId: string;
+  readonly partnerName: string;
+  /** O que VOCÊ oferece / o que o outro oferece. */
+  readonly mine: TradeOfferView;
+  readonly theirs: TradeOfferView;
+  readonly myConfirmed: boolean;
+  readonly theirConfirmed: boolean;
+  /** Segundos até "Confirmar" valer (0 = já vale; o cliente conta sozinho a partir daqui). */
+  readonly confirmIn: number;
+  /** Segundos que faltam na contagem final (os dois confirmaram), ou `null` sem contagem. */
+  readonly countdown: number | null;
+  /** Por que não dá para confirmar agora (ex.: "A mochila de X não tem espaço."), ou `null`. */
+  readonly problem: string | null;
+}
+
+/** Payload de `trade_done`. */
+export interface TradeDoneData {
+  readonly partnerName: string;
+}
+
+/**
+ * Tipos de aviso de troca (`trade_notice.code`): `rejected`/`expired`/`busy` = resposta ao SEU pedido (recusou, não
+ * respondeu, já está trocando); `cancelled` = alguém fechou a janela; `too_far` = passaram de {@link TRADE_RANGE} m;
+ * `damaged` = alguém levou dano; `left` = alguém saiu da zona; `failed` = no fim algo não batia mais (item sumiu, moedas).
+ */
+export type TradeNoticeCode = "rejected" | "expired" | "busy" | "cancelled" | "too_far" | "damaged" | "left" | "failed";
+
+/** Payload de `trade_notice`: o aviso pronto para mostrar. */
+export interface TradeNoticeData {
+  readonly code: TradeNoticeCode;
+  /** Nome do outro jogador. */
+  readonly name: string;
+  readonly message: string;
+}
+
 /** Payload de `ranking_request`. */
 export interface RankingRequestData {
   readonly category: RankingCategory;
@@ -1514,6 +1653,10 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Ranking; readonly data: RankingData }
   | { readonly type: typeof ServerMessageType.GuildList; readonly data: GuildListData }
   | { readonly type: typeof ServerMessageType.GuildInfo; readonly data: GuildInfoView }
+  | { readonly type: typeof ServerMessageType.TradeRequested; readonly data: TradeRequestedData }
+  | { readonly type: typeof ServerMessageType.TradeState; readonly data: TradeStateData }
+  | { readonly type: typeof ServerMessageType.TradeDone; readonly data: TradeDoneData }
+  | { readonly type: typeof ServerMessageType.TradeNotice; readonly data: TradeNoticeData }
   | { readonly type: typeof ServerMessageType.UpdateRequired; readonly data: UpdateRequiredData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
@@ -1777,13 +1920,13 @@ export function isProfileVisibility(value: unknown): value is ProfileVisibility 
   return PROFILE_VISIBILITIES.some((v) => v === value);
 }
 
-/** Valida o payload de `social_settings` (as quatro opções são obrigatórias). */
+/** Valida o payload de `social_settings` (as cinco opções são obrigatórias). */
 export function parseSocialSettings(data: unknown): SocialSettings | null {
   if (!isRecord(data)) return null;
-  const { friendRequests, groupInvites, guildInvites, profile } = data;
+  const { friendRequests, groupInvites, guildInvites, profile, tradeRequests } = data;
   if (!isSocialVisibility(friendRequests) || !isSocialVisibility(groupInvites) || !isSocialVisibility(guildInvites)) return null;
-  if (!isProfileVisibility(profile)) return null;
-  return { friendRequests, groupInvites, guildInvites, profile };
+  if (!isProfileVisibility(profile) || !isSocialVisibility(tradeRequests)) return null;
+  return { friendRequests, groupInvites, guildInvites, profile, tradeRequests };
 }
 
 /** Valida o payload de `guild_create` (formato; as regras do nome e da tag são de `src/social/guilds.ts`). */
@@ -1819,6 +1962,36 @@ export function parseGuildDescriptionData(data: unknown): GuildDescriptionData |
   return { description };
 }
 
+/** Valida o payload de `trade_request`. */
+export function parseTradeTargetData(data: unknown): TradeTargetData | null {
+  if (!isRecord(data)) return null;
+  const { playerId } = data;
+  if (typeof playerId !== "string" || playerId.length === 0 || playerId.length > 64) return null;
+  return { playerId };
+}
+
+/** Valida o payload de `trade_answer`. */
+export function parseTradeAnswerData(data: unknown): TradeAnswerData | null {
+  if (!isRecord(data)) return null;
+  const { fromId, accept } = data;
+  if (typeof fromId !== "string" || fromId.length === 0 || fromId.length > 64 || typeof accept !== "boolean") return null;
+  return { fromId, accept };
+}
+
+/** Valida o payload de `trade_offer` (formato; se os itens/moedas são seus é a troca que confere). */
+export function parseTradeOfferData(data: unknown): TradeOfferData | null {
+  if (!isRecord(data)) return null;
+  const { uids, gold } = data;
+  if (!Array.isArray(uids) || uids.length > TRADE_MAX_ITEMS) return null;
+  const list: string[] = [];
+  for (const uid of uids) {
+    if (typeof uid !== "string" || uid.length === 0 || uid.length > 64 || list.includes(uid)) return null;
+    list.push(uid);
+  }
+  if (typeof gold !== "number" || !Number.isSafeInteger(gold) || gold < 0) return null;
+  return { uids: list, gold };
+}
+
 /** Valida o payload de `ranking_request`. */
 export function parseRankingRequestData(data: unknown): RankingRequestData | null {
   if (!isRecord(data)) return null;
@@ -1844,12 +2017,13 @@ export function parseGuildRoleData(data: unknown): GuildRoleData | null {
  */
 export function readSocialSettings(raw: unknown): SocialSettings {
   if (!isRecord(raw)) return DEFAULT_SOCIAL_SETTINGS;
-  const { friendRequests, groupInvites, guildInvites, profile } = raw;
+  const { friendRequests, groupInvites, guildInvites, profile, tradeRequests } = raw;
   return {
     friendRequests: isSocialVisibility(friendRequests) ? friendRequests : DEFAULT_SOCIAL_SETTINGS.friendRequests,
     groupInvites: isSocialVisibility(groupInvites) ? groupInvites : DEFAULT_SOCIAL_SETTINGS.groupInvites,
     guildInvites: isSocialVisibility(guildInvites) ? guildInvites : DEFAULT_SOCIAL_SETTINGS.guildInvites,
     profile: isProfileVisibility(profile) ? profile : DEFAULT_SOCIAL_SETTINGS.profile,
+    tradeRequests: isSocialVisibility(tradeRequests) ? tradeRequests : DEFAULT_SOCIAL_SETTINGS.tradeRequests,
   };
 }
 
@@ -2024,6 +2198,22 @@ export function parseClientMessage(text: string): ClientMessage | null {
       const data = parseRankingRequestData(raw);
       return data === null ? null : { type: ClientMessageType.RankingRequest, data };
     }
+    case ClientMessageType.TradeRequest: {
+      const data = parseTradeTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.TradeRequest, data };
+    }
+    case ClientMessageType.TradeAnswer: {
+      const data = parseTradeAnswerData(raw);
+      return data === null ? null : { type: ClientMessageType.TradeAnswer, data };
+    }
+    case ClientMessageType.TradeOffer: {
+      const data = parseTradeOfferData(raw);
+      return data === null ? null : { type: ClientMessageType.TradeOffer, data };
+    }
+    case ClientMessageType.TradeConfirm:
+      return { type: ClientMessageType.TradeConfirm, data: {} };
+    case ClientMessageType.TradeCancel:
+      return { type: ClientMessageType.TradeCancel, data: {} };
     default:
       return null;
   }
