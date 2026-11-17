@@ -256,8 +256,18 @@ export interface CampConfig {
   readonly monsterIds: readonly string[];
 }
 
-/** Segundos que o baú fica aberto depois de matar o acampamento; depois tudo volta (zumbis e baú fechado). */
+/**
+ * Segundos que o baú fica aberto depois de matar o acampamento se NINGUÉM abrir; depois tudo volta (zumbis e baú
+ * fechado). Alguém abriu → volta {@link CHEST_RESET_AFTER_OPEN_SECONDS} depois disso ([JOGO-19]).
+ */
 export const CHEST_OPEN_SECONDS = 120;
+/** Segundos entre o primeiro jogador abrir o baú e o acampamento inteiro voltar de uma vez ([JOGO-19]). */
+export const CHEST_RESET_AFTER_OPEN_SECONDS = 60;
+/**
+ * Acampamento pela metade (algum zumbi morto, baú fechado) e este tempo (s) sem combate nele: os mortos voltam todos
+ * juntos e a rodada recomeça ([JOGO-19]). Zumbi de acampamento não renasce sozinho.
+ */
+export const CAMP_IDLE_RESET_SECONDS = 60;
 /** Distância (m) do baú para abrir/pegar (+ corpo do jogador). ATENÇÃO: = CHEST_RANGE em mmo-client/scripts/world/zone.gd. */
 export const CHEST_RANGE = 3;
 
@@ -270,6 +280,12 @@ interface CampState {
   /** Baú aberto (acampamento morto) e até que tick. */
   open: boolean;
   openUntilTick: number;
+  /** Algum jogador já abriu o baú desta rodada (o reset passa a ser {@link CHEST_RESET_AFTER_OPEN_SECONDS} depois). */
+  opened: boolean;
+  /** Último tick com combate no acampamento (zumbi lutando, voltando ou morrendo), para {@link CAMP_IDLE_RESET_SECONDS}. */
+  lastCombatTick: number;
+  /** Tick da volta que os jogadores já sabem (último evento `chest`, 0 = sem relógio), para o mapa ([CLI-11]). */
+  sentResetTick: number;
   /** Quem ajudou a matar o acampamento nesta rodada (ganha baú quando abrir). */
   readonly eligible: Set<string>;
   /** O que sobrou no baú de cada jogador (individual). */
@@ -1315,7 +1331,7 @@ export class Zone {
     this.currentTick++;
     this.groups.expire(this.currentTick);
     this.respawnDue();
-    this.closeExpiredChests();
+    this.updateCamps();
     this.applyMovement();
     // Antes dos lançamentos: o projétil que sai neste tick começa a andar só no próximo (o cliente desenha igual).
     this.moveProjectiles();
@@ -2346,6 +2362,9 @@ export class Zone {
       target.contributors.clear();
       const camp: CampState | undefined = this.campOf.get(target.id);
       if (camp !== undefined) {
+        // Zumbi de acampamento não renasce sozinho: volta com o acampamento inteiro (resetCamp).
+        target.respawnTick = Number.POSITIVE_INFINITY;
+        camp.lastCombatTick = this.currentTick;
         for (const player of winners) camp.eligible.add(player.id);
         this.openChestIfCleared(camp);
       }
@@ -2367,6 +2386,9 @@ export class Zone {
       boss: monsters.some((npc) => npc.boss),
       open: false,
       openUntilTick: 0,
+      opened: false,
+      lastCombatTick: 0,
+      sentResetTick: 0,
       eligible: new Set(),
       loot: new Map(),
     };
@@ -2382,21 +2404,78 @@ export class Zone {
     for (const id of camp.eligible) {
       if (this.players.has(id)) camp.loot.set(id, rollChestLoot({ level: camp.level, boss: camp.boss }, this.random));
     }
-    this.events.push({ type: "chest", id: camp.config.id, open: true, x: camp.config.x, z: camp.config.z });
+    this.pushCampEvent(camp);
   }
 
-  /** Baú aberto há {@link CHEST_OPEN_SECONDS}: fecha, esquece o que sobrou e os monstros do acampamento voltam juntos. */
-  private closeExpiredChests(): void {
+  /**
+   * Volta dos acampamentos ([JOGO-19]), a cada tick:
+   * - baú aberto e passou o prazo (1 min depois de alguém abrir, ou {@link CHEST_OPEN_SECONDS} se ninguém abriu):
+   *   fecha, esquece o que sobrou e o acampamento inteiro volta junto;
+   * - baú fechado com algum zumbi morto e {@link CAMP_IDLE_RESET_SECONDS} sem combate (ninguém lutando com os vivos):
+   *   os mortos voltam todos juntos e quem ajudou nesta rodada é esquecido.
+   */
+  private updateCamps(): void {
     for (const camp of this.camps.values()) {
-      if (!camp.open || this.currentTick < camp.openUntilTick) continue;
-      camp.open = false;
-      camp.eligible.clear();
-      camp.loot.clear();
+      if (camp.open) {
+        if (this.currentTick >= camp.openUntilTick) {
+          this.resetCamp(camp);
+          this.pushCampEvent(camp);
+        } else if (camp.sentResetTick !== camp.openUntilTick) this.pushCampEvent(camp);
+        continue;
+      }
       for (const id of camp.config.monsterIds) {
         const npc: ZoneDummy | undefined = this.dummies.get(id);
-        if (npc !== undefined && npc.dead) npc.respawnTick = this.currentTick;
+        if (npc !== undefined && !npc.dead && (npc.threat.size > 0 || npc.attackTarget !== null || npc.returning)) {
+          camp.lastCombatTick = this.currentTick;
+        }
       }
-      this.events.push({ type: "chest", id: camp.config.id, open: false, x: camp.config.x, z: camp.config.z });
+      const resetTick: number = this.campResetTick(camp);
+      if (resetTick !== 0 && this.currentTick >= resetTick) this.resetCamp(camp);
+      // Relógio começou (combate acabou), parou (voltou a lutar) ou o acampamento voltou: avisa (mapa, [CLI-11]).
+      if (this.campResetTick(camp) !== camp.sentResetTick) this.pushCampEvent(camp);
+    }
+  }
+
+  /**
+   * Tick em que o acampamento volta inteiro, 0 = nenhum relógio correndo: baú aberto → o prazo dele; pela metade e
+   * sem combate desde o último tick → {@link CAMP_IDLE_RESET_SECONDS} depois do último combate; senão 0.
+   */
+  private campResetTick(camp: CampState): number {
+    if (camp.open) return camp.openUntilTick;
+    const anyDead: boolean = camp.config.monsterIds.some((id) => this.dummies.get(id)?.dead === true);
+    if (!anyDead || camp.lastCombatTick >= this.currentTick) return 0;
+    return camp.lastCombatTick + secondsToTicks(CAMP_IDLE_RESET_SECONDS);
+  }
+
+  /** Evento `chest` (vai para toda a zona): aberto ou não e em quantos segundos o acampamento volta (0 = sem relógio). */
+  private pushCampEvent(camp: CampState): void {
+    const resetTick: number = this.campResetTick(camp);
+    camp.sentResetTick = resetTick;
+    this.events.push({
+      type: "chest",
+      id: camp.config.id,
+      open: camp.open,
+      x: camp.config.x,
+      z: camp.config.z,
+      resetIn: Zone.ticksToResetIn(resetTick, this.currentTick),
+    });
+  }
+
+  /** Segundos (0,1) de agora até [resetTick]; 0 = sem relógio. */
+  private static ticksToResetIn(resetTick: number, now: number): number {
+    return resetTick === 0 ? 0 : Math.max(0.1, round1((resetTick - now) * TICK_SECONDS));
+  }
+
+  /** Acampamento volta inteiro: baú fechado e vazio, rodada nova, os mortos renascem no próximo {@link respawnDue}. */
+  private resetCamp(camp: CampState): void {
+    camp.open = false;
+    camp.opened = false;
+    camp.eligible.clear();
+    camp.loot.clear();
+    camp.lastCombatTick = this.currentTick;
+    for (const id of camp.config.monsterIds) {
+      const npc: ZoneDummy | undefined = this.dummies.get(id);
+      if (npc !== undefined && npc.dead) npc.respawnTick = this.currentTick;
     }
   }
 
@@ -2418,6 +2497,7 @@ export class Zone {
       level: camp.level,
       boss: camp.boss,
       open: camp.open,
+      resetIn: Zone.ticksToResetIn(this.campResetTick(camp), this.currentTick),
     }));
   }
 
@@ -2437,6 +2517,12 @@ export class Zone {
   chestLoot(playerId: string, chestId: string): readonly LootEntry[] | ChestFailure {
     const found = this.chestFor(playerId, chestId);
     if ("failure" in found) return found.failure;
+    // Primeiro a abrir (quem ajudou, tem sorteio): o acampamento volta 1 min depois ([JOGO-19]). Quem só passou e
+    // olhou o baú vazio não encurta o tempo de quem lutou.
+    if (!found.camp.opened && found.camp.loot.has(playerId)) {
+      found.camp.opened = true;
+      found.camp.openUntilTick = this.currentTick + secondsToTicks(CHEST_RESET_AFTER_OPEN_SECONDS);
+    }
     return found.camp.loot.get(playerId) ?? [];
   }
 

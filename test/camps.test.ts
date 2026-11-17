@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { CHEST_OPEN_SECONDS, CHEST_RANGE, Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
+import { CAMP_IDLE_RESET_SECONDS, CHEST_OPEN_SECONDS, CHEST_RANGE, CHEST_RESET_AFTER_OPEN_SECONDS, Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { Progress } from "../src/progression/level.js";
@@ -52,6 +52,10 @@ function campZone(): Zone {
     dummies: [zombie("z1", -1, -3, 2), zombie("z2", 0, -3, 4), zombie("z3", 1, -3, 3)],
     camps: [{ id: "camp", x: 0, z: -1, monsterIds: ["z1", "z2", "z3"] }],
   });
+}
+
+function ticks(zone: Zone, count: number): void {
+  for (let i = 0; i < count; i++) zone.tick();
 }
 
 /** Ataca cada zumbi até morrer (sem esperar o reaparecer). */
@@ -106,7 +110,29 @@ describe("baús dos acampamentos", () => {
     assert.strictEqual(zone.chestLoot("a", "camp"), "too_far");
   });
 
-  it("depois de CHEST_OPEN_SECONDS o acampamento volta: zumbis vivos, baú fechado e vazio", () => {
+  it("alguém (que ajudou) abriu o baú: o acampamento inteiro volta 1 min depois", () => {
+    const zone = campZone();
+    const a = new Member("a");
+    const b = new Member("b");
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, KILL);
+    zone.join(b, { x: 0.5, y: 0, z: 0, rotY: 0 });
+    killAll(zone, "a", ["z1", "z2", "z3"]);
+    zone.setAttackTarget("a", null);
+    ticks(zone, 10 * TICK_RATE_HZ);
+    assert.ok(Array.isArray(zone.chestLoot("b", "camp")), "b (não ajudou) olha o baú vazio");
+    ticks(zone, 2);
+    assert.ok((zone.chestViews()[0]?.resetIn ?? 0) > CHEST_OPEN_SECONDS - 15, "quem não ajudou não encurta o prazo");
+    assert.ok(Array.isArray(zone.chestLoot("a", "camp")));
+    ticks(zone, 2);
+    const left: number = zone.chestViews()[0]?.resetIn ?? 0;
+    assert.ok(Math.abs(left - CHEST_RESET_AFTER_OPEN_SECONDS) < 0.5, `1 min a partir de agora (${left})`);
+    assert.ok(a.events.some((e) => e["type"] === "chest" && e["open"] === true && Math.abs(Number(e["resetIn"]) - CHEST_RESET_AFTER_OPEN_SECONDS) < 0.5), "evento com o relógio novo");
+    ticks(zone, CHEST_RESET_AFTER_OPEN_SECONDS * TICK_RATE_HZ);
+    assert.strictEqual(zone.chestViews()[0]?.open, false, "fechou");
+    assert.strictEqual(a.events.filter((e) => e["type"] === "respawn").length, 3, "os três voltaram juntos");
+  });
+
+  it("depois de CHEST_OPEN_SECONDS (ninguém abriu) o acampamento volta: zumbis vivos, baú fechado e vazio", () => {
     const zone = campZone();
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, KILL);
@@ -122,15 +148,49 @@ describe("baús dos acampamentos", () => {
     assert.strictEqual(zone.chestLoot("a", "camp"), "chest_closed");
   });
 
-  it("matar só parte: os mortos voltam sozinhos e o baú continua fechado", () => {
+  it("matar só parte: os mortos NÃO voltam sozinhos; 1 min sem combate e voltam todos juntos (relógio no evento)", () => {
     const zone = campZone();
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, KILL);
     killAll(zone, "a", ["z1", "z2"]);
     zone.setAttackTarget("a", null);
-    for (let i = 0; i < 3 * TICK_RATE_HZ; i++) zone.tick();
+    ticks(zone, 5 * TICK_RATE_HZ);
     assert.strictEqual(zone.chestViews()[0]?.open, false);
-    assert.ok(a.events.some((e) => e["type"] === "respawn" && e["id"] === "z1"), "z1 voltou");
+    assert.ok(!a.events.some((e) => e["type"] === "respawn"), "o reaparecer de 2 s não vale no acampamento");
+    // Relógio da volta no evento e no welcome (para o mapa).
+    const timer = a.events.find((e) => e["type"] === "chest" && typeof e["resetIn"] === "number" && e["resetIn"] > 0);
+    assert.ok(timer, "evento com o relógio");
+    assert.ok(Math.abs(Number(timer["resetIn"]) - CAMP_IDLE_RESET_SECONDS) < 0.5, `começa em ~60 s (${String(timer["resetIn"])})`);
+    const left: number = zone.chestViews()[0]?.resetIn ?? 0;
+    assert.ok(left > CAMP_IDLE_RESET_SECONDS - 6 && left < CAMP_IDLE_RESET_SECONDS - 4, `welcome conta o tempo (${left})`);
+    ticks(zone, (CAMP_IDLE_RESET_SECONDS - 5) * TICK_RATE_HZ + 2);
+    const back: string[] = a.events.filter((e) => e["type"] === "respawn").map((e) => String(e["id"]));
+    assert.deepStrictEqual(back.sort(), ["z1", "z2"], "os dois mortos voltaram juntos");
+    assert.strictEqual(zone.chestViews()[0]?.resetIn, 0, "sem relógio de novo");
+  });
+
+  it("combate no acampamento segura o relógio (zumbis lutando = o morto não volta)", () => {
+    // Percepção de 10 m: z2 e z3 vêm lutar com o jogador (sem dano) e não param.
+    const aggro = (config: DummyConfig): DummyConfig => ({
+      ...config,
+      behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 10, leashRadius: 50, speed: 0 },
+    });
+    const zone = new Zone({
+      id: "t",
+      halfSize: 150,
+      maxPlayers: 10,
+      spawnRadius: 0,
+      pvp: false,
+      dummies: [zombie("z1", -1, -3, 2), aggro(zombie("z2", 0, -3, 4)), aggro(zombie("z3", 1, -3, 3))],
+      camps: [{ id: "camp", x: 0, z: -1, monsterIds: ["z1", "z2", "z3"] }],
+    });
+    const a = new Member("a");
+    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, KILL);
+    killAll(zone, "a", ["z1"]);
+    zone.setAttackTarget("a", null);
+    ticks(zone, (CAMP_IDLE_RESET_SECONDS + 10) * TICK_RATE_HZ);
+    assert.ok(!a.events.some((e) => e["type"] === "respawn"), "lutando: não volta");
+    assert.strictEqual(zone.chestViews()[0]?.resetIn, 0, "sem relógio durante o combate");
   });
 
   it("acampamento com chefe: o baú marca chefe (loot maior) e o nível é o dos zumbis comuns", () => {

@@ -19,6 +19,8 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v28: acampamentos ([JOGO-19]): `resetIn` (segundos até o acampamento voltar) no {@link ChestView} e no evento
+ *   `chest`, que também vai quando o relógio começa/muda/para (mapa, [CLI-11]).
  * v27: recuperar senha ([INFRA-13]): `password_reset_request`/`password_reset_confirm` → `password_reset_sent`/
  *   `password_reset_done`, erro `invalid_reset_code`.
  * v26: PvP ([JOGO-22]): `levelsLost` no `death_report` (morte para jogador: −1 nível, moedas para quem matou).
@@ -28,7 +30,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 27;
+export const PROTOCOL_VERSION = 28;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -521,6 +523,11 @@ export interface ChestView {
   readonly level: number;
   readonly boss: boolean;
   readonly open: boolean;
+  /**
+   * Segundos até o acampamento voltar inteiro ([JOGO-19]; 0 = nenhum relógio): baú aberto, ou acampamento pela metade
+   * parado sem combate. O cliente conta sozinho e mostra no mapa ([CLI-11]); o evento `chest` atualiza.
+   */
+  readonly resetIn: number;
 }
 
 /** Uma coisa do seu baú: item (com a ficha completa, nível e atributos) ou moedas. */
@@ -789,8 +796,11 @@ export type CombatEvent =
   | { readonly type: "level_up"; readonly id: string; readonly level: number }
   /** O jogador `id` trocou o que veste (aparência nova). */
   | { readonly type: "look"; readonly id: string; readonly look: Look; readonly levels?: LookLevels }
-  /** Baú de acampamento abriu (acampamento morto) ou fechou (reset), [JOGO-19]. Vai para todos da zona. */
-  | { readonly type: "chest"; readonly id: string; readonly open: boolean; readonly x: number; readonly z: number };
+  /**
+   * Baú de acampamento abriu (acampamento morto) ou fechou (reset), ou o relógio da volta começou/mudou/parou
+   * (`resetIn` como em {@link ChestView}), [JOGO-19]. Vai para todos da zona.
+   */
+  | { readonly type: "chest"; readonly id: string; readonly open: boolean; readonly x: number; readonly z: number; readonly resetIn: number };
 
 /** Só de quem recebe o snapshot (os outros não sabem). */
 export interface OwnStatus {
