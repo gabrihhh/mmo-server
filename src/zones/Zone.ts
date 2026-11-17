@@ -919,6 +919,11 @@ export class Zone {
     return this.players.get(id)?.level ?? null;
   }
 
+  /** Membros do grupo de [id] nesta zona (vazio = sem grupo, [SOC-03]); usado pelo chat do grupo ([SOC-09]). */
+  groupMembersOf(id: string): readonly string[] {
+    return this.groups.membersOf(id);
+  }
+
   /**
    * Tira `amount` moedas do jogador `id` (criar guilda, [SOC-06]) e salva por {@link ZoneMember.onProgress}.
    * `false` = não tem moedas suficientes ou não está na zona (nada muda).

@@ -5,6 +5,7 @@ import type { AttributeId } from "./items/attributes.js";
 import type { UpgradeFailure } from "./items/upgrade.js";
 import { buyPrice, shopItems, type ShopFailure } from "./items/shop.js";
 import type { StorageFailure } from "./items/storage.js";
+import { ChatLimiter, cleanChatText, type ChatCheck } from "./social/chat.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -40,6 +41,8 @@ import {
   type SocialSettings,
   type DeathItemView,
   type ItemView,
+  type ChatSendData,
+  type ChatRefusedReason,
 } from "./net/protocol.js";
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
 import { Zone, type CastFailure, type CastResult, type ChestFailure, type DeathInfo, type JoinResult, type NetStats, type SpawnPoint, type TakenLoot, type ZoneConfig } from "./zones/Zone.js";
@@ -180,6 +183,8 @@ export class GameServer {
   private readonly wss: WebSocketServer;
   private readonly zones: Map<string, Zone> = new Map();
   private readonly sessions: Set<Session> = new Set();
+  /** Anti-spam e relógio do Global do chat ([SOC-09]). */
+  private readonly chatLimiter: ChatLimiter = new ChatLimiter();
   /** Sessão autenticada de cada jogador. Garante uma conexão por conta. */
   private readonly online: Map<string, Session> = new Map();
   private readonly options: Required<GameServerOptions>;
@@ -459,6 +464,7 @@ export class GameServer {
       if (account !== null && this.online.get(account.playerId) === session) {
         // Saiu do servidor: os pedidos de amizade pendentes somem e os amigos online o veem offline ([SOC-04]).
         this.online.delete(account.playerId);
+        this.chatLimiter.forgetSpam(account.playerId);
         this.friendRequests.removePlayer(account.playerId);
         this.refreshFriendsOf(account.friends);
         // Convites de guilda somem e os guildeiros online o veem offline ([SOC-06]).
@@ -554,6 +560,9 @@ export class GameServer {
         return;
       case ClientMessageType.StorageTake:
         void this.handleStorage(session, "take", message.data.uid);
+        return;
+      case ClientMessageType.ChatSend:
+        this.handleChat(session, message.data);
         return;
       case ClientMessageType.StorageBuyTab:
         void this.handleStorage(session, "buyTab", "");
@@ -1341,6 +1350,87 @@ export class GameServer {
     }
     this.sendInventory(session);
     zone.tradeBelongingsChanged(playerId);
+  }
+
+  /**
+   * Chat ([SOC-09]): limpa o texto, acha quem recebe pelo canal e passa no anti-spam (só conta mensagem que tinha para
+   * quem ir). Geral = quem está na mesma zona; Grupo = o grupo (zona); Guilda = membros online em qualquer zona;
+   * Privado = um jogador pelo nome (fake "aceita" responde com eco, [SOC-01]); Global = todos online numa zona.
+   * Quem mandou recebe a própria mensagem (a mesma `chat`), e é assim que ela aparece na tela dele.
+   */
+  private handleChat(session: Session, data: ChatSendData): void {
+    const account: Account | null = session.account;
+    const zone: Zone | null = session.zone;
+    if (account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return;
+    }
+    const me: string = account.playerId;
+    const refuse = (reason: ChatRefusedReason, seconds: number = 0): void => {
+      if (session.socket.readyState === WebSocket.OPEN) {
+        session.socket.send(encodeServerMessage({ type: ServerMessageType.ChatRefused, data: { channel: data.channel, reason, seconds } }));
+      }
+    };
+    const text: string | null = cleanChatText(data.text);
+    if (text === null) return refuse("invalid");
+
+    let recipients: string[] = [];
+    let to: string | null = null;
+    let fakeEcho: { readonly id: string; readonly name: string } | null = null;
+    switch (data.channel) {
+      case "zone":
+        recipients = [...this.online.values()].filter((other) => other.zone === zone && other.account !== null).map((other) => other.account?.playerId ?? "");
+        break;
+      case "group":
+        recipients = [...zone.groupMembersOf(me)];
+        if (recipients.length === 0) return refuse("not_in_group");
+        break;
+      case "guild": {
+        const guild = this.guilds.guildOf(me);
+        if (guild === null) return refuse("not_in_guild");
+        recipients = (this.guilds.get(guild.id)?.members ?? []).map((member) => member.id);
+        break;
+      }
+      case "private": {
+        const wanted: string = (data.to ?? "").trim().toLowerCase();
+        const target: Session | undefined = [...this.online.values()].find((other) => other.account?.username.toLowerCase() === wanted && other.zone !== null);
+        if (target?.account !== undefined && target.account !== null && target.account.playerId !== me) {
+          recipients = [me, target.account.playerId];
+          to = target.account.username;
+          break;
+        }
+        // Fake de teste ([SOC-01]): "aceita" responde com eco; o outro só recebe calado.
+        for (const candidate of this.zones.values()) {
+          for (const id of candidate.fakeIds()) {
+            const name: string | undefined = candidate.fakeName(id);
+            if (name !== undefined && name.toLowerCase() === wanted) {
+              to = name;
+              recipients = [me];
+              if (candidate.autoReplyOf(id) === "accept") fakeEcho = { id, name };
+            }
+          }
+        }
+        if (to === null) return refuse("player_not_found");
+        break;
+      }
+      case "global":
+        recipients = [...this.online.values()].filter((other) => other.zone !== null && other.account !== null).map((other) => other.account?.playerId ?? "");
+        break;
+    }
+
+    const check: ChatCheck = this.chatLimiter.check(me, data.channel, text, Date.now());
+    if (!check.ok) return refuse(check.reason, check.seconds);
+    const message: ServerMessage = {
+      type: ServerMessageType.Chat,
+      data: { channel: data.channel, fromId: me, from: account.username, level: zone.levelOf(me) ?? 0, guildTag: this.guilds.guildOf(me)?.tag ?? null, text, to },
+    };
+    for (const id of new Set([me, ...recipients])) this.sendTo(id, message);
+    if (fakeEcho !== null) {
+      this.sendTo(me, {
+        type: ServerMessageType.Chat,
+        data: { channel: "private", fromId: fakeEcho.id, from: fakeEcho.name, level: zone.levelOf(fakeEcho.id) ?? 0, guildTag: null, text: `Você disse: ${text}`, to: account.username },
+      });
+    }
   }
 
   /**

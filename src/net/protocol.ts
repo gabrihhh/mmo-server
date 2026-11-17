@@ -1,5 +1,6 @@
 import { isAttributeId, type AttributeId } from "../items/attributes.js";
 import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type RankingPeriod } from "../progression/ranking.js";
+import { isChatChannel, type ChatChannel } from "../social/chat.js";
 
 /**
  * Contrato de rede cliente ↔ servidor.
@@ -27,6 +28,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  *   ItemView; erro `item_equipped`.
  * v37: Armazém ([JOGO-26]): `storage_put`/`storage_take`/`storage_buy_tab` → `inventory` (com `storage`,
  *   `storageCapacity`, `storageTabCost`); NPC com `service: "storage"`; erro `storage_full`.
+ * v38: chat ([SOC-09]): `chat_send { channel, text, to? }` → `chat` / `chat_refused`.
  * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
@@ -47,7 +49,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 37;
+export const PROTOCOL_VERSION = 38;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -107,6 +109,8 @@ export const ClientMessageType = {
   StorageTake: "storage_take",
   /** Compra mais uma aba de 20 espaços no Armazém. Sem payload. Resposta: `inventory` (moedas no snapshot). */
   StorageBuyTab: "storage_buy_tab",
+  /** Manda uma mensagem no chat ([SOC-09]). Payload: {@link ChatSendData}. Resposta: `chat` (cópia) ou `chat_refused`. */
+  ChatSend: "chat_send",
   /**
    * Tenta melhorar um item no ferreiro (perto dele, com moedas, [JOGO-16]). Payload: {@link UpgradeData}.
    * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
@@ -230,6 +234,10 @@ export const ServerMessageType = {
   FuseResult: "fuse_result",
   /** O que a Loja do Ferreiro vende ([JOGO-23]). Payload: {@link ShopData}. */
   Shop: "shop",
+  /** Mensagem do chat ([SOC-09]). Payload: {@link ChatData}. */
+  Chat: "chat",
+  /** Sua mensagem não foi enviada ([SOC-09]). Payload: {@link ChatRefusedData}. */
+  ChatRefused: "chat_refused",
   /** Compra/venda feita na Loja do Ferreiro. Payload: {@link ShopResultData}. As moedas vêm no `me` do snapshot. */
   ShopResult: "shop_result",
   /** Você morreu ([JOGO-21]): o que perdeu e a peça da roleta. Payload: {@link DeathReportData}. Só para quem morreu. */
@@ -703,6 +711,37 @@ export interface UpgradeResultData {
   readonly points: number;
 }
 
+/** Payload de `chat_send` ([SOC-09]). `to` = nome do jogador (só no privado). */
+export interface ChatSendData {
+  readonly channel: ChatChannel;
+  readonly text: string;
+  readonly to: string | null;
+}
+
+/** Payload de `chat`. ATENÇÃO: lido em mmo-client/scripts/network/network.gd (chat_received). */
+export interface ChatData {
+  readonly channel: ChatChannel;
+  readonly fromId: string;
+  /** Nome de quem falou, como foi cadastrado. */
+  readonly from: string;
+  readonly level: number;
+  /** Tag da guilda de quem falou ([SOC-06]), ou `null`. */
+  readonly guildTag: string | null;
+  readonly text: string;
+  /** Privado: nome de quem recebe (a cópia de quem mandou mostra "para X"). Outros canais: `null`. */
+  readonly to: string | null;
+}
+
+/** Motivo de `chat_refused`. */
+export type ChatRefusedReason = "spam" | "repeat" | "cooldown" | "invalid" | "not_in_group" | "not_in_guild" | "player_not_found";
+
+/** Payload de `chat_refused`: o motivo e, quando é espera, quantos segundos faltam. */
+export interface ChatRefusedData {
+  readonly channel: ChatChannel;
+  readonly reason: ChatRefusedReason;
+  readonly seconds: number;
+}
+
 /** Payload de `shop_buy` ([JOGO-23]): a peça do catálogo a comprar (+0). */
 export interface ShopBuyData {
   readonly itemId: string;
@@ -857,6 +896,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.StoragePut; readonly data: ItemDestroyData }
   | { readonly type: typeof ClientMessageType.StorageTake; readonly data: ItemDestroyData }
   | { readonly type: typeof ClientMessageType.StorageBuyTab; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ChatSend; readonly data: ChatSendData }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
@@ -1716,6 +1756,8 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.FuseResult; readonly data: FuseResultData }
   | { readonly type: typeof ServerMessageType.Shop; readonly data: ShopData }
   | { readonly type: typeof ServerMessageType.ShopResult; readonly data: ShopResultData }
+  | { readonly type: typeof ServerMessageType.Chat; readonly data: ChatData }
+  | { readonly type: typeof ServerMessageType.ChatRefused; readonly data: ChatRefusedData }
   | { readonly type: typeof ServerMessageType.DeathReport; readonly data: DeathReportData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesData }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
@@ -2202,6 +2244,14 @@ export function parseClientMessage(text: string): ClientMessage | null {
     }
     case ClientMessageType.StorageBuyTab:
       return { type: ClientMessageType.StorageBuyTab, data: {} };
+    case ClientMessageType.ChatSend: {
+      if (!isRecord(raw)) return null;
+      const { channel, text, to } = raw;
+      // O texto é limpo e medido no servidor (`cleanChatText`); aqui só barra o absurdo (1 KB).
+      if (!isChatChannel(channel) || typeof text !== "string" || text.length > 1000) return null;
+      if (to !== undefined && to !== null && (typeof to !== "string" || to.length > 64)) return null;
+      return { type: ClientMessageType.ChatSend, data: { channel, text, to: typeof to === "string" ? to : null } };
+    }
     case ClientMessageType.Upgrade: {
       const data = parseUpgradeData(raw);
       return data === null ? null : { type: ClientMessageType.Upgrade, data };
