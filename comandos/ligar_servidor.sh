@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Sobe tudo que o servidor do jogo precisa e inicia o servidor. Ver mmo-docs [INFRA-05].
 #
-# Uso: ./run.sh
+# Uso: comandos/ligar_servidor.sh   (de qualquer pasta)
 #   1. Node 22 (via nvm, se houver)
 #   2. npm install (só se faltar node_modules)
 #   3. MongoDB local no Docker (npm run db:up) e espera ele responder
 #   4. avisa se não há pacote do jogo publicado (o celular não teria o que baixar)
 #   5. mostra o endereço na rede local e roda `npm start` (recarrega sozinho ao mudar o código)
-# Ctrl+C para parar o servidor (o MongoDB continua rodando; parar: npm run db:down).
+# Ctrl+C para parar o servidor (o MongoDB continua rodando; desligar: comandos/desligar_banco.sh).
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # --- 1. Node 22 ---
 if [[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]]; then

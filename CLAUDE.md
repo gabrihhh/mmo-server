@@ -43,7 +43,8 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] pro
 ## Comandos
 
 ```bash
-./run.sh           # sobe tudo (Node 22, deps, MongoDB) e inicia o servidor
+comandos/ligar_servidor.sh   # sobe tudo (Node 22, deps, MongoDB) e inicia o servidor
+comandos/ligar_banco.sh      # só o MongoDB (desligar: comandos/desligar_banco.sh)
 nvm use            # Node 22 (.nvmrc)
 npm install
 npm run db:up      # MongoDB local via Docker (o servidor não sobe sem ele) — ver [INFRA-03]
