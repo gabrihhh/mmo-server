@@ -22,6 +22,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
  * v34: troca entre jogadores ([SOC-05]): `trade_request`/`trade_answer`/`trade_offer`/`trade_confirm`/`trade_cancel` →
  *   `trade_requested`/`trade_state`/`trade_done`/`trade_notice`; `tradeRequests` na Configuração social.
+ * v35: `item_destroy { uid }` (botão Destruir da ficha do item; mmo-docs [JOGO-24]).
  * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
@@ -42,7 +43,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 34;
+export const PROTOCOL_VERSION = 35;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -88,6 +89,8 @@ export const ClientMessageType = {
   Unequip: "unequip",
   /** Organiza a mochila: troca o item de uma vaga com o de outra ([CLI-10]). Payload: {@link BagMoveData}. */
   BagMove: "bag_move",
+  /** Destrói um item para sempre (botão Destruir da ficha, [JOGO-24]). Payload: {@link ItemDestroyData}. */
+  ItemDestroy: "item_destroy",
   /**
    * Tenta melhorar um item no ferreiro (perto dele, com moedas, [JOGO-16]). Payload: {@link UpgradeData}.
    * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
@@ -676,6 +679,11 @@ export interface UpgradeResultData {
   readonly points: number;
 }
 
+/** Payload de `item_destroy`: o item (vestido ou na mochila) a destruir ([JOGO-24]). */
+export interface ItemDestroyData {
+  readonly uid: string;
+}
+
 /** Payload de `bag_move`: posições (0 = primeira vaga) na mochila. */
 export interface BagMoveData {
   readonly from: number;
@@ -790,6 +798,7 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Equip; readonly data: EquipData }
   | { readonly type: typeof ClientMessageType.Unequip; readonly data: UnequipData }
   | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
+  | { readonly type: typeof ClientMessageType.ItemDestroy; readonly data: ItemDestroyData }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
@@ -1830,6 +1839,13 @@ export function parseUpgradeData(data: unknown): UpgradeData | null {
   return { uid, attribute };
 }
 
+/** Valida o payload de `item_destroy`. */
+export function parseItemDestroyData(data: unknown): ItemDestroyData | null {
+  if (!isRecord(data)) return null;
+  const { uid } = data;
+  return typeof uid === "string" && uid.length > 0 && uid.length <= 64 ? { uid } : null;
+}
+
 /** Valida o payload de `bag_move`. */
 export function parseBagMoveData(data: unknown): BagMoveData | null {
   if (!isRecord(data)) return null;
@@ -2089,6 +2105,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.BagMove: {
       const data = parseBagMoveData(raw);
       return data === null ? null : { type: ClientMessageType.BagMove, data };
+    }
+    case ClientMessageType.ItemDestroy: {
+      const data = parseItemDestroyData(raw);
+      return data === null ? null : { type: ClientMessageType.ItemDestroy, data };
     }
     case ClientMessageType.Upgrade: {
       const data = parseUpgradeData(raw);

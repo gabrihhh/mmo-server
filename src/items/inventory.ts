@@ -148,6 +148,18 @@ export function moveInBag(inventory: Inventory, from: number, to: number): Inven
   return { ok: true, inventory: { ...inventory, bag } };
 }
 
+/**
+ * Destrói o item `uid` para sempre ([JOGO-24]): procura na mochila e, se não estiver lá, nos slots vestidos (o slot
+ * fica vazio). Não devolve nada. `item_not_found` se o jogador não tem o item.
+ */
+export function destroyItem(inventory: Inventory, uid: string): InventoryResult {
+  const index: number = inventory.bag.findIndex((stack) => stack.uid === uid);
+  if (index >= 0) return { ok: true, inventory: { ...inventory, bag: inventory.bag.filter((_, i) => i !== index) } };
+  const slot: EquipSlot | undefined = EQUIP_SLOTS.find((candidate) => inventory.equipped[candidate]?.uid === uid);
+  if (slot === undefined) return { ok: false, reason: "item_not_found" };
+  return { ok: true, inventory: { ...inventory, equipped: { ...inventory.equipped, [slot]: null } } };
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 

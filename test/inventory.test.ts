@@ -1,6 +1,6 @@
 import assert from "assert";
 
-import { BAG_CAPACITY, equip, fullKitInventory, moveInBag, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
+import { BAG_CAPACITY, destroyItem, equip, fullKitInventory, moveInBag, readInventory, starterInventory, unequip, type Inventory, type ItemStack } from "../src/items/inventory.js";
 import {
   ABILITIES_PER_SLOT,
   ASSASSIN_SET,
@@ -157,5 +157,23 @@ describe("catálogo e inventário", () => {
     assert.strictEqual(view.equipped.hand?.abilities[0]?.damage, 25, "dano vai para a ficha do item");
     assert.strictEqual(view.equipped.hand?.set, "Treino");
     assert.ok(view.equipped.head?.description);
+  });
+
+  it("destrói item da mochila ou vestido e recusa o que não existe ([JOGO-24])", () => {
+    const inv: Inventory = {
+      ...starterInventory(),
+      equipped: { hand: { uid: "w", itemId: "training_sword" }, head: null, chest: null, feet: null },
+      bag: [{ uid: "a", itemId: "training_staff" }, { uid: "b", itemId: "training_hood" }],
+    };
+    const fromBag = destroyItem(inv, "a");
+    assert.ok(fromBag.ok);
+    assert.deepStrictEqual(fromBag.inventory.bag.map((stack) => stack.uid), ["b"]);
+    const worn = destroyItem(inv, "w");
+    assert.ok(worn.ok);
+    assert.strictEqual(worn.inventory.equipped.hand, null);
+    assert.strictEqual(worn.inventory.bag.length, 2);
+    const missing = destroyItem(inv, "zzz");
+    assert.ok(!missing.ok);
+    assert.strictEqual(missing.reason, "item_not_found");
   });
 });

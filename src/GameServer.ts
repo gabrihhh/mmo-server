@@ -68,6 +68,7 @@ import {
   lookLevelsOf,
   lookOf,
   moveInBag,
+  destroyItem,
   unequip,
   type InventoryFailure,
   type InventoryResult,
@@ -536,6 +537,10 @@ export class GameServer {
         return;
       case ClientMessageType.BagMove:
         void this.changeInventory(session, (inventory) => moveInBag(inventory, message.data.from, message.data.to));
+        return;
+      case ClientMessageType.ItemDestroy:
+        // Item numa troca aberta: changeInventory avisa a troca (tradeBelongingsChanged), que tira ele da oferta.
+        void this.changeInventory(session, (inventory) => destroyItem(inventory, message.data.uid));
         return;
       case ClientMessageType.Attack:
         if (session.zone === null || session.account === null) {
