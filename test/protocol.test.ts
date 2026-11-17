@@ -91,17 +91,18 @@ describe("parseClientMessage", () => {
       type: ClientMessageType.FriendRemove,
       data: { playerId: "b" },
     });
-    assert.deepStrictEqual(parseClientMessage('{"type":"social_settings","data":{"friendRequests":"hide","groupInvites":"always","profile":"friends"}}'), {
+    assert.deepStrictEqual(parseClientMessage('{"type":"social_settings","data":{"friendRequests":"hide","groupInvites":"always","guildInvites":"always","profile":"friends"}}'), {
       type: ClientMessageType.SocialSettings,
-      data: { friendRequests: "hide", groupInvites: "always", profile: "friends" },
+      data: { friendRequests: "hide", groupInvites: "always", guildInvites: "always", profile: "friends" },
     });
   });
 
   it("readSocialSettings: conta antiga/estragada mostra tudo (campo a campo)", () => {
-    assert.deepStrictEqual(readSocialSettings(undefined), { friendRequests: "always", groupInvites: "always", profile: "public" });
-    assert.deepStrictEqual(readSocialSettings({ friendRequests: "hide", groupInvites: "talvez", profile: "nobody" }), {
+    assert.deepStrictEqual(readSocialSettings(undefined), { friendRequests: "always", groupInvites: "always", guildInvites: "always", profile: "public" });
+    assert.deepStrictEqual(readSocialSettings({ friendRequests: "hide", groupInvites: "talvez", guildInvites: "hide", profile: "nobody" }), {
       friendRequests: "hide",
       groupInvites: "always",
+      guildInvites: "hide",
       profile: "nobody",
     });
   });

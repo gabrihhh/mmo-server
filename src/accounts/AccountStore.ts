@@ -7,6 +7,7 @@ import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stat
 import { hashPassword, verifyPassword } from "./password.js";
 import { DEFAULT_SOCIAL_SETTINGS, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
+import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
 
 /**
  * Contas de jogador: cadastro com username + e-mail + senha, login por username OU e-mail,
@@ -47,6 +48,8 @@ export interface Account {
   readonly friends: readonly string[];
   /** Configuração social (Sempre/Ocultar pedidos de amizade e convites de grupo, [SOC-04]). Conta antiga: mostra tudo. */
   readonly social: SocialSettings;
+  /** Quando saiu por vontade própria da última guilda (ms; espera de 1 h para entrar em outra, [SOC-06]); `null` = nunca. */
+  readonly guildLeftAt: number | null;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
@@ -116,6 +119,14 @@ export interface AccountStore {
   usernamesOf(playerIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
   /** Salva a Configuração social da conta ([SOC-04]). */
   saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void>;
+  /** Guarda quando o jogador saiu da guilda por vontade própria ([SOC-06]). */
+  saveGuildLeftAt(playerId: string, atMs: number): Promise<void>;
+  /** Todas as guildas (coleção `guilds`), para carregar ao ligar o servidor ([SOC-06]). */
+  loadGuilds(): Promise<GuildRecord[]>;
+  /** Grava (cria ou substitui) uma guilda. */
+  saveGuild(guild: GuildRecord): Promise<void>;
+  /** Apaga uma guilda (acabou). */
+  deleteGuild(guildId: string): Promise<void>;
   /** Conta por username OU e-mail, para recuperar a senha ([INFRA-13]). `null` = não existe. */
   findForReset(usernameOrEmail: string): Promise<ResetTarget | null>;
   /** Grava (ou apaga, com `null`) o código de recuperar senha da conta. */
@@ -159,12 +170,15 @@ interface MemoryRecord {
   stats: PlayerStats;
   friends: string[];
   social: SocialSettings;
+  guildLeftAt: number | null;
   passwordReset: PasswordResetRecord | null;
 }
 
 /** Implementação em memória, para testes (não precisa de MongoDB). Mesmas regras da versão Mongo. */
 export class InMemoryAccountStore implements AccountStore {
   private readonly records: MemoryRecord[] = [];
+  /** Guildas (como a coleção `guilds`), por id. */
+  private readonly guilds: Map<string, GuildRecord> = new Map();
 
   /**
    * [newInventory] = com que inventário uma conta nasce (padrão: o do jogo, {@link starterInventory}, sem itens). Os
@@ -191,6 +205,7 @@ export class InMemoryAccountStore implements AccountStore {
       stats: STARTING_STATS,
       friends: [],
       social: DEFAULT_SOCIAL_SETTINGS,
+      guildLeftAt: null,
       passwordReset: null,
     };
     this.records.push(record);
@@ -267,6 +282,23 @@ export class InMemoryAccountStore implements AccountStore {
     if (record !== undefined) record.social = settings;
   }
 
+  async saveGuildLeftAt(playerId: string, atMs: number): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.guildLeftAt = atMs;
+  }
+
+  async loadGuilds(): Promise<GuildRecord[]> {
+    return Array.from(this.guilds.values(), (guild) => readGuildRecord(guild)).filter((g): g is GuildRecord => g !== null);
+  }
+
+  async saveGuild(guild: GuildRecord): Promise<void> {
+    this.guilds.set(guild.id, guild);
+  }
+
+  async deleteGuild(guildId: string): Promise<void> {
+    this.guilds.delete(guildId);
+  }
+
   async findForReset(usernameOrEmail: string): Promise<ResetTarget | null> {
     const key: string = normalizeKey(usernameOrEmail);
     const record: MemoryRecord | undefined = this.records.find((r) => r.usernameKey === key || r.emailKey === key);
@@ -307,6 +339,7 @@ export class InMemoryAccountStore implements AccountStore {
       stats: readStats(record.stats),
       friends: readFriendIds(record.friends),
       social: readSocialSettings(record.social),
+      guildLeftAt: record.guildLeftAt,
     };
   }
 }

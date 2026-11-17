@@ -19,6 +19,9 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v30: guilda ([SOC-06]): `guild_create`/`guild_invite`/`guild_answer`/`guild_leave`/`guild_kick`/`guild_role` →
+ *   `guild`/`guild_invited`/`guild_notice`; `player_guild` (tag de um jogador da zona mudou); `guildId`/`guildTag` no
+ *   {@link PlayerInfo}; `guildInvites` na Configuração social.
  * v29: perfil ([SOC-08]): `profile` (público/só amigos/ninguém) na Configuração social; `attributes` traz `stats` (XP de
  *   monstros, jogadores mortos, mortes) ou, perfil fechado para quem pediu, só `hidden: true` ({@link HiddenAttributesView}).
  * v28: acampamentos ([JOGO-19]): `resetIn` (segundos até o acampamento voltar) no {@link ChestView} e no evento
@@ -32,7 +35,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 29;
+export const PROTOCOL_VERSION = 30;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -131,6 +134,18 @@ export const ClientMessageType = {
   FriendRemove: "friend_remove",
   /** Muda a Configuração social (salva na conta, vale na hora). Payload: {@link SocialSettings}. */
   SocialSettings: "social_settings",
+  /** Cria uma guilda e vira o líder (custa {@link GUILD_CREATE_COST} moedas, [SOC-06]). Payload: {@link GuildCreateData}. */
+  GuildCreate: "guild_create",
+  /** Convida um jogador online para a SUA guilda (líder/oficial). Payload: {@link GuildTargetData}. */
+  GuildInvite: "guild_invite",
+  /** Responde a um convite de guilda ({@link ServerMessageType.GuildInvited}). Payload: {@link GuildAnswerData}. */
+  GuildAnswer: "guild_answer",
+  /** Sai da guilda (por vontade própria: 1 h sem aceitar convite de guilda). Payload: `{}`. */
+  GuildLeave: "guild_leave",
+  /** Expulsa um membro (líder: qualquer um; oficial: só membro comum). Payload: {@link GuildTargetData}. */
+  GuildKick: "guild_kick",
+  /** Líder promove a oficial / rebaixa a membro. Payload: {@link GuildRoleData}. */
+  GuildRole: "guild_role",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -189,6 +204,20 @@ export const ServerMessageType = {
   FriendNotice: "friend_notice",
   /** Configuração social salva (resposta ao `social_settings`). Payload: {@link SocialSettings}. */
   SocialSettings: "social_settings",
+  /**
+   * A SUA guilda (mmo-docs [SOC-06]): após o `auth_ok` e a cada mudança (entrou, saiu, cargo, membro online/offline,
+   * subiu de nível); `guild: null` = sem guilda. Payload: {@link GuildData}.
+   */
+  Guild: "guild",
+  /** Alguém convidou você para a guilda dele (janela Aceitar/Recusar). Payload: {@link GuildInvitedData}. */
+  GuildInvited: "guild_invited",
+  /** Aviso pequeno sobre a guilda ("X entrou na guilda"...). Payload: {@link GuildNoticeData}. */
+  GuildNotice: "guild_notice",
+  /**
+   * A guilda de um jogador da zona mudou (entrou, saiu, criou): a todos da zona, para a tag no nome e a cor de
+   * guildeiro. Payload: {@link PlayerGuildData}.
+   */
+  PlayerGuild: "player_guild",
   /**
    * Há um pacote do jogo mais novo para a plataforma do cliente (mmo-docs [INFRA-08]): vai no lugar do `auth_ok` (cliente
    * que entra com pacote velho) ou a quem já está jogando quando uma versão nova é publicada. Logo depois o servidor fecha
@@ -279,6 +308,24 @@ export const ErrorCode = {
   NotSameItem: "not_same_item",
   /** Fusão: o item a sacrificar está vestido (tire antes). A conexão continua. */
   MaterialEquipped: "material_equipped",
+  /** Guilda ([SOC-06]): nome ou tag fora das regras. A conexão continua. */
+  InvalidGuild: "invalid_guild",
+  /** Guilda: já existe uma guilda com esse nome. A conexão continua. */
+  GuildNameTaken: "guild_name_taken",
+  /** Guilda: já existe uma guilda com essa tag. A conexão continua. */
+  GuildTagTaken: "guild_tag_taken",
+  /** Guilda: criar/aceitar convite estando numa guilda, ou convidar quem já tem guilda. A conexão continua. */
+  AlreadyInGuild: "already_in_guild",
+  /** Guilda: sair/expulsar/convidar sem ter guilda, ou mexer em quem não é da sua. A conexão continua. */
+  NotInGuild: "not_in_guild",
+  /** Guilda: o cargo não permite (membro convidando, oficial expulsando oficial/líder...). A conexão continua. */
+  GuildNoPermission: "guild_no_permission",
+  /** Guilda já tem o máximo de membros ({@link GUILD_MAX_MEMBERS}). A conexão continua. */
+  GuildFull: "guild_full",
+  /** Resposta a um convite de guilda que não existe mais. A conexão continua. */
+  GuildInviteNotFound: "guild_invite_not_found",
+  /** Saiu de uma guilda há menos de 1 h: ainda não pode entrar em outra. A conexão continua. */
+  GuildCooldown: "guild_cooldown",
   /** Grupo ([SOC-03]): convidar/expulsar sem ser o líder. A conexão continua. */
   NotGroupLeader: "not_group_leader",
   /** Grupo já tem o máximo de membros ({@link GROUP_MAX_MEMBERS}). A conexão continua. */
@@ -644,12 +691,14 @@ export interface SocialSettings {
   readonly friendRequests: SocialVisibility;
   /** "Convites de grupo: Sempre / Ocultar" ([SOC-03]). */
   readonly groupInvites: SocialVisibility;
+  /** "Convites de guilda: Sempre / Ocultar" ([SOC-06]). */
+  readonly guildInvites: SocialVisibility;
   /** "Perfil: Público / Só amigos / Ninguém" ([SOC-08]). */
   readonly profile: ProfileVisibility;
 }
 
 /** Configuração de conta nova (e de conta antiga, sem o campo): mostra tudo. */
-export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = { friendRequests: "always", groupInvites: "always", profile: "public" };
+export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = { friendRequests: "always", groupInvites: "always", guildInvites: "always", profile: "public" };
 
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
@@ -681,7 +730,13 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.FriendRequest; readonly data: FriendTargetData }
   | { readonly type: typeof ClientMessageType.FriendAnswer; readonly data: FriendAnswerData }
   | { readonly type: typeof ClientMessageType.FriendRemove; readonly data: FriendTargetData }
-  | { readonly type: typeof ClientMessageType.SocialSettings; readonly data: SocialSettings };
+  | { readonly type: typeof ClientMessageType.SocialSettings; readonly data: SocialSettings }
+  | { readonly type: typeof ClientMessageType.GuildCreate; readonly data: GuildCreateData }
+  | { readonly type: typeof ClientMessageType.GuildInvite; readonly data: GuildTargetData }
+  | { readonly type: typeof ClientMessageType.GuildAnswer; readonly data: GuildAnswerData }
+  | { readonly type: typeof ClientMessageType.GuildLeave; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.GuildKick; readonly data: GuildTargetData }
+  | { readonly type: typeof ClientMessageType.GuildRole; readonly data: GuildRoleData };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -845,6 +900,9 @@ export interface PlayerInfo extends PlayerSnapshot {
   readonly levels?: LookLevels;
   /** Corpo do personagem (qual modelo desenhar). */
   readonly body: BodyType;
+  /** Guilda ([SOC-06]): id (cor de guildeiro) e tag (`[TAG][nível] nome`). Ausentes = sem guilda. Muda por `player_guild`. */
+  readonly guildId?: string;
+  readonly guildTag?: string;
 }
 
 /** Parâmetros da simulação enviados no `welcome`. */
@@ -1058,6 +1116,98 @@ export interface GroupNoticeData {
   readonly message: string;
 }
 
+/** Moedas para criar uma guilda ([SOC-06]; manter não custa nada). ATENÇÃO: espelho em mmo-client/scripts/network/protocol.gd (GUILD_CREATE_COST). */
+export const GUILD_CREATE_COST = 1000;
+/** Máximo de membros de uma guilda ([SOC-06]). */
+export const GUILD_MAX_MEMBERS = 50;
+/** Segundos que um convite de guilda espera resposta (como o de grupo). */
+export const GUILD_INVITE_SECONDS = 30;
+/** Segundos sem poder aceitar convite de guilda depois de sair por vontade própria (1 h; expulso não pega). */
+export const GUILD_LEAVE_COOLDOWN_SECONDS = 3600;
+
+/** Cargo na guilda: líder (um só), oficial ou membro. ATENÇÃO: mmo-client/scripts/network/guild_state.gd (ROLE_*). */
+export type GuildRole = "leader" | "officer" | "member";
+
+/** Payload de `guild_create`. */
+export interface GuildCreateData {
+  /** Nome da guilda (3 a 20: letras, números e espaços; único). */
+  readonly name: string;
+  /** Tag de 3 letras/números (única; guardada em maiúsculas). */
+  readonly tag: string;
+}
+
+/** Payload de `guild_invite` e `guild_kick`: o outro jogador. */
+export interface GuildTargetData {
+  readonly playerId: string;
+}
+
+/** Payload de `guild_answer`. */
+export interface GuildAnswerData {
+  /** Quem convidou (o `fromId` do {@link GuildInvitedData}). */
+  readonly fromId: string;
+  readonly accept: boolean;
+}
+
+/** Payload de `guild_role`: o novo cargo de um membro (o líder não muda por aqui). */
+export interface GuildRoleData {
+  readonly playerId: string;
+  readonly role: "officer" | "member";
+}
+
+/** Um membro na lista da guilda. */
+export interface GuildMemberView {
+  readonly id: string;
+  readonly name: string;
+  readonly role: GuildRole;
+  readonly online: boolean;
+  /** Nível de quem está online numa zona; `null` = offline/desconhecido. */
+  readonly level: number | null;
+}
+
+/** A guilda como o cliente vê (Menu → Guilda). */
+export interface GuildView {
+  readonly id: string;
+  readonly name: string;
+  readonly tag: string;
+  /** Membros: líder, oficiais e membros, cada grupo do mais antigo ao mais novo. */
+  readonly members: readonly GuildMemberView[];
+}
+
+/** Payload de `guild`. */
+export interface GuildData {
+  readonly guild: GuildView | null;
+}
+
+/** Payload de `guild_invited`. */
+export interface GuildInvitedData {
+  readonly fromId: string;
+  readonly fromName: string;
+  readonly guildName: string;
+  readonly guildTag: string;
+  /** Segundos até o convite expirar ({@link GUILD_INVITE_SECONDS}). */
+  readonly expiresIn: number;
+}
+
+/**
+ * Tipos de aviso de guilda (`guild_notice.code`): `accepted`/`rejected`/`expired` = resposta ao SEU convite;
+ * `joined`/`left`/`kicked` = alguém entrou/saiu/foi expulso (ou você); `leader` = líder novo; `role` = cargo mudou;
+ * `created` = você criou a guilda; `disbanded` = a guilda acabou (saiu o último).
+ */
+export type GuildNoticeCode = "accepted" | "rejected" | "expired" | "joined" | "left" | "kicked" | "leader" | "role" | "created" | "disbanded";
+
+/** Payload de `guild_notice`: o aviso pronto para mostrar. */
+export interface GuildNoticeData {
+  readonly code: GuildNoticeCode;
+  readonly message: string;
+}
+
+/** Payload de `player_guild`: a guilda nova de um jogador da zona (`null` = saiu/sem guilda). */
+export interface PlayerGuildData {
+  readonly id: string;
+  readonly guildId: string | null;
+  readonly guildTag: string | null;
+}
+
 /**
  * Frequência (Hz) da mensagem `group_positions`. Baixa de propósito: é só para o mapa (1 pixel = 2 m, [CLI-11]);
  * andando a 5 m/s o membro anda ~2,5 m (pouco mais de 1 pixel) entre duas. O snapshot (20 Hz) fica intacto.
@@ -1206,6 +1356,10 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.FriendRequested; readonly data: FriendRequestedData }
   | { readonly type: typeof ServerMessageType.FriendNotice; readonly data: FriendNoticeData }
   | { readonly type: typeof ServerMessageType.SocialSettings; readonly data: SocialSettings }
+  | { readonly type: typeof ServerMessageType.Guild; readonly data: GuildData }
+  | { readonly type: typeof ServerMessageType.GuildInvited; readonly data: GuildInvitedData }
+  | { readonly type: typeof ServerMessageType.GuildNotice; readonly data: GuildNoticeData }
+  | { readonly type: typeof ServerMessageType.PlayerGuild; readonly data: PlayerGuildData }
   | { readonly type: typeof ServerMessageType.UpdateRequired; readonly data: UpdateRequiredData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
@@ -1469,12 +1623,30 @@ export function isProfileVisibility(value: unknown): value is ProfileVisibility 
   return PROFILE_VISIBILITIES.some((v) => v === value);
 }
 
-/** Valida o payload de `social_settings` (as três opções são obrigatórias). */
+/** Valida o payload de `social_settings` (as quatro opções são obrigatórias). */
 export function parseSocialSettings(data: unknown): SocialSettings | null {
   if (!isRecord(data)) return null;
-  const { friendRequests, groupInvites, profile } = data;
-  if (!isSocialVisibility(friendRequests) || !isSocialVisibility(groupInvites) || !isProfileVisibility(profile)) return null;
-  return { friendRequests, groupInvites, profile };
+  const { friendRequests, groupInvites, guildInvites, profile } = data;
+  if (!isSocialVisibility(friendRequests) || !isSocialVisibility(groupInvites) || !isSocialVisibility(guildInvites)) return null;
+  if (!isProfileVisibility(profile)) return null;
+  return { friendRequests, groupInvites, guildInvites, profile };
+}
+
+/** Valida o payload de `guild_create` (formato; as regras do nome e da tag são de `src/social/guilds.ts`). */
+export function parseGuildCreateData(data: unknown): GuildCreateData | null {
+  if (!isRecord(data)) return null;
+  const { name, tag } = data;
+  if (typeof name !== "string" || name.length > 64 || typeof tag !== "string" || tag.length > 16) return null;
+  return { name, tag };
+}
+
+/** Valida o payload de `guild_role`. */
+export function parseGuildRoleData(data: unknown): GuildRoleData | null {
+  if (!isRecord(data)) return null;
+  const { playerId, role } = data;
+  if (typeof playerId !== "string" || playerId.length === 0 || playerId.length > 64) return null;
+  if (role !== "officer" && role !== "member") return null;
+  return { playerId, role };
 }
 
 /**
@@ -1483,10 +1655,11 @@ export function parseSocialSettings(data: unknown): SocialSettings | null {
  */
 export function readSocialSettings(raw: unknown): SocialSettings {
   if (!isRecord(raw)) return DEFAULT_SOCIAL_SETTINGS;
-  const { friendRequests, groupInvites, profile } = raw;
+  const { friendRequests, groupInvites, guildInvites, profile } = raw;
   return {
     friendRequests: isSocialVisibility(friendRequests) ? friendRequests : DEFAULT_SOCIAL_SETTINGS.friendRequests,
     groupInvites: isSocialVisibility(groupInvites) ? groupInvites : DEFAULT_SOCIAL_SETTINGS.groupInvites,
+    guildInvites: isSocialVisibility(guildInvites) ? guildInvites : DEFAULT_SOCIAL_SETTINGS.guildInvites,
     profile: isProfileVisibility(profile) ? profile : DEFAULT_SOCIAL_SETTINGS.profile,
   };
 }
@@ -1613,6 +1786,28 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.SocialSettings: {
       const data = parseSocialSettings(raw);
       return data === null ? null : { type: ClientMessageType.SocialSettings, data };
+    }
+    case ClientMessageType.GuildCreate: {
+      const data = parseGuildCreateData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildCreate, data };
+    }
+    case ClientMessageType.GuildInvite: {
+      const data = parseGroupTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildInvite, data };
+    }
+    case ClientMessageType.GuildAnswer: {
+      const data = parseFriendAnswerData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildAnswer, data };
+    }
+    case ClientMessageType.GuildLeave:
+      return { type: ClientMessageType.GuildLeave, data: {} };
+    case ClientMessageType.GuildKick: {
+      const data = parseGroupTargetData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildKick, data };
+    }
+    case ClientMessageType.GuildRole: {
+      const data = parseGuildRoleData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildRole, data };
     }
     default:
       return null;

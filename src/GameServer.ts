@@ -44,6 +44,7 @@ import { breakEquipped, rollDeathItem, type ItemRoll } from "./combat/death.js";
 import { PLAYER_RESPAWN_SECONDS } from "./combat/stats.js";
 import { ZONE_CONFIGS } from "./zones/zones.js";
 import type { GroupFailure, GroupResult } from "./zones/groups.js";
+import { Guilds, type GuildFailure, type GuildResult } from "./social/guilds.js";
 import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
 import { PasswordReset, type ResetConfirmResult, type ResetRequestResult } from "./accounts/passwordReset.js";
@@ -179,6 +180,8 @@ export class GameServer {
   private readonly passwordReset: PasswordReset;
   /** Pedidos de amizade pendentes (só na memória; amizade vale entre zonas, [SOC-04]). */
   private readonly friendRequests: FriendRequests;
+  /** Guildas ([SOC-06]): todas na memória (carregadas em {@link listen}), gravadas no banco a cada mudança. */
+  private readonly guilds: Guilds;
   /**
    * Amizades com jogadores fake de teste ([SOC-01]): fake não tem conta no banco, então a amizade com ele fica só na
    * memória do servidor (jogador → ids de fake), some quando o servidor reinicia e nunca vai para a conta.
@@ -224,6 +227,29 @@ export class GameServer {
       friendCount: (playerId): number => this.friendIdsOf(playerId).length,
       befriend: (a, b): void => this.befriend(a, b),
     });
+    this.guilds = new Guilds({
+      send: (playerId, message): void => this.sendTo(playerId, message),
+      nameOf: (playerId): string | undefined => this.online.get(playerId)?.account?.username ?? this.fakeNameOf(playerId),
+      levelOf: (playerId): number | null => this.zoneOfPlayer(playerId)?.levelOf(playerId) ?? null,
+      autoAnswer: (playerId): "accept" | "reject" | null => this.guildAutoAnswer(playerId),
+      spendGold: (playerId, amount): boolean => this.zoneOfPlayer(playerId)?.spendGold(playerId, amount) ?? false,
+      leftAt: (playerId): number | null => this.online.get(playerId)?.account?.guildLeftAt ?? null,
+      setLeftAt: (playerId, atMs): void => {
+        const session: Session | undefined = this.online.get(playerId);
+        if (session?.account !== null && session?.account !== undefined) session.account = { ...session.account, guildLeftAt: atMs };
+        if (this.fakeNameOf(playerId) !== undefined) return;
+        this.options.accounts.saveGuildLeftAt(playerId, atMs).catch((error: unknown) => {
+          console.error(`[guilda] falha ao salvar a saída de ${playerId}:`, error);
+        });
+      },
+      save: (guild): void => {
+        this.options.accounts.saveGuild(guild).catch((error: unknown) => console.error(`[guilda] falha ao salvar ${guild.id}:`, error));
+      },
+      remove: (guildId): void => {
+        this.options.accounts.deleteGuild(guildId).catch((error: unknown) => console.error(`[guilda] falha ao apagar ${guildId}:`, error));
+      },
+      onMemberGuild: (playerId, guild): void => this.zoneOfPlayer(playerId)?.setGuild(playerId, guild),
+    });
 
     this.http = createServer((req: IncomingMessage, res: ServerResponse) => {
       void this.handleHttp(req, res);
@@ -243,6 +269,11 @@ export class GameServer {
    */
   async listen(port: number): Promise<number> {
     await this.updates.start();
+    // Guildas na memória ([SOC-06]); os fakes de teste que já estão nas zonas ganham a tag deles.
+    this.guilds.load(await this.options.accounts.loadGuilds());
+    for (const zone of this.zones.values()) {
+      for (const id of zone.fakeIds()) zone.setGuild(id, this.guilds.guildOf(id));
+    }
     return new Promise((resolve, reject) => {
       this.http.once("error", reject);
       this.http.listen(port, () => {
@@ -294,6 +325,7 @@ export class GameServer {
         for (const zone of this.zones.values()) zone.tick();
         this.slowestTickMs = Math.max(this.slowestTickMs, performance.now() - started);
         this.friendRequests.expire(Date.now());
+        this.guilds.expire(Date.now());
         nextAt += tickMs;
         ran++;
         now = performance.now();
@@ -418,6 +450,9 @@ export class GameServer {
         this.online.delete(account.playerId);
         this.friendRequests.removePlayer(account.playerId);
         this.refreshFriendsOf(account.friends);
+        // Convites de guilda somem e os guildeiros online o veem offline ([SOC-06]).
+        this.guilds.removePlayer(account.playerId);
+        this.guilds.refreshMember(account.playerId);
       }
       const zoneId: string | undefined = session.zone?.config.id;
       void this.leaveZone(session).then(() => {
@@ -558,7 +593,69 @@ export class GameServer {
       case ClientMessageType.SocialSettings:
         void this.changeSocialSettings(session, message.data);
         return;
+      // Guilda ([SOC-06]): regras em src/social/guilds.ts; aqui só repassa e devolve a recusa.
+      case ClientMessageType.GuildCreate:
+        this.guildRequest(session, (id) => this.guilds.create(id, message.data.name, message.data.tag, Date.now()));
+        return;
+      case ClientMessageType.GuildInvite:
+        this.guildRequest(session, (id) => this.guilds.invite(id, message.data.playerId, Date.now()));
+        return;
+      case ClientMessageType.GuildAnswer:
+        this.guildRequest(session, (id) => this.guilds.answer(id, message.data.fromId, message.data.accept, Date.now()));
+        return;
+      case ClientMessageType.GuildLeave:
+        this.guildRequest(session, (id) => this.guilds.leave(id, Date.now()));
+        return;
+      case ClientMessageType.GuildKick:
+        this.guildRequest(session, (id) => this.guilds.kick(id, message.data.playerId));
+        return;
+      case ClientMessageType.GuildRole:
+        this.guildRequest(session, (id) => this.guilds.setRole(id, message.data.playerId, message.data.role));
+        return;
     }
+  }
+
+  /** Pedido de guilda de quem está autenticado; recusado vira `error` só para ele ([SOC-06]). */
+  private guildRequest(session: Session, request: (playerId: string) => GuildResult): void {
+    if (session.account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    const result: GuildResult = request(session.account.playerId);
+    if (!result.ok) this.sendError(session, GameServer.GUILD_ERRORS[result.reason], result.message);
+  }
+
+  /** Código do protocolo para cada recusa de guilda. */
+  private static readonly GUILD_ERRORS: Readonly<Record<GuildFailure, ErrorCode>> = {
+    invalid_guild: ErrorCode.InvalidGuild,
+    guild_name_taken: ErrorCode.GuildNameTaken,
+    guild_tag_taken: ErrorCode.GuildTagTaken,
+    already_in_guild: ErrorCode.AlreadyInGuild,
+    not_in_guild: ErrorCode.NotInGuild,
+    guild_no_permission: ErrorCode.GuildNoPermission,
+    guild_full: ErrorCode.GuildFull,
+    guild_invite_not_found: ErrorCode.GuildInviteNotFound,
+    guild_cooldown: ErrorCode.GuildCooldown,
+    not_enough_gold: ErrorCode.NotEnoughGold,
+    player_not_found: ErrorCode.PlayerNotFound,
+    invalid_invite: ErrorCode.InvalidInvite,
+  };
+
+  /** A zona em que o jogador (ou fake de teste) está agora, ou `undefined`. */
+  private zoneOfPlayer(playerId: string): Zone | undefined {
+    const zone: Zone | null | undefined = this.online.get(playerId)?.zone;
+    if (zone !== null && zone !== undefined) return zone;
+    for (const candidate of this.zones.values()) if (candidate.fakeName(playerId) !== undefined) return candidate;
+    return undefined;
+  }
+
+  /** Resposta automática a convite de guilda: a do fake de teste, `reject` para quem oculta convites, senão `null`. */
+  private guildAutoAnswer(playerId: string): "accept" | "reject" | null {
+    for (const zone of this.zones.values()) {
+      const auto: "accept" | "reject" | null = zone.autoReplyOf(playerId);
+      if (auto !== null) return auto;
+    }
+    return this.online.get(playerId)?.account?.social.guildInvites === "hide" ? "reject" : null;
   }
 
   /** Pedido/resposta de amizade de quem está autenticado; recusado vira `error` só para ele ([SOC-04]). */
@@ -919,6 +1016,9 @@ export class GameServer {
     );
     this.sendInventory(session);
     void this.sendFriends(account.playerId);
+    // A guilda dele; os guildeiros online passam a vê-lo online ([SOC-06]).
+    this.guilds.sendGuild(account.playerId);
+    if (!wasOnline) this.guilds.refreshMember(account.playerId);
     // Os amigos online passam a vê-lo online ([SOC-04]).
     if (!wasOnline) this.refreshFriendsOf(account.friends);
     this.log(`[auth] ${account.username} autenticou (${kind})`);
@@ -1285,7 +1385,10 @@ export class GameServer {
         },
         // Matou um monstro ([JOGO-12]): guarda o nível/XP novo na sessão (próxima entrada) e no banco.
         onProgress: (progress: Progress): void => {
+          const levelChanged: boolean = session.account !== null && session.account.progress.level !== progress.level;
           if (session.account !== null) session.account = { ...session.account, progress };
+          // Subiu/desceu de nível: a lista da guilda mostra o nível novo ([SOC-06]).
+          if (levelChanged) this.guilds.refreshMember(account.playerId);
           this.options.accounts.saveProgress(account.playerId, progress).catch((error: unknown) => {
             console.error(`[${session.connectionId}] falha ao salvar nível/XP de ${account.username}:`, error);
           });
@@ -1336,6 +1439,9 @@ export class GameServer {
       }),
     );
     void this.sendFriends(account.playerId);
+    // Tag da guilda no nome para a zona inteira ([SOC-06]) e o nível dele na lista da guilda.
+    zone.setGuild(account.playerId, this.guilds.guildOf(account.playerId));
+    this.guilds.refreshMember(account.playerId);
     this.log(`[${zone.config.id}] ${account.username} entrou (${zone.size} online)`);
   }
 

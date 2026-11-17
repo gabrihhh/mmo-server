@@ -552,6 +552,8 @@ interface ZonePlayer extends Combatant {
   progress: Progress;
   /** Contadores do perfil ([SOC-08]): XP de monstros, jogadores mortos, mortes. Vão na tela de Atributos. */
   stats: PlayerStats;
+  /** Guilda ([SOC-06]): membros da mesma guilda não se batem; a tag vai no {@link PlayerInfo}. `null` = sem guilda. */
+  guild: { readonly id: string; readonly tag: string } | null;
   /** Jogador fake de teste ([SOC-01]): como responde e onde renasce. `null` = jogador de verdade. */
   readonly fake: FakeState | null;
 }
@@ -840,6 +842,7 @@ export class Zone {
       look: fake.look,
       progress: { level: fake.level, xp: 0, gold: 0 },
       stats: STARTING_STATS,
+      guild: null,
       readyTick: new Map(),
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
@@ -865,6 +868,40 @@ export class Zone {
   }
 
   /** Nome do jogador fake de teste `id` desta zona ([SOC-01]); `undefined` se não for um fake daqui. Amizade ([SOC-04]). */
+  /**
+   * Troca a guilda do jogador `id` ([SOC-06]; `null` = saiu) e avisa a zona inteira (`player_guild`: tag no nome e cor
+   * de guildeiro). O `GameServer` chama ao entrar na zona e a cada mudança. Ignora quem não está aqui.
+   */
+  setGuild(id: string, guild: { readonly id: string; readonly tag: string } | null): void {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return;
+    if (player.guild?.id === guild?.id && player.guild?.tag === guild?.tag) return;
+    player.guild = guild;
+    this.broadcast({ type: ServerMessageType.PlayerGuild, data: { id, guildId: guild?.id ?? null, guildTag: guild?.tag ?? null } });
+  }
+
+  /** Nível do jogador `id` se ele está nesta zona, senão `null` (lista da guilda, [SOC-06]). */
+  levelOf(id: string): number | null {
+    return this.players.get(id)?.level ?? null;
+  }
+
+  /**
+   * Tira `amount` moedas do jogador `id` (criar guilda, [SOC-06]) e salva por {@link ZoneMember.onProgress}.
+   * `false` = não tem moedas suficientes ou não está na zona (nada muda).
+   */
+  spendGold(id: string, amount: number): boolean {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined || player.progress.gold < amount) return false;
+    player.progress = { ...player.progress, gold: player.progress.gold - amount };
+    player.member.onProgress?.(player.progress);
+    return true;
+  }
+
+  /** Ids dos jogadores fake de teste desta zona ([SOC-01]). */
+  fakeIds(): string[] {
+    return Array.from(this.players.values()).filter((p) => p.fake !== null).map((p) => p.id);
+  }
+
   fakeName(id: string): string | undefined {
     const player: ZonePlayer | undefined = this.players.get(id);
     return player !== undefined && player.fake !== null ? player.name : undefined;
@@ -1039,6 +1076,7 @@ export class Zone {
       look,
       progress,
       stats,
+      guild: null,
       readyTick: new Map(),
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
@@ -2149,8 +2187,9 @@ export class Zone {
       return source.behavior.kind === "brawler";
     }
     if (target.kind === "dummy") return target.behavior.kind !== "punchingBag";
-    // Membros do mesmo grupo nunca se atingem, mesmo com PvP ([SOC-03]): vale para alvo, linha, área e projétil.
-    if (this.groups.sameGroup(source.id, target.id)) return false;
+    // Membros do mesmo grupo ([SOC-03]) ou da mesma guilda ([SOC-06]) nunca se atingem, mesmo com PvP: vale para
+    // alvo, linha, área e projétil.
+    if (this.groups.sameGroup(source.id, target.id) || Zone.sameGuild(source, target)) return false;
     // PvP ([JOGO-22]): só até 10 níveis de diferença e ninguém em cima das pedras da praça (área segura).
     if (!pvpLevelsAllowed(source.level, target.level)) return false;
     const safe: number = this.config.safeZoneHalf ?? 0;
@@ -2281,7 +2320,7 @@ export class Zone {
     // Fake de teste não leva dano de NPC/monstro, nem de área/projétil que passe por ele ([SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return;
     // Membro do grupo não leva dano de outro membro ([SOC-03]; segurança além do isEnemy).
-    if (source.kind === "player" && target.kind === "player" && this.groups.sameGroup(source.id, target.id)) return;
+    if (source.kind === "player" && target.kind === "player" && (this.groups.sameGroup(source.id, target.id) || Zone.sameGuild(source, target))) return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
     // Nível de quem bate ([JOGO-12]): jogador × (1 + 1% por nível), monstro × 1,02^nível × o multiplicador dele.
     // Atributos de melhoria ([JOGO-16]): Dano e Crítico de quem bate (jogador), Defesa de quem apanha (jogador).
@@ -2959,7 +2998,13 @@ export class Zone {
       look: player.look,
       ...(Object.keys(levels).length > 0 ? { levels } : {}),
       body: player.member.body ?? "male",
+      ...(player.guild !== null ? { guildId: player.guild.id, guildTag: player.guild.tag } : {}),
     };
+  }
+
+  /** `true` se os dois são jogadores da mesma guilda ([SOC-06]). */
+  private static sameGuild(a: Entity, b: Entity): boolean {
+    return a.kind === "player" && b.kind === "player" && a.guild !== null && a.guild.id === b.guild?.id;
   }
 
   /** `true` se as duas aparências vestem o mesmo item em todos os slots. */

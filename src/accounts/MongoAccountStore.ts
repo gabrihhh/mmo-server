@@ -6,6 +6,7 @@ import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/l
 import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
 import { DEFAULT_SOCIAL_SETTINGS, isBodyType, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
+import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
@@ -53,6 +54,8 @@ interface AccountDocument {
   friends?: string[];
   /** Configuração social ([SOC-04]). Pode faltar em conta antiga (= mostra tudo). Lido sempre por readSocialSettings. */
   social?: SocialSettings;
+  /** Quando saiu por vontade própria da última guilda (ms, [SOC-06]); falta/null = nunca. */
+  guildLeftAt?: number | null;
   /** Código de recuperar senha pendente ([INFRA-13]); falta/null = nenhum. */
   passwordReset?: PasswordResetRecord | null;
 }
@@ -79,6 +82,7 @@ export class MongoAccountStore implements AccountStore {
     private readonly client: MongoClient,
     private readonly db: Db,
     private readonly accounts: Collection<AccountDocument>,
+    private readonly guilds: Collection<GuildRecord>,
   ) {}
 
   /**
@@ -94,7 +98,10 @@ export class MongoAccountStore implements AccountStore {
     await accounts.createIndex({ usernameKey: 1 }, { unique: true });
     await accounts.createIndex({ emailKey: 1 }, { unique: true });
     await accounts.createIndex({ sessionHashes: 1 });
-    return new MongoAccountStore(client, db, accounts);
+    // Guildas ([SOC-06]): ficam todas na memória do servidor; o índice só garante id único.
+    const guilds: Collection<GuildRecord> = db.collection<GuildRecord>("guilds");
+    await guilds.createIndex({ id: 1 }, { unique: true });
+    return new MongoAccountStore(client, db, accounts, guilds);
   }
 
   async register(username: string, email: string, password: string): Promise<RegisterResult> {
@@ -218,6 +225,27 @@ export class MongoAccountStore implements AccountStore {
     await this.accounts.updateOne({ playerId }, { $set: { social: settings } });
   }
 
+  async saveGuildLeftAt(playerId: string, atMs: number): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { guildLeftAt: atMs } });
+  }
+
+  async loadGuilds(): Promise<GuildRecord[]> {
+    const result: GuildRecord[] = [];
+    for await (const doc of this.guilds.find({}, { projection: { _id: 0 } })) {
+      const guild: GuildRecord | null = readGuildRecord(doc);
+      if (guild !== null) result.push(guild);
+    }
+    return result;
+  }
+
+  async saveGuild(guild: GuildRecord): Promise<void> {
+    await this.guilds.replaceOne({ id: guild.id }, { ...guild, members: [...guild.members] }, { upsert: true });
+  }
+
+  async deleteGuild(guildId: string): Promise<void> {
+    await this.guilds.deleteOne({ id: guildId });
+  }
+
   async findForReset(usernameOrEmail: string): Promise<ResetTarget | null> {
     const key: string = normalizeKey(usernameOrEmail);
     const doc: AccountDocument | null = await this.accounts.findOne({ $or: [{ usernameKey: key }, { emailKey: key }] });
@@ -260,6 +288,7 @@ export class MongoAccountStore implements AccountStore {
       stats: readStats(doc.stats),
       friends: readFriendIds(doc.friends),
       social: readSocialSettings(doc.social),
+      guildLeftAt: typeof doc.guildLeftAt === "number" ? doc.guildLeftAt : null,
     };
   }
 }
