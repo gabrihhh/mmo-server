@@ -8,6 +8,7 @@ import { EMPTY_PERIODS, readPeriods, type PeriodCounters, type RankingSource } f
 import { DEFAULT_SOCIAL_SETTINGS, isBodyType, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
+import { readListing, type Listing } from "../items/market.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
@@ -86,6 +87,7 @@ export class MongoAccountStore implements AccountStore {
     private readonly db: Db,
     private readonly accounts: Collection<AccountDocument>,
     private readonly guilds: Collection<GuildRecord>,
+    private readonly market: Collection<Listing>,
   ) {}
 
   /**
@@ -104,7 +106,10 @@ export class MongoAccountStore implements AccountStore {
     // Guildas ([SOC-06]): ficam todas na memória do servidor; o índice só garante id único.
     const guilds: Collection<GuildRecord> = db.collection<GuildRecord>("guilds");
     await guilds.createIndex({ id: 1 }, { unique: true });
-    return new MongoAccountStore(client, db, accounts, guilds);
+    // Mercado ([JOGO-25]): idem, todos na memória do servidor.
+    const market: Collection<Listing> = db.collection<Listing>("market");
+    await market.createIndex({ id: 1 }, { unique: true });
+    return new MongoAccountStore(client, db, accounts, guilds, market);
   }
 
   async register(username: string, email: string, password: string): Promise<RegisterResult> {
@@ -256,6 +261,27 @@ export class MongoAccountStore implements AccountStore {
 
   async saveGuild(guild: GuildRecord): Promise<void> {
     await this.guilds.replaceOne({ id: guild.id }, { ...guild, members: [...guild.members] }, { upsert: true });
+  }
+
+  async loadListings(): Promise<Listing[]> {
+    const result: Listing[] = [];
+    for await (const doc of this.market.find({}, { projection: { _id: 0 } })) {
+      const listing: Listing | null = readListing(doc);
+      if (listing !== null) result.push(listing);
+    }
+    return result;
+  }
+
+  async saveListing(listing: Listing): Promise<void> {
+    await this.market.replaceOne({ id: listing.id }, { ...listing }, { upsert: true });
+  }
+
+  async deleteListing(listingId: string): Promise<void> {
+    await this.market.deleteOne({ id: listingId });
+  }
+
+  async addGold(playerId: string, amount: number): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $inc: { "progress.gold": amount } });
   }
 
   async deleteGuild(guildId: string): Promise<void> {

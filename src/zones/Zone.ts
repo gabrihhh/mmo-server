@@ -166,6 +166,8 @@ export type NpcBehavior =
   | { readonly kind: "blacksmith" }
   /** Armazém ([JOGO-26]): baú parado, invulnerável, não é alvo; perto dele guarda/tira itens. */
   | { readonly kind: "storage" }
+  /** Mercador ([JOGO-25]): tenda parada, invulnerável, não é alvo; perto dela abre o Mercado entre jogadores. */
+  | { readonly kind: "market" }
   | {
       readonly kind: "zombie";
       /** Ataque simples: id em {@link MONSTER_ABILITIES} (ex. `zombie_punch`). */
@@ -928,6 +930,21 @@ export class Zone {
    * Tira `amount` moedas do jogador `id` (criar guilda, [SOC-06]) e salva por {@link ZoneMember.onProgress}.
    * `false` = não tem moedas suficientes ou não está na zona (nada muda).
    */
+  /** Moedas de [id] agora (0 se não está aqui). */
+  goldOf(id: string): number {
+    return this.players.get(id)?.progress.gold ?? 0;
+  }
+
+  /** Dá [amount] moedas a [id] (Mercado: venda ou taxa de volta, [JOGO-25]); `false` se ele não está nesta zona. */
+  addGold(id: string, amount: number): boolean {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (player === undefined) return false;
+    player.progress = { ...player.progress, gold: player.progress.gold + amount };
+    player.member.onProgress?.(player.progress);
+    this.trades.belongingsChanged(id, this.currentTick);
+    return true;
+  }
+
   spendGold(id: string, amount: number): boolean {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined || player.progress.gold < amount) return false;
@@ -1120,6 +1137,7 @@ export class Zone {
       ...(dummy.behavior.kind === "shooter" || dummy.behavior.kind === "punchingBag" || Zone.isService(dummy.behavior) ? { targetable: false } : {}),
       ...(dummy.behavior.kind === "blacksmith" ? { service: "blacksmith" as const } : {}),
       ...(dummy.behavior.kind === "storage" ? { service: "storage" as const } : {}),
+      ...(dummy.behavior.kind === "market" ? { service: "market" as const } : {}),
       // Monstro ([JOGO-13]): o cliente mostra só vida, nível e lançamento (sem nome).
       ...(dummy.behavior.kind === "zombie" ? { monster: true } : {}),
       // Chefe ([JOGO-18]): maior (escala do modelo) e com o nome à vista.
@@ -1994,9 +2012,15 @@ export class Zone {
     return result;
   }
 
-  /** NPC de serviço (ferreiro, armazém): parado, invulnerável, não é alvo. */
+  /** `true` se [playerId] está vivo e a até {@link BLACKSMITH_RANGE} m do Mercador ([JOGO-25]). */
+  nearMarket(playerId: string): boolean {
+    const player: ZonePlayer | undefined = this.players.get(playerId);
+    return player !== undefined && !player.dead && this.nearService(player, "market");
+  }
+
+  /** NPC de serviço (ferreiro, armazém, mercador): parado, invulnerável, não é alvo. */
   private static isService(behavior: NpcBehavior): boolean {
-    return behavior.kind === "blacksmith" || behavior.kind === "storage";
+    return behavior.kind === "blacksmith" || behavior.kind === "storage" || behavior.kind === "market";
   }
 
   /** `true` se há um ferreiro a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador. */
@@ -2005,7 +2029,7 @@ export class Zone {
   }
 
   /** `true` se há um NPC de serviço [kind] a até {@link BLACKSMITH_RANGE} m (+ corpo) do jogador (mesmo alcance p/ todos). */
-  private nearService(player: ZonePlayer, kind: "blacksmith" | "storage"): boolean {
+  private nearService(player: ZonePlayer, kind: "blacksmith" | "storage" | "market"): boolean {
     for (const npc of this.dummies.values()) {
       if (npc.behavior.kind === kind && Zone.distance(player.state, npc.state) <= BLACKSMITH_RANGE + BODY_RADIUS) return true;
     }

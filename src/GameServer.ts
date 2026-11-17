@@ -6,6 +6,7 @@ import type { UpgradeFailure } from "./items/upgrade.js";
 import { buyPrice, shopItems, type ShopFailure } from "./items/shop.js";
 import type { StorageFailure } from "./items/storage.js";
 import { ChatLimiter, cleanChatText, type ChatCheck } from "./social/chat.js";
+import { MARKET_PAGE_SIZE, MAX_LISTINGS, Market, isValidPrice, listingFee, listingStatus, type Listing, type MarketFailure } from "./items/market.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -42,6 +43,8 @@ import {
   type DeathItemView,
   type ItemView,
   type ChatSendData,
+  type MarketListingView,
+  type MarketResultData,
   type ChatRefusedReason,
 } from "./net/protocol.js";
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
@@ -58,7 +61,7 @@ import { TICK_RATE_HZ } from "./sim/movement.js";
 import type { Account, AccountStore, AuthSuccess, RegisterResult, SavedPosition } from "./accounts/AccountStore.js";
 import { PasswordReset, type ResetConfirmResult, type ResetRequestResult } from "./accounts/passwordReset.js";
 import { LogMailer, type Mailer } from "./mail/mailer.js";
-import { EQUIP_SLOTS, type EquipSlot } from "./items/catalog.js";
+import { EQUIP_SLOTS, getItem, type EquipSlot } from "./items/catalog.js";
 import { isValidEmail, isValidPassword, isValidUsername } from "./accounts/credentials.js";
 import { DEFAULT_UPDATES_DIR, UPDATES_ROUTE, serveUpdateFile } from "./http/updates.js";
 import { DEFAULT_UPDATE_POLL_MS, UpdateWatcher } from "./http/updateWatcher.js";
@@ -194,6 +197,8 @@ export class GameServer {
   private readonly friendRequests: FriendRequests;
   /** Guildas ([SOC-06]): todas na memória (carregadas em {@link listen}), gravadas no banco a cada mudança. */
   private readonly guilds: Guilds;
+  /** Mercado entre jogadores ([JOGO-25]): todos os anúncios na memória, gravados no banco a cada mudança. */
+  private readonly market: Market;
   /** Tabelas de ranking calculadas ([SOC-07]); refeitas no máximo a cada {@link RANKING_REFRESH_SECONDS} s. */
   private rankingBoards: RankingBoards | null = null;
   /** Cálculo em andamento (vários pedidos juntos esperam o mesmo). */
@@ -243,6 +248,14 @@ export class GameServer {
       friendCount: (playerId): number => this.friendIdsOf(playerId).length,
       befriend: (a, b): void => this.befriend(a, b),
     });
+    this.market = new Market({
+      save: (listing): void => {
+        this.options.accounts.saveListing(listing).catch((error: unknown) => console.error(`[mercado] falha ao salvar ${listing.id}:`, error));
+      },
+      remove: (listingId): void => {
+        this.options.accounts.deleteListing(listingId).catch((error: unknown) => console.error(`[mercado] falha ao apagar ${listingId}:`, error));
+      },
+    });
     this.guilds = new Guilds({
       send: (playerId, message): void => this.sendTo(playerId, message),
       nameOf: (playerId): string | undefined => this.online.get(playerId)?.account?.username ?? this.fakeNameOf(playerId),
@@ -287,6 +300,8 @@ export class GameServer {
     await this.updates.start();
     // Guildas na memória ([SOC-06]); os fakes de teste que já estão nas zonas ganham a tag deles.
     this.guilds.load(await this.options.accounts.loadGuilds());
+    this.market.load(await this.options.accounts.loadListings());
+    this.market.prune(Date.now());
     for (const zone of this.zones.values()) {
       for (const id of zone.fakeIds()) zone.setGuild(id, this.guilds.guildOf(id));
     }
@@ -560,6 +575,21 @@ export class GameServer {
         return;
       case ClientMessageType.StorageTake:
         void this.handleStorage(session, "take", message.data.uid);
+        return;
+      case ClientMessageType.MarketList:
+        this.sendMarketPage(session, message.data.query, message.data.slot, message.data.sort, message.data.page);
+        return;
+      case ClientMessageType.MarketMine:
+        this.sendMarketMine(session);
+        return;
+      case ClientMessageType.MarketSell:
+        void this.handleMarketSell(session, message.data.uid, message.data.price);
+        return;
+      case ClientMessageType.MarketBuy:
+        void this.handleMarketBuy(session, message.data.listingId);
+        return;
+      case ClientMessageType.MarketCancel:
+        void this.handleMarketCancel(session, message.data.listingId);
         return;
       case ClientMessageType.ChatSend:
         this.handleChat(session, message.data);
@@ -1352,6 +1382,155 @@ export class GameServer {
     zone.tradeBelongingsChanged(playerId);
   }
 
+  // --- Mercado ([JOGO-25]) ---
+
+  /** Anúncio visto pelo cliente. */
+  private static listingView(listing: Listing, nowMs: number): MarketListingView | null {
+    const item: ItemView | null = itemView(listing.item);
+    if (item === null) return null;
+    const status = listingStatus(listing, nowMs);
+    return {
+      id: listing.id, item, price: listing.price, fee: listing.fee, sellerName: listing.sellerName, status,
+      expiresIn: status === "active" ? Math.ceil((listing.expiresAt - nowMs) / 1000) : 0,
+      buyerName: listing.buyerName,
+    };
+  }
+
+  private sendMarketPage(session: Session, query: string, slot: EquipSlotName | null, sort: "price" | "new", page: number): void {
+    if (session.account === null || session.socket.readyState !== WebSocket.OPEN) return;
+    const now: number = Date.now();
+    const found = this.market.search(query, slot, sort, page, now);
+    const listings: MarketListingView[] = found.listings.flatMap((l) => GameServer.listingView(l, now) ?? []);
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.MarketPage, data: { listings, total: found.total, page, pageSize: MARKET_PAGE_SIZE } }));
+  }
+
+  private sendMarketMine(session: Session): void {
+    if (session.account === null || session.socket.readyState !== WebSocket.OPEN) return;
+    const now: number = Date.now();
+    this.market.prune(now);
+    const listings: MarketListingView[] = this.market.mine(session.account.playerId, now).flatMap((l) => GameServer.listingView(l, now) ?? []);
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.MarketMineList, data: { listings, maxListings: MAX_LISTINGS } }));
+  }
+
+  private sendMarketSold(playerId: string, sale: Listing): void {
+    this.sendTo(playerId, {
+      type: ServerMessageType.MarketSold,
+      data: { itemName: getItem(sale.item.itemId)?.name ?? "Item", price: sale.price, buyerName: sale.buyerName ?? "alguém" },
+    });
+  }
+
+  /** Sessão na zona e perto do Mercador; senão manda o erro e devolve `null`. */
+  private marketContext(session: Session): { readonly account: Account; readonly zone: Zone } | null {
+    const account: Account | null = session.account;
+    const zone: Zone | null = session.zone;
+    if (account === null || zone === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
+      return null;
+    }
+    if (!zone.nearMarket(account.playerId)) {
+      this.sendError(session, ErrorCode.TooFar, "Chegue perto do Mercador.");
+      return null;
+    }
+    return { account, zone };
+  }
+
+  /** Grava o inventário novo na sessão e no banco e manda ao cliente (Mercado: só a mochila muda). */
+  private async saveBag(session: Session, inventory: Account["inventory"], zone: Zone): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) return;
+    session.account = { ...account, inventory };
+    try {
+      await this.options.accounts.saveInventory(account.playerId, inventory);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar inventário (mercado) de ${account.username}:`, error);
+    }
+    this.sendInventory(session);
+    zone.tradeBelongingsChanged(account.playerId);
+  }
+
+  private sendMarketResult(session: Session, data: MarketResultData): void {
+    if (session.socket.readyState === WebSocket.OPEN) session.socket.send(encodeServerMessage({ type: ServerMessageType.MarketResult, data }));
+  }
+
+  /**
+   * Anunciar: item da MOCHILA (vestido não), preço válido, abaixo do limite de anúncios e com moedas para a taxa de 5%
+   * (paga agora). O item sai da mochila e fica com o mercado.
+   */
+  private async handleMarketSell(session: Session, uid: string, price: number): Promise<void> {
+    const context = this.marketContext(session);
+    if (context === null) return;
+    const { account, zone } = context;
+    const me: string = account.playerId;
+    if (!isValidPrice(price)) return this.sendError(session, ErrorCode.InvalidPrice, "Preço de 1 a 1.000.000.000 moedas.");
+    const index: number = account.inventory.bag.findIndex((stack) => stack.uid === uid);
+    const stack = account.inventory.bag[index];
+    if (stack === undefined) {
+      const worn: boolean = Object.values(account.inventory.equipped).some((item) => item?.uid === uid);
+      return worn ? this.sendError(session, ErrorCode.ItemEquipped, "Tire o item antes de anunciar.") : this.sendError(session, ErrorCode.ItemNotFound, "Esse item não está na mochila.");
+    }
+    if (this.market.openCount(me) >= MAX_LISTINGS) return this.sendError(session, ErrorCode.TooManyListings, `Você já tem ${MAX_LISTINGS} anúncios.`);
+    const fee: number = listingFee(price);
+    if (!zone.spendGold(me, fee)) return this.sendError(session, ErrorCode.NotEnoughGold, `Você precisa de ${fee} moedas para a taxa.`);
+    const created: Listing | MarketFailure = this.market.create(me, account.username, stack, price, fee, Date.now());
+    if (typeof created === "string") {
+      zone.addGold(me, fee);
+      return this.sendError(session, ErrorCode.TooManyListings, `Você já tem ${MAX_LISTINGS} anúncios.`);
+    }
+    // O spendGold trocou as moedas na sessão (onProgress): lê a conta de novo.
+    const fresh: Account = session.account ?? account;
+    await this.saveBag(session, { ...fresh.inventory, bag: fresh.inventory.bag.filter((item) => item.uid !== uid) }, zone);
+    this.sendMarketResult(session, { action: "sell", itemName: getItem(stack.itemId)?.name ?? "Item", price, gold: fee });
+    this.sendMarketMine(session);
+  }
+
+  /**
+   * Comprar: anúncio ativo de outro jogador, espaço na mochila e moedas. Tudo síncrono até marcar como vendido (dois
+   * compradores ao mesmo tempo → só um leva). As moedas vão para o vendedor: pela zona se está online, direto no banco
+   * se não (o aviso chega quando ele entrar).
+   */
+  private async handleMarketBuy(session: Session, listingId: string): Promise<void> {
+    const context = this.marketContext(session);
+    if (context === null) return;
+    const { account, zone } = context;
+    const me: string = account.playerId;
+    const listing: Listing | undefined = this.market.get(listingId);
+    if (listing === undefined || listingStatus(listing, Date.now()) !== "active") return this.sendError(session, ErrorCode.ListingGone, "Esse anúncio não está mais à venda.");
+    if (listing.sellerId === me) return this.sendError(session, ErrorCode.OwnListing, "Esse anúncio é seu.");
+    if (account.inventory.bag.length >= BAG_CAPACITY) return this.sendError(session, ErrorCode.BagFull, "Mochila cheia.");
+    if (zone.goldOf(me) < listing.price) return this.sendError(session, ErrorCode.NotEnoughGold, "Moedas insuficientes.");
+    const sold: Listing | MarketFailure = this.market.buy(listingId, me, account.username, Date.now());
+    if (typeof sold === "string") return this.sendError(session, ErrorCode.ListingGone, "Esse anúncio não está mais à venda.");
+    zone.spendGold(me, sold.price);
+    const sellerZone: Zone | undefined = this.zoneOfPlayer(sold.sellerId);
+    if (sellerZone !== undefined && sellerZone.addGold(sold.sellerId, sold.price)) {
+      this.market.takeUnnotifiedSales(sold.sellerId);
+      this.sendMarketSold(sold.sellerId, sold);
+      const sellerSession: Session | undefined = this.online.get(sold.sellerId);
+      if (sellerSession !== undefined) this.sendMarketMine(sellerSession);
+    } else {
+      this.options.accounts.addGold(sold.sellerId, sold.price).catch((error: unknown) => console.error(`[mercado] falha ao pagar ${sold.sellerId}:`, error));
+    }
+    const fresh: Account = session.account ?? account;
+    await this.saveBag(session, { ...fresh.inventory, bag: [...fresh.inventory.bag, sold.item] }, zone);
+    this.sendMarketResult(session, { action: "buy", itemName: getItem(sold.item.itemId)?.name ?? "Item", price: sold.price, gold: sold.price });
+  }
+
+  /** Cancelar (ativo) ou retirar (vencido) o seu anúncio: o item volta para a mochila e a taxa volta (decisão do dono). */
+  private async handleMarketCancel(session: Session, listingId: string): Promise<void> {
+    const context = this.marketContext(session);
+    if (context === null) return;
+    const { account, zone } = context;
+    const found: Listing | MarketFailure = this.market.canWithdraw(listingId, account.playerId);
+    if (typeof found === "string") return this.sendError(session, ErrorCode.ListingGone, "Esse anúncio não está mais aí.");
+    if (account.inventory.bag.length >= BAG_CAPACITY) return this.sendError(session, ErrorCode.BagFull, "Mochila cheia: libere espaço para o item voltar.");
+    this.market.withdraw(listingId);
+    zone.addGold(account.playerId, found.fee);
+    const fresh: Account = session.account ?? account;
+    await this.saveBag(session, { ...fresh.inventory, bag: [...fresh.inventory.bag, found.item] }, zone);
+    this.sendMarketResult(session, { action: "cancel", itemName: getItem(found.item.itemId)?.name ?? "Item", price: found.price, gold: found.fee });
+    this.sendMarketMine(session);
+  }
+
   /**
    * Chat ([SOC-09]): limpa o texto, acha quem recebe pelo canal e passa no anti-spam (só conta mensagem que tinha para
    * quem ir). Geral = quem está na mesma zona; Grupo = o grupo (zona); Guilda = membros online em qualquer zona;
@@ -1842,6 +2021,8 @@ export class GameServer {
     // Tag da guilda no nome para a zona inteira ([SOC-06]) e o nível dele na lista da guilda.
     zone.setGuild(account.playerId, this.guilds.guildOf(account.playerId));
     this.guilds.refreshMember(account.playerId);
+    // Mercado ([JOGO-25]): o que vendeu enquanto estava fora (as moedas já entraram na conta).
+    for (const sale of this.market.takeUnnotifiedSales(account.playerId)) this.sendMarketSold(account.playerId, sale);
     this.log(`[${zone.config.id}] ${account.username} entrou (${zone.size} online)`);
   }
 

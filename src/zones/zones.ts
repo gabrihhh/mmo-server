@@ -121,6 +121,13 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
     body: "male",
     behavior: { kind: "storage" },
   },
+  // Mercador ([JOGO-25]): a tenda cheia de ouro na praça; perto dele abre o Mercado entre jogadores.
+  {
+    id: "market",
+    name: "Mercador",
+    body: "male",
+    behavior: { kind: "market" },
+  },
   // Brigão: parado, bate com o ataque da espada longa em quem chegar perto; tem vida e morre.
   {
     id: "test_brawler",

@@ -9,6 +9,7 @@ import { hashPassword, verifyPassword } from "./password.js";
 import { DEFAULT_SOCIAL_SETTINGS, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
+import { readListing, type Listing } from "../items/market.js";
 
 /**
  * Contas de jogador: cadastro com username + e-mail + senha, login por username OU e-mail,
@@ -135,6 +136,17 @@ export interface AccountStore {
   saveGuild(guild: GuildRecord): Promise<void>;
   /** Apaga uma guilda (acabou). */
   deleteGuild(guildId: string): Promise<void>;
+  /** Todos os anúncios do Mercado (coleção `market`), para carregar ao ligar o servidor ([JOGO-25]). */
+  loadListings(): Promise<Listing[]>;
+  /** Grava (cria ou substitui) um anúncio. */
+  saveListing(listing: Listing): Promise<void>;
+  /** Apaga um anúncio (cancelado, retirado ou venda velha). */
+  deleteListing(listingId: string): Promise<void>;
+  /**
+   * Soma [amount] moedas na conta direto no banco: vendedor OFFLINE no Mercado ([JOGO-25]). Online, as moedas vão
+   * pela zona (o progresso dela é que vale e seria gravado por cima).
+   */
+  addGold(playerId: string, amount: number): Promise<void>;
   /** Conta por username OU e-mail, para recuperar a senha ([INFRA-13]). `null` = não existe. */
   findForReset(usernameOrEmail: string): Promise<ResetTarget | null>;
   /** Grava (ou apaga, com `null`) o código de recuperar senha da conta. */
@@ -196,6 +208,8 @@ export class InMemoryAccountStore implements AccountStore {
   private readonly records: MemoryRecord[] = [];
   /** Guildas (como a coleção `guilds`), por id. */
   private readonly guilds: Map<string, GuildRecord> = new Map();
+  /** Anúncios do Mercado (como a coleção `market`), por id. */
+  private readonly listings: Map<string, Listing> = new Map();
 
   /**
    * [newInventory] = com que inventário uma conta nasce (padrão: o do jogo, {@link starterInventory}, sem itens). Os
@@ -323,6 +337,23 @@ export class InMemoryAccountStore implements AccountStore {
 
   async deleteGuild(guildId: string): Promise<void> {
     this.guilds.delete(guildId);
+  }
+
+  async loadListings(): Promise<Listing[]> {
+    return Array.from(this.listings.values(), (listing) => readListing(listing)).filter((l): l is Listing => l !== null);
+  }
+
+  async saveListing(listing: Listing): Promise<void> {
+    this.listings.set(listing.id, listing);
+  }
+
+  async deleteListing(listingId: string): Promise<void> {
+    this.listings.delete(listingId);
+  }
+
+  async addGold(playerId: string, amount: number): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.progress = { ...record.progress, gold: record.progress.gold + amount };
   }
 
   async findForReset(usernameOrEmail: string): Promise<ResetTarget | null> {

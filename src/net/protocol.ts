@@ -29,6 +29,8 @@ import { isChatChannel, type ChatChannel } from "../social/chat.js";
  * v37: Armazém ([JOGO-26]): `storage_put`/`storage_take`/`storage_buy_tab` → `inventory` (com `storage`,
  *   `storageCapacity`, `storageTabCost`); NPC com `service: "storage"`; erro `storage_full`.
  * v38: chat ([SOC-09]): `chat_send { channel, text, to? }` → `chat` / `chat_refused`.
+ * v39: Mercado ([JOGO-25]): `market_list`/`market_mine`/`market_sell`/`market_buy`/`market_cancel` → `market_page`/
+ *   `market_mine_list`/`market_result`/`market_sold`; NPC com `service: "market"`; erros novos do mercado.
  * v33: busca no Procurar guilda: `guild_list { query }` (nome ou tag; acha também as cheias).
  * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
  *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
@@ -49,7 +51,7 @@ import { isChatChannel, type ChatChannel } from "../social/chat.js";
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 38;
+export const PROTOCOL_VERSION = 39;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -111,6 +113,16 @@ export const ClientMessageType = {
   StorageBuyTab: "storage_buy_tab",
   /** Manda uma mensagem no chat ([SOC-09]). Payload: {@link ChatSendData}. Resposta: `chat` (cópia) ou `chat_refused`. */
   ChatSend: "chat_send",
+  /** Busca no Mercado ([JOGO-25]). Payload: {@link MarketListData}. Resposta: `market_page`. */
+  MarketList: "market_list",
+  /** Meus anúncios no Mercado. Sem payload. Resposta: `market_mine_list`. */
+  MarketMine: "market_mine",
+  /** Anuncia um item da mochila. Payload: {@link MarketSellData}. Resposta: `market_result` + `inventory`. */
+  MarketSell: "market_sell",
+  /** Compra um anúncio. Payload: { listingId }. Resposta: `market_result` + `inventory`. */
+  MarketBuy: "market_buy",
+  /** Cancela (ativo) ou retira (vencido) o seu anúncio: item e taxa voltam. Payload: { listingId }. */
+  MarketCancel: "market_cancel",
   /**
    * Tenta melhorar um item no ferreiro (perto dele, com moedas, [JOGO-16]). Payload: {@link UpgradeData}.
    * Resposta: {@link ServerMessageType.UpgradeResult} (+ `inventory` se subiu de nível) ou erro.
@@ -236,6 +248,14 @@ export const ServerMessageType = {
   Shop: "shop",
   /** Mensagem do chat ([SOC-09]). Payload: {@link ChatData}. */
   Chat: "chat",
+  /** Uma página da busca no Mercado ([JOGO-25]). Payload: {@link MarketPageData}. */
+  MarketPage: "market_page",
+  /** Seus anúncios (ativos, vencidos, vendidos). Payload: {@link MarketMineData}. */
+  MarketMineList: "market_mine_list",
+  /** Anúncio/compra/cancelamento feito. Payload: {@link MarketResultData}. */
+  MarketResult: "market_result",
+  /** Um item seu vendeu (ao vivo ou ao entrar). Payload: {@link MarketSoldData}. */
+  MarketSold: "market_sold",
   /** Sua mensagem não foi enviada ([SOC-09]). Payload: {@link ChatRefusedData}. */
   ChatRefused: "chat_refused",
   /** Compra/venda feita na Loja do Ferreiro. Payload: {@link ShopResultData}. As moedas vêm no `me` do snapshot. */
@@ -358,6 +378,14 @@ export const ErrorCode = {
   ItemEquipped: "item_equipped",
   /** Armazém cheio (comprar outra aba, [JOGO-26]). A conexão continua. */
   StorageFull: "storage_full",
+  /** Mercado ([JOGO-25]): o anúncio já vendeu, venceu ou foi tirado. A conexão continua. */
+  ListingGone: "listing_gone",
+  /** Mercado: comprar o próprio anúncio. */
+  OwnListing: "own_listing",
+  /** Mercado: já tem 10 anúncios (ativos + vencidos não retirados). */
+  TooManyListings: "too_many_listings",
+  /** Mercado: preço fora de 1 a 1 bilhão (inteiro). */
+  InvalidPrice: "invalid_price",
   /** Mochila cheia (não dá para tirar o item do slot). A conexão continua. */
   BagFull: "bag_full",
   /** `unequip` de slot vazio. A conexão continua. */
@@ -711,6 +739,70 @@ export interface UpgradeResultData {
   readonly points: number;
 }
 
+/** Payload de `market_list` ([JOGO-25]): busca (nome do item ou do conjunto), slot opcional, ordem e página (0…). */
+export interface MarketListData {
+  readonly query: string;
+  readonly slot: EquipSlotName | null;
+  readonly sort: "price" | "new";
+  readonly page: number;
+}
+
+/** Payload de `market_sell`: o item da mochila e o preço (moedas). */
+export interface MarketSellData {
+  readonly uid: string;
+  readonly price: number;
+}
+
+/** Payload de `market_buy` / `market_cancel`. */
+export interface MarketListingRef {
+  readonly listingId: string;
+}
+
+/** Um anúncio visto pelo cliente. ATENÇÃO: lido em mmo-client/scripts/ui/market_panel.gd (MarketListing). */
+export interface MarketListingView {
+  readonly id: string;
+  readonly item: ItemView;
+  readonly price: number;
+  /** Taxa paga ao anunciar (volta ao cancelar/retirar). */
+  readonly fee: number;
+  readonly sellerName: string;
+  readonly status: "active" | "expired" | "sold";
+  /** Segundos até vencer (0 se vencido/vendido). */
+  readonly expiresIn: number;
+  /** Quem comprou (só nos seus vendidos), ou `null`. */
+  readonly buyerName: string | null;
+}
+
+/** Payload de `market_page`. */
+export interface MarketPageData {
+  readonly listings: readonly MarketListingView[];
+  readonly total: number;
+  readonly page: number;
+  readonly pageSize: number;
+}
+
+/** Payload de `market_mine_list`. */
+export interface MarketMineData {
+  readonly listings: readonly MarketListingView[];
+  /** Máximo de anúncios abertos por jogador (10). */
+  readonly maxListings: number;
+}
+
+/** Payload de `market_result`: o que foi feito, o item, o preço e as moedas que mudaram (taxa paga/devolvida, preço). */
+export interface MarketResultData {
+  readonly action: "sell" | "buy" | "cancel";
+  readonly itemName: string;
+  readonly price: number;
+  readonly gold: number;
+}
+
+/** Payload de `market_sold`: um item seu vendeu. */
+export interface MarketSoldData {
+  readonly itemName: string;
+  readonly price: number;
+  readonly buyerName: string;
+}
+
 /** Payload de `chat_send` ([SOC-09]). `to` = nome do jogador (só no privado). */
 export interface ChatSendData {
   readonly channel: ChatChannel;
@@ -897,6 +989,11 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.StorageTake; readonly data: ItemDestroyData }
   | { readonly type: typeof ClientMessageType.StorageBuyTab; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ChatSend; readonly data: ChatSendData }
+  | { readonly type: typeof ClientMessageType.MarketList; readonly data: MarketListData }
+  | { readonly type: typeof ClientMessageType.MarketMine; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.MarketSell; readonly data: MarketSellData }
+  | { readonly type: typeof ClientMessageType.MarketBuy; readonly data: MarketListingRef }
+  | { readonly type: typeof ClientMessageType.MarketCancel; readonly data: MarketListingRef }
   | { readonly type: typeof ClientMessageType.Upgrade; readonly data: UpgradeData }
   | { readonly type: typeof ClientMessageType.ChestOpen; readonly data: ChestRequestData }
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
@@ -988,9 +1085,9 @@ export interface NpcSnapshot extends PlayerSnapshot {
   readonly boss?: boolean;
   /**
    * Serviço do NPC: `"blacksmith"` = ferreiro (tela de melhoria, [JOGO-16]); `"storage"` = baú do Armazém
-   * ([JOGO-26]). Ausente = nenhum. ATENÇÃO: lido em mmo-client (hud/zone).
+   * ([JOGO-26]); `"market"` = tenda do Mercador ([JOGO-25]). Ausente = nenhum. ATENÇÃO: lido em mmo-client (hud/zone).
    */
-  readonly service?: "blacksmith" | "storage";
+  readonly service?: "blacksmith" | "storage" | "market";
 }
 
 /** Evento de combate do tick (para números de dano e efeitos). Vai em `snapshot.events` para todos da zona. */
@@ -1757,6 +1854,10 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Shop; readonly data: ShopData }
   | { readonly type: typeof ServerMessageType.ShopResult; readonly data: ShopResultData }
   | { readonly type: typeof ServerMessageType.Chat; readonly data: ChatData }
+  | { readonly type: typeof ServerMessageType.MarketPage; readonly data: MarketPageData }
+  | { readonly type: typeof ServerMessageType.MarketMineList; readonly data: MarketMineData }
+  | { readonly type: typeof ServerMessageType.MarketResult; readonly data: MarketResultData }
+  | { readonly type: typeof ServerMessageType.MarketSold; readonly data: MarketSoldData }
   | { readonly type: typeof ServerMessageType.ChatRefused; readonly data: ChatRefusedData }
   | { readonly type: typeof ServerMessageType.DeathReport; readonly data: DeathReportData }
   | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesData }
@@ -2244,6 +2345,31 @@ export function parseClientMessage(text: string): ClientMessage | null {
     }
     case ClientMessageType.StorageBuyTab:
       return { type: ClientMessageType.StorageBuyTab, data: {} };
+    case ClientMessageType.MarketList: {
+      if (!isRecord(raw)) return null;
+      const { query, slot, sort, page } = raw;
+      if (typeof query !== "string" || query.length > 64 || (sort !== "price" && sort !== "new")) return null;
+      if (typeof page !== "number" || !Number.isInteger(page) || page < 0 || page > 10_000) return null;
+      const safeSlot: EquipSlotName | null = slot === "hand" || slot === "head" || slot === "chest" || slot === "feet" ? slot : null;
+      return { type: ClientMessageType.MarketList, data: { query, slot: safeSlot, sort, page } };
+    }
+    case ClientMessageType.MarketMine:
+      return { type: ClientMessageType.MarketMine, data: {} };
+    case ClientMessageType.MarketSell: {
+      if (!isRecord(raw)) return null;
+      const { uid, price } = raw;
+      if (typeof uid !== "string" || uid.length === 0 || uid.length > 64 || typeof price !== "number" || !Number.isFinite(price)) return null;
+      return { type: ClientMessageType.MarketSell, data: { uid, price } };
+    }
+    case ClientMessageType.MarketBuy:
+    case ClientMessageType.MarketCancel: {
+      if (!isRecord(raw)) return null;
+      const { listingId } = raw;
+      if (typeof listingId !== "string" || listingId.length === 0 || listingId.length > 128) return null;
+      return decoded["type"] === ClientMessageType.MarketBuy
+        ? { type: ClientMessageType.MarketBuy, data: { listingId } }
+        : { type: ClientMessageType.MarketCancel, data: { listingId } };
+    }
     case ClientMessageType.ChatSend: {
       if (!isRecord(raw)) return null;
       const { channel, text, to } = raw;
