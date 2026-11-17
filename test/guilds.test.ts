@@ -4,6 +4,7 @@ import { GUILD_CREATE_COST, GUILD_MAX_MEMBERS, ServerMessageType, type ServerMes
 import {
   GUILD_INVITE_MS,
   GUILD_LEAVE_COOLDOWN_MS,
+  GUILD_REQUEST_MS,
   Guilds,
   guildNameKey,
   normalizeGuildName,
@@ -73,7 +74,7 @@ function lastNotice(sent: Array<{ to: string; message: ServerMessage }>, to: str
 /** Cria a guilda de "a" e põe [others] dentro (convite + aceite). */
 function guildWith(others: string[]): ReturnType<typeof setup> & { id: string } {
   const env = setup(["a", ...others, "x"]);
-  assert.deepStrictEqual(env.guilds.create("a", "Ordem da Luz", "odl", 0), { ok: true });
+  assert.deepStrictEqual(env.guilds.create("a", "Ordem da Luz", "odl", "", 0), { ok: true });
   const id: string = env.guilds.guildOf("a")?.id ?? "";
   others.forEach((other, index) => {
     assert.ok(env.guilds.invite("a", other, 10 + index).ok);
@@ -97,18 +98,18 @@ describe("guilda ([SOC-06])", () => {
 
   it("criar custa 1000 moedas, vira líder, tag na zona; nome/tag repetidos e sem moedas são recusados", () => {
     const { guilds, gold, saved, tags } = setup();
-    assert.deepStrictEqual(guilds.create("a", "Ordem", "ord", 0), { ok: true });
+    assert.deepStrictEqual(guilds.create("a", "Ordem", "ord", "", 0), { ok: true });
     assert.strictEqual(gold.get("a"), 5000 - GUILD_CREATE_COST);
     assert.strictEqual(tags.get("a"), "ORD");
     const record: GuildRecord | undefined = [...saved.values()][0];
     assert.deepStrictEqual(record?.members.map((m) => [m.id, m.role]), [["a", "leader"]]);
-    assert.strictEqual(guilds.create("a", "Outra", "out", 0).ok, false, "uma guilda por vez");
-    assert.strictEqual((guilds.create("b", "ordem", "xyz", 0) as { reason: string }).reason, "guild_name_taken");
-    assert.strictEqual((guilds.create("b", "Nova", "ORD", 0) as { reason: string }).reason, "guild_tag_taken");
+    assert.strictEqual(guilds.create("a", "Outra", "out", "", 0).ok, false, "uma guilda por vez");
+    assert.strictEqual((guilds.create("b", "ordem", "xyz", "", 0) as { reason: string }).reason, "guild_name_taken");
+    assert.strictEqual((guilds.create("b", "Nova", "ORD", "", 0) as { reason: string }).reason, "guild_tag_taken");
     gold.set("c", 999);
-    assert.strictEqual((guilds.create("c", "Pobres", "pob", 0) as { reason: string }).reason, "not_enough_gold");
+    assert.strictEqual((guilds.create("c", "Pobres", "pob", "", 0) as { reason: string }).reason, "not_enough_gold");
     assert.strictEqual(gold.get("c"), 999, "recusado não cobra");
-    assert.strictEqual((guilds.create("d", "Bad!", "bad", 0) as { reason: string }).reason, "invalid_guild");
+    assert.strictEqual((guilds.create("d", "Bad!", "bad", "", 0) as { reason: string }).reason, "invalid_guild");
     assert.strictEqual(gold.get("d"), 5000, "nome inválido não cobra");
   });
 
@@ -128,8 +129,8 @@ describe("guilda ([SOC-06])", () => {
 
   it("quem já tem guilda não é convidado; Fake Aceita/quem oculta respondem sozinhos", () => {
     const env = setup(["a", "b", "c", "f"]);
-    env.guilds.create("a", "Ordem", "ord", 0);
-    env.guilds.create("b", "Caos", "cao", 0);
+    env.guilds.create("a", "Ordem", "ord", "", 0);
+    env.guilds.create("b", "Caos", "cao", "", 0);
     assert.strictEqual((env.guilds.invite("a", "b", 0) as { reason: string }).reason, "already_in_guild");
     env.auto.set("c", "reject");
     assert.ok(env.guilds.invite("a", "c", 0).ok);
@@ -170,7 +171,7 @@ describe("guilda ([SOC-06])", () => {
   it("saiu por vontade própria: 1 h sem aceitar convite; expulso entra na hora", () => {
     const env = guildWith(["b", "c"]);
     env.guilds.leave("b", 1000);
-    env.guilds.create("x", "Outra", "out", 0);
+    env.guilds.create("x", "Outra", "out", "", 0);
     assert.strictEqual((env.guilds.invite("x", "b", 2000) as { reason: string }).reason, "guild_cooldown");
     assert.ok(env.guilds.invite("x", "b", 1000 + GUILD_LEAVE_COOLDOWN_MS).ok, "passou 1 h");
     env.guilds.kick("a", "c");
@@ -180,7 +181,7 @@ describe("guilda ([SOC-06])", () => {
   it("cheia: no máximo 50", () => {
     const ids: string[] = Array.from({ length: GUILD_MAX_MEMBERS }, (_, i) => `p${i}`);
     const env = setup(["a", ...ids]);
-    env.guilds.create("a", "Grande", "big", 0);
+    env.guilds.create("a", "Grande", "big", "", 0);
     ids.slice(0, GUILD_MAX_MEMBERS - 1).forEach((id) => env.auto.set(id, "accept"));
     for (const id of ids.slice(0, GUILD_MAX_MEMBERS - 1)) assert.ok(env.guilds.invite("a", id, 0).ok);
     assert.strictEqual((env.guilds.invite("a", ids[GUILD_MAX_MEMBERS - 1] ?? "", 0) as { reason: string }).reason, "guild_full");
@@ -201,7 +202,59 @@ describe("guilda ([SOC-06])", () => {
     assert.strictEqual(guilds.get("g1")?.members.find((m) => m.role === "leader")?.id, "b");
     const loaded: GuildRecord | undefined = guilds.get("g1");
     assert.ok(loaded !== undefined);
-    assert.deepStrictEqual(guilds.view(loaded).members.map((m) => [m.id, m.role]), [["b", "leader"], ["a", "member"]], "líder primeiro");
+    assert.deepStrictEqual(guilds.view(loaded, "b").members.map((m) => [m.id, m.role]), [["b", "leader"], ["a", "member"]], "líder primeiro");
+  });
+
+  it("procurar: só as que não estão cheias, da mais cheia; ficha com descrição, líder e se já pedi", () => {
+    const env = setup(["a", "b", "c", "x"]);
+    env.guilds.create("a", "Pequena", "peq", "  Só  amigos ", 0);
+    env.guilds.create("b", "Grande", "gra", "", 0);
+    env.auto.set("c", "accept");
+    env.guilds.invite("b", "c", 0);
+    assert.deepStrictEqual(env.guilds.list().map((g) => [g.tag, g.members]), [["GRA", 2], ["PEQ", 1]]);
+    const id: string = env.guilds.guildOf("a")?.id ?? "";
+    const info = env.guilds.info(id, "x", { monsterXp: 12, kills: 3 }, 0);
+    assert.deepStrictEqual([info?.description, info?.leaderName, info?.members, info?.monsterXp, info?.requested], ["Só amigos", "A", 1, 12, false]);
+    assert.strictEqual((env.guilds.create("x", "Longa", "lon", "x".repeat(121), 0) as { reason: string }).reason, "invalid_guild");
+  });
+
+  it("solicitação: pede (várias guildas), líder/oficial aceita ou recusa; membro não; entrou → os outros pedidos somem", () => {
+    const env = setup(["a", "b", "m", "x"]);
+    env.guilds.create("a", "Ordem", "ord", "", 0);
+    env.guilds.create("b", "Caos", "cao", "", 0);
+    env.auto.set("m", "accept");
+    env.guilds.invite("a", "m", 0);
+    const ord: string = env.guilds.guildOf("a")?.id ?? "";
+    const cao: string = env.guilds.guildOf("b")?.id ?? "";
+    assert.ok(env.guilds.request("x", ord, 10).ok);
+    assert.ok(env.guilds.request("x", cao, 10).ok, "pode pedir em várias");
+    assert.strictEqual((env.guilds.request("x", ord, 11) as { reason: string }).reason, "invalid_invite", "um pedido por guilda");
+    assert.strictEqual(lastNotice(env.sent, "a"), "X pediu para entrar na guilda.");
+    assert.strictEqual(env.guilds.info(ord, "x", { monsterXp: 0, kills: 0 }, 12)?.requested, true);
+    const leaderView = env.guilds.view(env.guilds.get(ord) as GuildRecord, "a");
+    assert.deepStrictEqual(leaderView.requests.map((r) => r.id), ["x"], "líder vê");
+    assert.deepStrictEqual(env.guilds.view(env.guilds.get(ord) as GuildRecord, "m").requests, [], "membro não vê");
+    assert.strictEqual((env.guilds.answerRequest("m", "x", true, 20) as { reason: string }).reason, "guild_no_permission");
+    assert.ok(env.guilds.answerRequest("a", "x", true, 20).ok);
+    assert.ok(env.guilds.sameGuild("a", "x"));
+    assert.deepStrictEqual(env.guilds.get(cao)?.requests, [], "o pedido na outra guilda sumiu");
+    assert.strictEqual((env.guilds.answerRequest("b", "x", true, 20) as { reason: string }).reason, "guild_invite_not_found");
+  });
+
+  it("solicitação: recusada avisa; vence em 7 dias; na espera de 1 h não pede; líder edita a descrição", () => {
+    const env = setup(["a", "x", "y"]);
+    env.guilds.create("a", "Ordem", "ord", "", 0);
+    const id: string = env.guilds.guildOf("a")?.id ?? "";
+    env.guilds.request("x", id, 0);
+    assert.ok(env.guilds.answerRequest("a", "x", false, 1).ok);
+    assert.strictEqual(lastNotice(env.sent, "x"), "A guilda [ORD] Ordem recusou seu pedido.");
+    env.guilds.request("x", id, 0);
+    assert.strictEqual((env.guilds.answerRequest("a", "x", true, GUILD_REQUEST_MS) as { reason: string }).reason, "guild_invite_not_found", "venceu");
+    env.leftAt.set("y", 1000);
+    assert.strictEqual((env.guilds.request("y", id, 2000) as { reason: string }).reason, "guild_cooldown");
+    assert.ok(env.guilds.setDescription("a", "Nova descrição").ok);
+    assert.strictEqual(env.guilds.get(id)?.description, "Nova descrição");
+    assert.strictEqual(env.saved.get(id)?.description, "Nova descrição", "gravada");
   });
 
   it("na zona: guildeiros não se batem (mesmo com PvP) e a tag vai no player_joined/player_guild", () => {

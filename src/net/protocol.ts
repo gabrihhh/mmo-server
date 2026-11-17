@@ -20,6 +20,8 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v32: procurar guilda e solicitações ([SOC-06]): `guild_list`/`guild_info`/`guild_request`/`guild_request_answer`/
+ *   `guild_description`; descrição no `guild_create` e no {@link GuildView}; `requests` na guilda de líder/oficial.
  * v31: rankings ([SOC-07]): `ranking_request { category, period }` → `ranking` (top 100, sua posição, quando vira).
  * v30: guilda ([SOC-06]): `guild_create`/`guild_invite`/`guild_answer`/`guild_leave`/`guild_kick`/`guild_role` →
  *   `guild`/`guild_invited`/`guild_notice`; `player_guild` (tag de um jogador da zona mudou); `guildId`/`guildTag` no
@@ -37,7 +39,7 @@ import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type Ranking
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 31;
+export const PROTOCOL_VERSION = 32;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -148,6 +150,16 @@ export const ClientMessageType = {
   GuildKick: "guild_kick",
   /** Líder promove a oficial / rebaixa a membro. Payload: {@link GuildRoleData}. */
   GuildRole: "guild_role",
+  /** Lista as guildas que aceitam gente (Procurar guilda, [SOC-06]). Payload: `{}`. Resposta: {@link ServerMessageType.GuildList}. */
+  GuildList: "guild_list",
+  /** Ficha de uma guilda (Procurar guilda). Payload: {@link GuildIdData}. Resposta: {@link ServerMessageType.GuildInfo}. */
+  GuildInfo: "guild_info",
+  /** Pede para entrar numa guilda (líder/oficial aceita depois). Payload: {@link GuildIdData}. */
+  GuildRequest: "guild_request",
+  /** Líder/oficial aceita ou recusa um pedido para entrar. Payload: {@link GuildRequestAnswerData}. */
+  GuildRequestAnswer: "guild_request_answer",
+  /** Líder troca a descrição da guilda. Payload: {@link GuildDescriptionData}. */
+  GuildDescription: "guild_description",
   /** Pede uma tabela de ranking ([SOC-07]). Payload: {@link RankingRequestData}. Resposta: {@link ServerMessageType.Ranking}. */
   RankingRequest: "ranking_request",
 } as const;
@@ -222,6 +234,10 @@ export const ServerMessageType = {
    * guildeiro. Payload: {@link PlayerGuildData}.
    */
   PlayerGuild: "player_guild",
+  /** Guildas que aceitam gente, da mais cheia para a mais vazia (resposta ao `guild_list`). Payload: {@link GuildListData}. */
+  GuildList: "guild_list",
+  /** Ficha de uma guilda (resposta ao `guild_info`). Payload: {@link GuildInfoView}. */
+  GuildInfo: "guild_info",
   /** Uma tabela de ranking (resposta ao `ranking_request`, [SOC-07]). Payload: {@link RankingData}. */
   Ranking: "ranking",
   /**
@@ -743,7 +759,12 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.GuildLeave; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.GuildKick; readonly data: GuildTargetData }
   | { readonly type: typeof ClientMessageType.GuildRole; readonly data: GuildRoleData }
-  | { readonly type: typeof ClientMessageType.RankingRequest; readonly data: RankingRequestData };
+  | { readonly type: typeof ClientMessageType.RankingRequest; readonly data: RankingRequestData }
+  | { readonly type: typeof ClientMessageType.GuildList; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.GuildInfo; readonly data: GuildIdData }
+  | { readonly type: typeof ClientMessageType.GuildRequest; readonly data: GuildIdData }
+  | { readonly type: typeof ClientMessageType.GuildRequestAnswer; readonly data: GuildRequestAnswerData }
+  | { readonly type: typeof ClientMessageType.GuildDescription; readonly data: GuildDescriptionData };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -1141,6 +1162,70 @@ export interface GuildCreateData {
   readonly name: string;
   /** Tag de 3 letras/números (única; guardada em maiúsculas). */
   readonly tag: string;
+  /** Descrição breve (até {@link GUILD_DESCRIPTION_MAX} caracteres; pode ser vazia). */
+  readonly description: string;
+}
+
+/** Tamanho máximo da descrição da guilda (caracteres). ATENÇÃO: mmo-client/scripts/network/guild_state.gd. */
+export const GUILD_DESCRIPTION_MAX = 120;
+/** Dias que um pedido para entrar espera resposta. */
+export const GUILD_REQUEST_DAYS = 7;
+/** Máximo de guildas no Procurar guilda. */
+export const GUILD_LIST_MAX = 50;
+
+/** Payload de `guild_info` e `guild_request`: a guilda. */
+export interface GuildIdData {
+  readonly guildId: string;
+}
+
+/** Payload de `guild_request_answer`. */
+export interface GuildRequestAnswerData {
+  /** Quem pediu para entrar. */
+  readonly playerId: string;
+  readonly accept: boolean;
+}
+
+/** Payload de `guild_description`. */
+export interface GuildDescriptionData {
+  readonly description: string;
+}
+
+/** Um pedido para entrar, como líder/oficial vê. */
+export interface GuildRequestView {
+  readonly id: string;
+  readonly name: string;
+  /** Quando pediu (ms desde 1970). */
+  readonly at: number;
+}
+
+/** Uma guilda na lista do Procurar guilda. */
+export interface GuildSummaryView {
+  readonly id: string;
+  readonly name: string;
+  readonly tag: string;
+  readonly members: number;
+}
+
+/** Payload de `guild_list`. */
+export interface GuildListData {
+  readonly guilds: readonly GuildSummaryView[];
+}
+
+/** Payload de `guild_info`: a ficha da guilda. */
+export interface GuildInfoView {
+  readonly id: string;
+  readonly name: string;
+  readonly tag: string;
+  readonly description: string;
+  readonly leaderName: string;
+  readonly members: number;
+  /** Quando foi criada (ms desde 1970). */
+  readonly createdAt: number;
+  /** Soma da XP de monstros e dos jogadores mortos dos membros (global, do ranking, [SOC-07]). */
+  readonly monsterXp: number;
+  readonly kills: number;
+  /** `true` = você já pediu para entrar (esperando resposta). */
+  readonly requested: boolean;
 }
 
 /** Payload de `guild_invite` e `guild_kick`: o outro jogador. */
@@ -1176,6 +1261,9 @@ export interface GuildView {
   readonly id: string;
   readonly name: string;
   readonly tag: string;
+  readonly description: string;
+  /** Pedidos para entrar (só para líder e oficiais; os outros recebem lista vazia). */
+  readonly requests: readonly GuildRequestView[];
   /** Membros: líder, oficiais e membros, cada grupo do mais antigo ao mais novo. */
   readonly members: readonly GuildMemberView[];
 }
@@ -1198,9 +1286,23 @@ export interface GuildInvitedData {
 /**
  * Tipos de aviso de guilda (`guild_notice.code`): `accepted`/`rejected`/`expired` = resposta ao SEU convite;
  * `joined`/`left`/`kicked` = alguém entrou/saiu/foi expulso (ou você); `leader` = líder novo; `role` = cargo mudou;
- * `created` = você criou a guilda; `disbanded` = a guilda acabou (saiu o último).
+ * `created` = você criou a guilda; `disbanded` = a guilda acabou (saiu o último); `request` = alguém pediu para entrar
+ * (líder/oficiais); `request_sent` = seu pedido foi enviado; `description` = a descrição mudou.
  */
-export type GuildNoticeCode = "accepted" | "rejected" | "expired" | "joined" | "left" | "kicked" | "leader" | "role" | "created" | "disbanded";
+export type GuildNoticeCode =
+  | "accepted"
+  | "rejected"
+  | "expired"
+  | "joined"
+  | "left"
+  | "kicked"
+  | "leader"
+  | "role"
+  | "created"
+  | "disbanded"
+  | "request"
+  | "request_sent"
+  | "description";
 
 /** Payload de `guild_notice`: o aviso pronto para mostrar. */
 export interface GuildNoticeData {
@@ -1399,6 +1501,8 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.GuildNotice; readonly data: GuildNoticeData }
   | { readonly type: typeof ServerMessageType.PlayerGuild; readonly data: PlayerGuildData }
   | { readonly type: typeof ServerMessageType.Ranking; readonly data: RankingData }
+  | { readonly type: typeof ServerMessageType.GuildList; readonly data: GuildListData }
+  | { readonly type: typeof ServerMessageType.GuildInfo; readonly data: GuildInfoView }
   | { readonly type: typeof ServerMessageType.UpdateRequired; readonly data: UpdateRequiredData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
@@ -1674,9 +1778,34 @@ export function parseSocialSettings(data: unknown): SocialSettings | null {
 /** Valida o payload de `guild_create` (formato; as regras do nome e da tag são de `src/social/guilds.ts`). */
 export function parseGuildCreateData(data: unknown): GuildCreateData | null {
   if (!isRecord(data)) return null;
-  const { name, tag } = data;
+  const { name, tag, description } = data;
   if (typeof name !== "string" || name.length > 64 || typeof tag !== "string" || tag.length > 16) return null;
-  return { name, tag };
+  if (description !== undefined && (typeof description !== "string" || description.length > 400)) return null;
+  return { name, tag, description: typeof description === "string" ? description : "" };
+}
+
+/** Valida o payload de `guild_info` e `guild_request`. */
+export function parseGuildIdData(data: unknown): GuildIdData | null {
+  if (!isRecord(data)) return null;
+  const { guildId } = data;
+  if (typeof guildId !== "string" || guildId.length === 0 || guildId.length > 64) return null;
+  return { guildId };
+}
+
+/** Valida o payload de `guild_request_answer`. */
+export function parseGuildRequestAnswerData(data: unknown): GuildRequestAnswerData | null {
+  if (!isRecord(data)) return null;
+  const { playerId, accept } = data;
+  if (typeof playerId !== "string" || playerId.length === 0 || playerId.length > 64 || typeof accept !== "boolean") return null;
+  return { playerId, accept };
+}
+
+/** Valida o payload de `guild_description` (o tamanho final é conferido em `src/social/guilds.ts`). */
+export function parseGuildDescriptionData(data: unknown): GuildDescriptionData | null {
+  if (!isRecord(data)) return null;
+  const { description } = data;
+  if (typeof description !== "string" || description.length > 400) return null;
+  return { description };
 }
 
 /** Valida o payload de `ranking_request`. */
@@ -1857,6 +1986,24 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.GuildRole: {
       const data = parseGuildRoleData(raw);
       return data === null ? null : { type: ClientMessageType.GuildRole, data };
+    }
+    case ClientMessageType.GuildList:
+      return { type: ClientMessageType.GuildList, data: {} };
+    case ClientMessageType.GuildInfo: {
+      const data = parseGuildIdData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildInfo, data };
+    }
+    case ClientMessageType.GuildRequest: {
+      const data = parseGuildIdData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildRequest, data };
+    }
+    case ClientMessageType.GuildRequestAnswer: {
+      const data = parseGuildRequestAnswerData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildRequestAnswer, data };
+    }
+    case ClientMessageType.GuildDescription: {
+      const data = parseGuildDescriptionData(raw);
+      return data === null ? null : { type: ClientMessageType.GuildDescription, data };
     }
     case ClientMessageType.RankingRequest: {
       const data = parseRankingRequestData(raw);

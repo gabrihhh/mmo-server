@@ -20,6 +20,7 @@ import {
   parseClientMessage,
   type BodyType,
   type AttributesData,
+  type GuildInfoView,
   type ProfileVisibility,
   type AttributesView,
   type ClientBuild,
@@ -601,7 +602,7 @@ export class GameServer {
         return;
       // Guilda ([SOC-06]): regras em src/social/guilds.ts; aqui só repassa e devolve a recusa.
       case ClientMessageType.GuildCreate:
-        this.guildRequest(session, (id) => this.guilds.create(id, message.data.name, message.data.tag, Date.now()));
+        this.guildRequest(session, (id) => this.guilds.create(id, message.data.name, message.data.tag, message.data.description, Date.now()));
         return;
       case ClientMessageType.GuildInvite:
         this.guildRequest(session, (id) => this.guilds.invite(id, message.data.playerId, Date.now()));
@@ -617,6 +618,21 @@ export class GameServer {
         return;
       case ClientMessageType.GuildRole:
         this.guildRequest(session, (id) => this.guilds.setRole(id, message.data.playerId, message.data.role));
+        return;
+      case ClientMessageType.GuildList:
+        if (session.account !== null) this.sendTo(session.account.playerId, { type: ServerMessageType.GuildList, data: { guilds: this.guilds.list() } });
+        return;
+      case ClientMessageType.GuildInfo:
+        void this.sendGuildInfo(session, message.data.guildId);
+        return;
+      case ClientMessageType.GuildRequest:
+        this.guildRequest(session, (id) => this.guilds.request(id, message.data.guildId, Date.now()));
+        return;
+      case ClientMessageType.GuildRequestAnswer:
+        this.guildRequest(session, (id) => this.guilds.answerRequest(id, message.data.playerId, message.data.accept, Date.now()));
+        return;
+      case ClientMessageType.GuildDescription:
+        this.guildRequest(session, (id) => this.guilds.setDescription(id, message.data.description));
         return;
       case ClientMessageType.RankingRequest:
         void this.sendRanking(session, message.data.category, message.data.period);
@@ -657,6 +673,31 @@ export class GameServer {
         age: Math.max(0, Math.round((now - boards.builtAtMs) / 1000)),
       },
     });
+  }
+
+  /** Ficha de uma guilda (Procurar guilda, [SOC-06]) com os totais globais do ranking ([SOC-07]). */
+  private async sendGuildInfo(session: Session, guildId: string): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    let totals: { monsterXp: number; kills: number } = { monsterXp: 0, kills: 0 };
+    try {
+      const boards: RankingBoards = await this.currentRankings();
+      totals = {
+        monsterXp: boards.rowOf("guild_monsters", "global", guildId)?.value ?? 0,
+        kills: boards.rowOf("guild_pvp", "global", guildId)?.value ?? 0,
+      };
+    } catch (error: unknown) {
+      console.error("[guilda] falha ao calcular os totais:", error);
+    }
+    const info: GuildInfoView | undefined = this.guilds.info(guildId, account.playerId, totals, Date.now());
+    if (info === undefined) {
+      this.sendError(session, ErrorCode.GuildInviteNotFound, "Essa guilda não existe mais.");
+      return;
+    }
+    this.sendTo(account.playerId, { type: ServerMessageType.GuildInfo, data: info });
   }
 
   /** As tabelas atuais: o cache se tem menos de {@link RANKING_REFRESH_SECONDS} s, senão recalcula (uma vez só). */

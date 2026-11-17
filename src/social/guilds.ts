@@ -2,11 +2,17 @@ import { randomBytes } from "node:crypto";
 
 import {
   GUILD_CREATE_COST,
+  GUILD_DESCRIPTION_MAX,
+  GUILD_LIST_MAX,
+  GUILD_REQUEST_DAYS,
   GUILD_INVITE_SECONDS,
   GUILD_LEAVE_COOLDOWN_SECONDS,
   GUILD_MAX_MEMBERS,
   ServerMessageType,
+  type GuildInfoView,
   type GuildMemberView,
+  type GuildRequestView,
+  type GuildSummaryView,
   type GuildNoticeCode,
   type GuildRole,
   type GuildView,
@@ -28,7 +34,11 @@ import {
  * - o líder saiu → vira líder o oficial mais antigo; sem oficial, o membro mais antigo (mais antigo = entrou antes);
  * - o último a sair acaba com a guilda (o líder não desfaz com gente dentro);
  * - saiu por vontade própria → {@link GUILD_LEAVE_COOLDOWN_SECONDS} s sem poder aceitar convite (expulso não pega);
- * - membros da mesma guilda não se batem (a zona olha `guildId`, `Zone.isEnemy`) e não ganham XP a mais.
+ * - membros da mesma guilda não se batem (a zona olha `guildId`, `Zone.isEnemy`) e não ganham XP a mais;
+ * - **Procurar guilda** (2026-11-17): lista as guildas que não estão cheias, da mais cheia para a mais vazia; cada uma
+ *   tem uma descrição breve. Quem não tem guilda pede para entrar (uma vez por guilda, em várias ao mesmo tempo); o
+ *   pedido fica guardado na guilda (mesmo offline) por {@link GUILD_REQUEST_DAYS} dias e só líder/oficiais aceitam.
+ *   Entrou numa guilda (por convite, pedido ou criando) → os outros pedidos dele somem.
  *
  * Separado do `GameServer` (que guarda contas e conexões) para ficar pequeno e testável sem rede.
  */
@@ -43,14 +53,35 @@ export interface GuildMemberRecord {
   readonly joinedAt: number;
 }
 
+/** Um pedido para entrar guardado na guilda. */
+export interface GuildRequestRecord {
+  readonly id: string;
+  readonly name: string;
+  /** Quando pediu (ms de `Date.now()`). */
+  readonly at: number;
+}
+
 /** Uma guilda como fica guardada (coleção `guilds`). */
 export interface GuildRecord {
   readonly id: string;
   readonly name: string;
   /** 3 letras/números, maiúsculas. */
   readonly tag: string;
+  /** Descrição breve (até {@link GUILD_DESCRIPTION_MAX} caracteres; vazia = sem descrição). */
+  readonly description: string;
   readonly createdAt: number;
   readonly members: readonly GuildMemberRecord[];
+  /** Pedidos para entrar esperando líder/oficial. */
+  readonly requests: readonly GuildRequestRecord[];
+}
+
+/** Milissegundos que um pedido para entrar espera. */
+export const GUILD_REQUEST_MS: number = GUILD_REQUEST_DAYS * 86_400_000;
+
+/** Descrição arrumada (uma linha, sem espaços repetidos), ou `null` se passar de {@link GUILD_DESCRIPTION_MAX}. */
+export function normalizeGuildDescription(raw: string): string | null {
+  const text: string = raw.replace(/[\u0000-\u001f\u007f]/g, " ").trim().replace(/\s+/g, " ");
+  return text.length > GUILD_DESCRIPTION_MAX ? null : text;
 }
 
 /** O que o servidor oferece às guildas. */
@@ -149,7 +180,19 @@ export function readGuildRecord(raw: unknown): GuildRecord | null {
     list.push({ id: memberId, name: memberName, role, joinedAt });
   }
   if (list.length === 0) return null;
-  return { id, name, tag, createdAt, members: list };
+  const description: unknown = Reflect.get(raw, "description");
+  const rawRequests: unknown = Reflect.get(raw, "requests");
+  const requests: GuildRequestRecord[] = [];
+  if (Array.isArray(rawRequests)) {
+    for (const entry of rawRequests) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const requestId: unknown = Reflect.get(entry, "id");
+      const requestName: unknown = Reflect.get(entry, "name");
+      const at: unknown = Reflect.get(entry, "at");
+      if (typeof requestId === "string" && typeof requestName === "string" && typeof at === "number") requests.push({ id: requestId, name: requestName, at });
+    }
+  }
+  return { id, name, tag, description: typeof description === "string" ? description : "", createdAt, members: list, requests };
 }
 
 /** Milissegundos que um convite espera resposta. */
@@ -212,7 +255,7 @@ export class Guilds {
   }
 
   /** Cria a guilda [rawName]/[rawTag] com [playerId] de líder (custa {@link GUILD_CREATE_COST} moedas). */
-  create(playerId: string, rawName: string, rawTag: string, nowMs: number): GuildResult {
+  create(playerId: string, rawName: string, rawTag: string, rawDescription: string, nowMs: number): GuildResult {
     const playerName: string | undefined = this.host.nameOf(playerId);
     if (playerName === undefined) return refuse("player_not_found", "Entre no jogo antes.");
     if (this.memberOf.has(playerId)) return refuse("already_in_guild", "Você já está numa guilda. Saia dela antes de criar outra.");
@@ -220,6 +263,8 @@ export class Guilds {
     if (name === null) return refuse("invalid_guild", `O nome da guilda precisa ter de ${GUILD_NAME_MIN} a ${GUILD_NAME_MAX} letras, números ou espaços.`);
     const tag: string | null = normalizeGuildTag(rawTag);
     if (tag === null) return refuse("invalid_guild", "A tag precisa ter exatamente 3 letras ou números.");
+    const description: string | null = normalizeGuildDescription(rawDescription);
+    if (description === null) return refuse("invalid_guild", `A descrição pode ter até ${GUILD_DESCRIPTION_MAX} caracteres.`);
     const key: string = guildNameKey(name);
     for (const guild of this.guilds.values()) {
       if (guildNameKey(guild.name) === key) return refuse("guild_name_taken", `Já existe uma guilda chamada ${guild.name}.`);
@@ -232,8 +277,10 @@ export class Guilds {
       id: randomBytes(6).toString("hex"),
       name,
       tag,
+      description,
       createdAt: nowMs,
       members: [{ id: playerId, name: playerName, role: "leader", joinedAt: nowMs }],
+      requests: [],
     };
     this.put(guild);
     this.dropInvitesTo(playerId);
@@ -261,7 +308,7 @@ export class Guilds {
       this.notice(fromId, "rejected", `${toName} recusou o convite para a guilda.`);
       return OK;
     }
-    if (auto === "accept") return this.join(guild.id, toId, toName, fromId, nowMs);
+    if (auto === "accept") return this.join(guild.id, toId, toName, nowMs, fromId);
     let pending: Map<string, PendingInvite> | undefined = this.pending.get(toId);
     if (pending === undefined) {
       pending = new Map();
@@ -292,7 +339,7 @@ export class Guilds {
     if (guild.members.length >= GUILD_MAX_MEMBERS) return refuse("guild_full", `A guilda está cheia (máximo ${GUILD_MAX_MEMBERS}).`);
     const wait: number = this.cooldownLeftMs(toId, nowMs);
     if (wait > 0) return refuse("guild_cooldown", `Você saiu de uma guilda há pouco. Pode entrar em outra em ${Guilds.minutes(wait)}.`);
-    return this.join(guild.id, toId, toName, fromId, nowMs);
+    return this.join(guild.id, toId, toName, nowMs, fromId);
   }
 
   /** [playerId] sai por vontade própria: espera de 1 h para aceitar convite; líder passa; último acaba com ela. */
@@ -338,7 +385,100 @@ export class Guilds {
   /** Manda a guilda (ou `null`) a [playerId] (após entrar no servidor). */
   sendGuild(playerId: string): void {
     const guild: GuildRecord | undefined = this.recordOf(playerId);
-    this.host.send(playerId, { type: ServerMessageType.Guild, data: { guild: guild === undefined ? null : this.view(guild) } });
+    this.host.send(playerId, { type: ServerMessageType.Guild, data: { guild: guild === undefined ? null : this.view(guild, playerId) } });
+  }
+
+  /** Procurar guilda: as que não estão cheias, da mais cheia para a mais vazia (empate: nome), até {@link GUILD_LIST_MAX}. */
+  list(): GuildSummaryView[] {
+    return Array.from(this.guilds.values())
+      .filter((g) => g.members.length < GUILD_MAX_MEMBERS)
+      .sort((a, b) => b.members.length - a.members.length || a.name.localeCompare(b.name, "pt-BR"))
+      .slice(0, GUILD_LIST_MAX)
+      .map((g) => ({ id: g.id, name: g.name, tag: g.tag, members: g.members.length }));
+  }
+
+  /**
+   * Ficha da guilda [guildId] para [viewerId] (`undefined` = não existe). [totals] = soma global da XP de monstros e
+   * dos jogadores mortos dos membros (vem do ranking, [SOC-07]).
+   */
+  info(guildId: string, viewerId: string, totals: { readonly monsterXp: number; readonly kills: number }, nowMs: number): GuildInfoView | undefined {
+    const guild: GuildRecord | undefined = this.guilds.get(guildId);
+    if (guild === undefined) return undefined;
+    return {
+      id: guild.id,
+      name: guild.name,
+      tag: guild.tag,
+      description: guild.description,
+      leaderName: guild.members.find((m) => m.role === "leader")?.name ?? "",
+      members: guild.members.length,
+      createdAt: guild.createdAt,
+      monsterXp: totals.monsterXp,
+      kills: totals.kills,
+      requested: Guilds.liveRequests(guild, nowMs).some((r) => r.id === viewerId),
+    };
+  }
+
+  /** [playerId] (sem guilda) pede para entrar em [guildId]; líder/oficiais online recebem o aviso. */
+  request(playerId: string, guildId: string, nowMs: number): GuildResult {
+    const playerName: string | undefined = this.host.nameOf(playerId);
+    if (playerName === undefined) return refuse("player_not_found", "Entre no jogo antes.");
+    if (this.memberOf.has(playerId)) return refuse("already_in_guild", "Você já está numa guilda.");
+    const guild: GuildRecord | undefined = this.guilds.get(guildId);
+    if (guild === undefined) return refuse("guild_invite_not_found", "Essa guilda não existe mais.");
+    if (guild.members.length >= GUILD_MAX_MEMBERS) return refuse("guild_full", `A guilda está cheia (máximo ${GUILD_MAX_MEMBERS}).`);
+    const wait: number = this.cooldownLeftMs(playerId, nowMs);
+    if (wait > 0) return refuse("guild_cooldown", `Você saiu de uma guilda há pouco. Pode pedir para entrar em outra em ${Guilds.minutes(wait)}.`);
+    const live: GuildRequestRecord[] = Guilds.liveRequests(guild, nowMs);
+    if (live.some((r) => r.id === playerId)) return refuse("invalid_invite", "Você já pediu para entrar nessa guilda. Aguarde a resposta.");
+    if (live.length >= GUILD_MAX_MEMBERS) return refuse("guild_full", "Essa guilda tem pedidos demais esperando. Tente mais tarde.");
+    const updated: GuildRecord = { ...guild, requests: [...live, { id: playerId, name: playerName, at: nowMs }] };
+    this.put(updated);
+    this.notice(playerId, "request_sent", `Pedido enviado para [${guild.tag}] ${guild.name}.`);
+    for (const member of updated.members) {
+      if (member.role !== "member") this.notice(member.id, "request", `${playerName} pediu para entrar na guilda.`);
+    }
+    this.sendGuildToAll(updated);
+    return OK;
+  }
+
+  /** Líder/oficial [byId] aceita ou recusa o pedido de [playerId] (que pode estar offline). */
+  answerRequest(byId: string, playerId: string, accept: boolean, nowMs: number): GuildResult {
+    const guild: GuildRecord | undefined = this.recordOf(byId);
+    if (guild === undefined) return refuse("not_in_guild", "Você não está numa guilda.");
+    if (Guilds.roleIn(guild, byId) === "member") return refuse("guild_no_permission", "Só o líder e os oficiais aceitam pedidos.");
+    const live: GuildRequestRecord[] = Guilds.liveRequests(guild, nowMs);
+    const request: GuildRequestRecord | undefined = live.find((r) => r.id === playerId);
+    if (request === undefined) return refuse("guild_invite_not_found", "Esse pedido não existe mais.");
+    const withoutRequest: GuildRecord = { ...guild, requests: live.filter((r) => r.id !== playerId) };
+    if (!accept) {
+      this.put(withoutRequest);
+      this.notice(playerId, "rejected", `A guilda [${guild.tag}] ${guild.name} recusou seu pedido.`);
+      this.sendGuildToAll(withoutRequest);
+      return OK;
+    }
+    if (this.memberOf.has(playerId)) {
+      this.put(withoutRequest);
+      this.sendGuildToAll(withoutRequest);
+      return refuse("already_in_guild", `${request.name} já entrou em outra guilda.`);
+    }
+    if (guild.members.length >= GUILD_MAX_MEMBERS) return refuse("guild_full", `A guilda está cheia (máximo ${GUILD_MAX_MEMBERS}).`);
+    this.put(withoutRequest);
+    this.notice(playerId, "accepted", `Seu pedido foi aceito: bem-vindo à guilda [${guild.tag}] ${guild.name}!`);
+    return this.join(guild.id, playerId, request.name, nowMs, null);
+  }
+
+  /** O líder [byId] troca a descrição. */
+  setDescription(byId: string, rawDescription: string): GuildResult {
+    const guild: GuildRecord | undefined = this.recordOf(byId);
+    if (guild === undefined) return refuse("not_in_guild", "Você não está numa guilda.");
+    if (Guilds.roleIn(guild, byId) !== "leader") return refuse("guild_no_permission", "Só o líder muda a descrição.");
+    const description: string | null = normalizeGuildDescription(rawDescription);
+    if (description === null) return refuse("invalid_guild", `A descrição pode ter até ${GUILD_DESCRIPTION_MAX} caracteres.`);
+    const updated: GuildRecord = { ...guild, description };
+    this.put(updated);
+    this.notice(byId, "description", "Descrição da guilda atualizada.");
+    this.sendGuildToAll(updated);
+    return OK;
   }
 
   /** [playerId] entrou/saiu do servidor ou subiu de nível: os membros online recebem a lista nova. */
@@ -374,24 +514,31 @@ export class Guilds {
     return left === null ? 0 : Math.max(0, left + GUILD_LEAVE_COOLDOWN_MS - nowMs);
   }
 
-  /** A guilda como o cliente vê. */
-  view(guild: GuildRecord): GuildView {
+  /** A guilda como [viewerId] vê (os pedidos para entrar só para líder/oficiais). */
+  view(guild: GuildRecord, viewerId: string): GuildView {
     const members: GuildMemberView[] = [...guild.members]
       .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.joinedAt - b.joinedAt)
       .map((m) => ({ id: m.id, name: m.name, role: m.role, online: this.host.nameOf(m.id) !== undefined, level: this.host.levelOf(m.id) }));
-    return { id: guild.id, name: guild.name, tag: guild.tag, members };
+    const canSee: boolean = Guilds.roleIn(guild, viewerId) === "leader" || Guilds.roleIn(guild, viewerId) === "officer";
+    const requests: GuildRequestView[] = canSee ? guild.requests.map((r) => ({ id: r.id, name: r.name, at: r.at })) : [];
+    return { id: guild.id, name: guild.name, tag: guild.tag, description: guild.description, requests, members };
   }
 
   // --- internos ---
 
-  private join(guildId: string, playerId: string, playerName: string, inviterId: string, nowMs: number): GuildResult {
+  /** Põe [playerId] na guilda; [inviterId] = quem convidou (aviso "aceitou"), ou `null` = entrou por pedido aceito. */
+  private join(guildId: string, playerId: string, playerName: string, nowMs: number, inviterId: string | null): GuildResult {
     const guild: GuildRecord | undefined = this.guilds.get(guildId);
     if (guild === undefined) return refuse("guild_invite_not_found", "Essa guilda não existe mais.");
-    const updated: GuildRecord = { ...guild, members: [...guild.members, { id: playerId, name: playerName, role: "member", joinedAt: nowMs }] };
+    const updated: GuildRecord = {
+      ...guild,
+      members: [...guild.members, { id: playerId, name: playerName, role: "member", joinedAt: nowMs }],
+      requests: guild.requests.filter((r) => r.id !== playerId),
+    };
     this.put(updated);
     this.dropInvitesTo(playerId);
     this.host.onMemberGuild(playerId, { id: updated.id, tag: updated.tag });
-    this.notice(inviterId, "accepted", `${playerName} aceitou o convite para a guilda.`);
+    if (inviterId !== null) this.notice(inviterId, "accepted", `${playerName} aceitou o convite para a guilda.`);
     this.noticeAll(updated, "joined", `${playerName} entrou na guilda.`);
     this.sendGuildToAll(updated);
     return OK;
@@ -443,14 +590,26 @@ export class Guilds {
     return id === undefined ? undefined : this.guilds.get(id);
   }
 
-  /** Convites para [playerId] somem (ele entrou/criou uma guilda). */
+  /** Convites para [playerId] e os pedidos dele para entrar em outras guildas somem (ele entrou/criou uma guilda). */
   private dropInvitesTo(playerId: string): void {
     this.pending.delete(playerId);
+    for (const guild of this.guilds.values()) {
+      if (!guild.requests.some((r) => r.id === playerId)) continue;
+      const updated: GuildRecord = { ...guild, requests: guild.requests.filter((r) => r.id !== playerId) };
+      this.put(updated);
+      this.sendGuildToAll(updated);
+    }
+  }
+
+  /** Pedidos ainda no prazo ({@link GUILD_REQUEST_MS}). */
+  private static liveRequests(guild: GuildRecord, nowMs: number): GuildRequestRecord[] {
+    return guild.requests.filter((r) => nowMs - r.at < GUILD_REQUEST_MS);
   }
 
   private sendGuildToAll(guild: GuildRecord): void {
-    const view: GuildView = this.view(guild);
-    for (const member of guild.members) this.host.send(member.id, { type: ServerMessageType.Guild, data: { guild: view } });
+    for (const member of guild.members) {
+      this.host.send(member.id, { type: ServerMessageType.Guild, data: { guild: this.view(guild, member.id) } });
+    }
   }
 
   private notice(playerId: string, code: GuildNoticeCode, message: string): void {
