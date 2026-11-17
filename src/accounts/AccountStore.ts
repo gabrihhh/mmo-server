@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
+import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { DEFAULT_SOCIAL_SETTINGS, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
@@ -40,6 +41,8 @@ export interface Account {
   readonly body: BodyType | null;
   /** Nível e XP do personagem ([JOGO-12]). Conta nova/antiga: nível 1, sem XP. */
   readonly progress: Progress;
+  /** Contadores do perfil: XP de monstros, jogadores mortos, mortes ([SOC-08]). Conta antiga: tudo zero. */
+  readonly stats: PlayerStats;
   /** Amigos (ids de jogador, amizade mútua, [SOC-04]). Conta nova/antiga: nenhum. Fakes de teste não entram aqui. */
   readonly friends: readonly string[];
   /** Configuração social (Sempre/Ocultar pedidos de amizade e convites de grupo, [SOC-04]). Conta antiga: mostra tudo. */
@@ -98,6 +101,8 @@ export interface AccountStore {
   saveInventory(playerId: string, inventory: Inventory): Promise<void>;
   /** Salva nível e XP (chamado quando o jogador ganha XP, [JOGO-12]). */
   saveProgress(playerId: string, progress: Progress): Promise<void>;
+  /** Salva os contadores do perfil (matou monstro/jogador, morreu, [SOC-08]). */
+  saveStats(playerId: string, stats: PlayerStats): Promise<void>;
   /**
    * Grava o corpo do personagem SE ainda não houver um (a escolha é para sempre). `true` = gravou; `false` = já tinha
    * (ou conta inexistente).
@@ -151,6 +156,7 @@ interface MemoryRecord {
   inventory: Inventory;
   body: BodyType | null;
   progress: Progress;
+  stats: PlayerStats;
   friends: string[];
   social: SocialSettings;
   passwordReset: PasswordResetRecord | null;
@@ -182,6 +188,7 @@ export class InMemoryAccountStore implements AccountStore {
       inventory: this.newInventory(),
       body: null,
       progress: STARTING_PROGRESS,
+      stats: STARTING_STATS,
       friends: [],
       social: DEFAULT_SOCIAL_SETTINGS,
       passwordReset: null,
@@ -221,6 +228,11 @@ export class InMemoryAccountStore implements AccountStore {
   async saveProgress(playerId: string, progress: Progress): Promise<void> {
     const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
     if (record !== undefined) record.progress = progress;
+  }
+
+  async saveStats(playerId: string, stats: PlayerStats): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.stats = stats;
   }
 
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
@@ -292,6 +304,7 @@ export class InMemoryAccountStore implements AccountStore {
       inventory: readInventory(record.inventory),
       body: record.body,
       progress: readProgress(record.progress),
+      stats: readStats(record.stats),
       friends: readFriendIds(record.friends),
       social: readSocialSettings(record.social),
     };

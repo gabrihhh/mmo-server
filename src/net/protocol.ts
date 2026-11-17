@@ -19,6 +19,8 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v29: perfil ([SOC-08]): `profile` (público/só amigos/ninguém) na Configuração social; `attributes` traz `stats` (XP de
+ *   monstros, jogadores mortos, mortes) ou, perfil fechado para quem pediu, só `hidden: true` ({@link HiddenAttributesView}).
  * v28: acampamentos ([JOGO-19]): `resetIn` (segundos até o acampamento voltar) no {@link ChestView} e no evento
  *   `chest`, que também vai quando o relógio começa/muda/para (mapa, [CLI-11]).
  * v27: recuperar senha ([INFRA-13]): `password_reset_request`/`password_reset_confirm` → `password_reset_sent`/
@@ -30,7 +32,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 28;
+export const PROTOCOL_VERSION = 29;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -159,7 +161,7 @@ export const ServerMessageType = {
   FuseResult: "fuse_result",
   /** Você morreu ([JOGO-21]): o que perdeu e a peça da roleta. Payload: {@link DeathReportData}. Só para quem morreu. */
   DeathReport: "death_report",
-  /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesView}. */
+  /** Atributos de um jogador (resposta ao `inspect`; o snapshot não leva isso). Payload: {@link AttributesData}. */
   Attributes: "attributes",
   /**
    * Estado do SEU grupo (mmo-docs [SOC-03]): vai a todos os membros a cada mudança (entrou, saiu, líder novo, alguém
@@ -629,16 +631,25 @@ export interface FriendAnswerData {
 export const SOCIAL_VISIBILITIES = ["always", "hide"] as const;
 export type SocialVisibility = (typeof SOCIAL_VISIBILITIES)[number];
 
+/**
+ * Quem vê o seu perfil (tela de Atributos, [SOC-08]): todos, só os amigos ou ninguém (você mesmo sempre vê).
+ * ATENÇÃO: mmo-client/scripts/network/protocol.gd (PROFILE_*).
+ */
+export const PROFILE_VISIBILITIES = ["public", "friends", "nobody"] as const;
+export type ProfileVisibility = (typeof PROFILE_VISIBILITIES)[number];
+
 /** Configuração social da conta (mmo-docs [SOC-04], [INFRA-07]). Vai no `auth_ok` e no `social_settings`. */
 export interface SocialSettings {
   /** "Solicitações de amizade: Sempre / Ocultar". */
   readonly friendRequests: SocialVisibility;
   /** "Convites de grupo: Sempre / Ocultar" ([SOC-03]). */
   readonly groupInvites: SocialVisibility;
+  /** "Perfil: Público / Só amigos / Ninguém" ([SOC-08]). */
+  readonly profile: ProfileVisibility;
 }
 
 /** Configuração de conta nova (e de conta antiga, sem o campo): mostra tudo. */
-export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = { friendRequests: "always", groupInvites: "always" };
+export const DEFAULT_SOCIAL_SETTINGS: SocialSettings = { friendRequests: "always", groupInvites: "always", profile: "public" };
 
 /** Mensagem cliente → servidor já validada (formato; as regras de conta são checadas depois). */
 export type ClientMessage =
@@ -968,7 +979,33 @@ export interface AttributesView {
   readonly power: PowerView;
   /** O que veste em cada slot (`null` = vazio). */
   readonly equipped: Readonly<Record<EquipSlotName, EquippedItemSummary | null>>;
+  /** Contadores do perfil ([SOC-08]). */
+  readonly stats: StatsView;
 }
+
+/** Contadores do perfil na tela de Atributos ([SOC-08]); começaram do zero em 2026-11-17. */
+export interface StatsView {
+  /** XP ganha matando monstros (vida inteira, 1 casa). */
+  readonly monsterXp: number;
+  /** Jogadores mortos (PvP). */
+  readonly kills: number;
+  /** Mortes (para monstro e jogador). */
+  readonly deaths: number;
+}
+
+/**
+ * `attributes` de um perfil fechado para quem pediu (Configuração → Perfil: Só amigos / Ninguém, [SOC-08]): só quem é,
+ * nada dos atributos. O cliente mostra "Perfil privado".
+ */
+export interface HiddenAttributesView {
+  readonly id: string;
+  readonly name: string;
+  readonly level: number;
+  readonly hidden: true;
+}
+
+/** Payload de `attributes`: o perfil inteiro, ou fechado ({@link HiddenAttributesView}). */
+export type AttributesData = AttributesView | HiddenAttributesView;
 
 /** Máximo de jogadores num grupo (mmo-docs [SOC-03]). ATENÇÃO: mmo-client/scripts/network/group_state.gd (MAX_MEMBERS). */
 export const GROUP_MAX_MEMBERS = 5;
@@ -1160,7 +1197,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.ChestLoot; readonly data: ChestLootData }
   | { readonly type: typeof ServerMessageType.FuseResult; readonly data: FuseResultData }
   | { readonly type: typeof ServerMessageType.DeathReport; readonly data: DeathReportData }
-  | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesView }
+  | { readonly type: typeof ServerMessageType.Attributes; readonly data: AttributesData }
   | { readonly type: typeof ServerMessageType.Group; readonly data: GroupData }
   | { readonly type: typeof ServerMessageType.GroupInvited; readonly data: GroupInvitedData }
   | { readonly type: typeof ServerMessageType.GroupNotice; readonly data: GroupNoticeData }
@@ -1427,12 +1464,17 @@ export function isSocialVisibility(value: unknown): value is SocialVisibility {
   return SOCIAL_VISIBILITIES.some((v) => v === value);
 }
 
-/** Valida o payload de `social_settings` (as duas opções são obrigatórias). */
+/** `true` se `value` é uma opção de quem vê o perfil (`public`/`friends`/`nobody`). */
+export function isProfileVisibility(value: unknown): value is ProfileVisibility {
+  return PROFILE_VISIBILITIES.some((v) => v === value);
+}
+
+/** Valida o payload de `social_settings` (as três opções são obrigatórias). */
 export function parseSocialSettings(data: unknown): SocialSettings | null {
   if (!isRecord(data)) return null;
-  const { friendRequests, groupInvites } = data;
-  if (!isSocialVisibility(friendRequests) || !isSocialVisibility(groupInvites)) return null;
-  return { friendRequests, groupInvites };
+  const { friendRequests, groupInvites, profile } = data;
+  if (!isSocialVisibility(friendRequests) || !isSocialVisibility(groupInvites) || !isProfileVisibility(profile)) return null;
+  return { friendRequests, groupInvites, profile };
 }
 
 /**
@@ -1441,10 +1483,11 @@ export function parseSocialSettings(data: unknown): SocialSettings | null {
  */
 export function readSocialSettings(raw: unknown): SocialSettings {
   if (!isRecord(raw)) return DEFAULT_SOCIAL_SETTINGS;
-  const { friendRequests, groupInvites } = raw;
+  const { friendRequests, groupInvites, profile } = raw;
   return {
     friendRequests: isSocialVisibility(friendRequests) ? friendRequests : DEFAULT_SOCIAL_SETTINGS.friendRequests,
     groupInvites: isSocialVisibility(groupInvites) ? groupInvites : DEFAULT_SOCIAL_SETTINGS.groupInvites,
+    profile: isProfileVisibility(profile) ? profile : DEFAULT_SOCIAL_SETTINGS.profile,
   };
 }
 

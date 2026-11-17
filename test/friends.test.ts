@@ -39,7 +39,7 @@ describe("amizade e configuração social (friend_*, social_settings)", () => {
     const ok: ReceivedMessage = await client.next("auth_ok");
     const { playerId, sessionToken } = ok.data;
     assert.ok(typeof playerId === "string" && typeof sessionToken === "string");
-    assert.deepStrictEqual(ok.data["social"], { friendRequests: "always", groupInvites: "always" }, "conta nova mostra tudo");
+    assert.deepStrictEqual(ok.data["social"], { friendRequests: "always", groupInvites: "always", profile: "public" }, "conta nova mostra tudo");
     client.send("choose_body", { body: "male" });
     await client.next("body_chosen");
     return { client, playerId, sessionToken };
@@ -161,9 +161,9 @@ describe("amizade e configuração social (friend_*, social_settings)", () => {
   it("Configuração: ocultar pedidos de amizade recusa sozinho; salvo na conta e devolvido no auth_ok", async () => {
     const a: Player = await registered("Edu");
     const b: Player = await registered("Fabi");
-    b.client.send("social_settings", { friendRequests: "hide", groupInvites: "always" });
-    assert.deepStrictEqual((await b.client.next("social_settings")).data, { friendRequests: "hide", groupInvites: "always" });
-    assert.deepStrictEqual((await saved(b)).social, { friendRequests: "hide", groupInvites: "always" });
+    b.client.send("social_settings", { friendRequests: "hide", groupInvites: "always", profile: "public" });
+    assert.deepStrictEqual((await b.client.next("social_settings")).data, { friendRequests: "hide", groupInvites: "always", profile: "public" });
+    assert.deepStrictEqual((await saved(b)).social, { friendRequests: "hide", groupInvites: "always", profile: "public" });
 
     a.client.send("friend_request", { playerId: b.playerId });
     assert.strictEqual((await a.client.next("friend_notice")).data["message"], "Fabi recusou o pedido de amizade.");
@@ -171,12 +171,43 @@ describe("amizade e configuração social (friend_*, social_settings)", () => {
     assert.strictEqual(b.client.hasPending("friend_requested"), false, "nada aparece para quem oculta");
 
     b.client.send("social_settings", { friendRequests: "hide" });
-    assert.strictEqual((await b.client.next("error")).data["code"], "bad_message", "as duas opções são obrigatórias");
+    assert.strictEqual((await b.client.next("error")).data["code"], "bad_message", "as três opções são obrigatórias");
 
     const again: TestClient = await TestClient.connect(port);
     clients.push(again);
     again.send("resume", { version: PROTOCOL_VERSION, sessionToken: b.sessionToken });
-    assert.deepStrictEqual((await again.next("auth_ok")).data["social"], { friendRequests: "hide", groupInvites: "always" });
+    assert.deepStrictEqual((await again.next("auth_ok")).data["social"], { friendRequests: "hide", groupInvites: "always", profile: "public" });
+  });
+
+  it("Perfil ([SOC-08]): público mostra tudo; só amigos/ninguém fecha os Atributos; você sempre vê o seu", async () => {
+    const a: Player = await registered("Iara");
+    const b: Player = await registered("Juca");
+    for (const p of [a, b]) {
+      p.client.send("join", { zone: ZONE });
+      await p.client.next("welcome");
+    }
+    a.client.send("inspect", { playerId: b.playerId });
+    const open: ReceivedMessage = await a.client.next("attributes");
+    assert.deepStrictEqual(open.data["stats"], { monsterXp: 0, kills: 0, deaths: 0 }, "público: contadores do perfil");
+
+    b.client.send("social_settings", { friendRequests: "always", groupInvites: "always", profile: "nobody" });
+    await b.client.next("social_settings");
+    assert.strictEqual((await saved(b)).social.profile, "nobody");
+    a.client.send("inspect", { playerId: b.playerId });
+    assert.deepStrictEqual((await a.client.next("attributes")).data, { id: b.playerId, name: "Juca", level: 0, hidden: true });
+    b.client.send("inspect", { playerId: b.playerId });
+    assert.ok((await b.client.next("attributes")).data["stats"] !== undefined, "o dono vê o próprio perfil");
+
+    b.client.send("social_settings", { friendRequests: "always", groupInvites: "always", profile: "friends" });
+    await b.client.next("social_settings");
+    a.client.send("inspect", { playerId: b.playerId });
+    assert.strictEqual((await a.client.next("attributes")).data["hidden"], true, "ainda não são amigos");
+    a.client.send("friend_request", { playerId: b.playerId });
+    await b.client.next("friend_requested");
+    b.client.send("friend_answer", { fromId: a.playerId, accept: true });
+    await a.client.next("friend_notice");
+    a.client.send("inspect", { playerId: b.playerId });
+    assert.ok((await a.client.next("attributes")).data["equipped"] !== undefined, "amigo vê tudo");
   });
 
   it("Configuração: ocultar convites de grupo (opção da conta) recusa sozinho e vale na hora", async () => {
@@ -186,7 +217,7 @@ describe("amizade e configuração social (friend_*, social_settings)", () => {
       p.client.send("join", { zone: ZONE });
       await p.client.next("welcome");
     }
-    b.client.send("social_settings", { friendRequests: "always", groupInvites: "hide" });
+    b.client.send("social_settings", { friendRequests: "always", groupInvites: "hide", profile: "public" });
     await b.client.next("social_settings");
     a.client.send("group_invite", { playerId: b.playerId });
     const notice: ReceivedMessage = await a.client.next("group_notice");
@@ -194,7 +225,7 @@ describe("amizade e configuração social (friend_*, social_settings)", () => {
     assert.strictEqual(notice.data["message"], "Hana recusou o convite.");
     assert.strictEqual(b.client.hasPending("group_invited"), false);
 
-    b.client.send("social_settings", { friendRequests: "always", groupInvites: "always" });
+    b.client.send("social_settings", { friendRequests: "always", groupInvites: "always", profile: "public" });
     await b.client.next("social_settings");
     a.client.send("group_invite", { playerId: b.playerId });
     assert.strictEqual((await b.client.next("group_invited")).data["fromName"], "Gil", "voltou a mostrar na hora");

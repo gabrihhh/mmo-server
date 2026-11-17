@@ -47,6 +47,7 @@ import {
   STARTING_PROGRESS,
   type Progress,
 } from "../progression/level.js";
+import { STARTING_STATS, addDeath, addKill, addMonsterXp, type PlayerStats } from "../progression/stats.js";
 import { CRIT_MULTIPLIER, NO_EFFECTS, type AttributeEffects, type AttributeId } from "../items/attributes.js";
 import type { Inventory, ItemStack } from "../items/inventory.js";
 import { rollChestLoot, type LootEntry } from "../items/loot.js";
@@ -105,6 +106,11 @@ export interface ZoneMember {
   send(text: string): void;
   /** Nível/XP mudaram (matou um monstro, [JOGO-12]): quem guarda a conta salva. Ausente = não salva (testes). */
   onProgress?(progress: Progress): void;
+  /**
+   * Contadores do perfil mudaram (XP de monstros, jogador morto, morreu; [SOC-08]): quem guarda a conta salva.
+   * Ausente = não salva (testes, fakes).
+   */
+  onStats?(stats: PlayerStats): void;
   /**
    * Morreu ([JOGO-21]): a zona já tirou as moedas/XP (e salvou por {@link onProgress}); quem guarda o inventário sorteia
    * a peça da roleta e manda a tela de morte. `killer` = nome de quem matou. Ausente = nada (testes, fakes).
@@ -544,6 +550,8 @@ interface ZonePlayer extends Combatant {
   lookLevels: LookLevels;
   /** Nível e XP do personagem ([JOGO-12]); vão só para ele, no `me` do snapshot. */
   progress: Progress;
+  /** Contadores do perfil ([SOC-08]): XP de monstros, jogadores mortos, mortes. Vão na tela de Atributos. */
+  stats: PlayerStats;
   /** Jogador fake de teste ([SOC-01]): como responde e onde renasce. `null` = jogador de verdade. */
   readonly fake: FakeState | null;
 }
@@ -831,6 +839,7 @@ export class Zone {
       abilities: new Map(),
       look: fake.look,
       progress: { level: fake.level, xp: 0, gold: 0 },
+      stats: STARTING_STATS,
       readyTick: new Map(),
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
@@ -926,6 +935,7 @@ export class Zone {
         chest: summary(player.look.chest),
         feet: summary(player.look.feet),
       },
+      stats: { monsterXp: player.stats.monsterXp, kills: player.stats.kills, deaths: player.stats.deaths },
     };
   }
 
@@ -984,6 +994,7 @@ export class Zone {
     progress: Progress = STARTING_PROGRESS,
     effects: AttributeEffects = NO_EFFECTS,
     lookLevels: LookLevels = {},
+    stats: PlayerStats = STARTING_STATS,
   ): JoinResult {
     if (!this.players.has(member.id) && this.realPlayerCount() >= this.config.maxPlayers) return { status: "full" };
     this.leave(member.id);
@@ -1027,6 +1038,7 @@ export class Zone {
       abilities,
       look,
       progress,
+      stats,
       readyTick: new Map(),
       attackTarget: null,
       lastMoveTick: Number.NEGATIVE_INFINITY,
@@ -1727,11 +1739,12 @@ export class Zone {
     }
   }
 
-  /**
-   * Dá `amount` de XP ([JOGO-12]) e `gold` moedas ([JOGO-15]) ao jogador; subindo de nível, refaz vida/mana máximas e
-   * avisa todos (`level_up`). XP e moedas só vão para ele (no `me` do snapshot): os outros veem o nível, não quanto
-   * falta nem o dinheiro. O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
-   */
+  /** Troca os contadores do perfil de [player] ([SOC-08]); salva por {@link ZoneMember.onStats}. */
+  private setStats(player: ZonePlayer, stats: PlayerStats): void {
+    player.stats = stats;
+    player.member.onStats?.(stats);
+  }
+
   /**
    * Troca o progresso de [player] por [progress] (PvP, [JOGO-22]): mudou o nível → refaz vida/mana máximas, avisa a
    * zona (`level_up` quando sobe) e o grupo; salva por `onProgress`.
@@ -1748,7 +1761,14 @@ export class Zone {
     player.member.onProgress?.(progress);
   }
 
+  /**
+   * Dá `amount` de XP ([JOGO-12]) e `gold` moedas ([JOGO-15]) ao jogador; subindo de nível, refaz vida/mana máximas e
+   * avisa todos (`level_up`). XP e moedas só vão para ele (no `me` do snapshot): os outros veem o nível, não quanto
+   * falta nem o dinheiro. O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
+   */
   private grantReward(player: ZonePlayer, amount: number, gold: number): void {
+    // Só monstro dá recompensa: a XP entra também no contador do perfil ([SOC-08]).
+    this.setStats(player, addMonsterXp(player.stats, amount));
     const progress: Progress = addGold(addXp(player.progress, amount), gold);
     player.progress = progress;
     if (progress.level !== player.level) {
@@ -2315,7 +2335,11 @@ export class Zone {
       // Morreu: sai da tabela de ameaça dos monstros ([JOGO-14]).
       this.forgetThreat(target.id);
       // Perde moedas e XP ([JOGO-21]); a tela de morte (roleta do item) é de quem guarda o inventário. Fake não perde.
+      // Contador de mortes do perfil ([SOC-08]); fake não conta.
+      if (target.fake === null) this.setStats(target, addDeath(target.stats));
       if (target.fake === null && source.kind === "player" && source.id !== target.id) {
+        // Jogador morto no perfil de quem matou ([SOC-08]).
+        if (source.fake === null) this.setStats(source, addKill(source.stats));
         // Morto por jogador ([JOGO-22]): perde 1 nível e 10% das moedas, que vão para quem matou (+1 nível).
         const kill: PvpKill = pvpKill(source.progress, target.progress);
         this.setProgress(source, kill.killer);

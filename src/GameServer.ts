@@ -1,4 +1,5 @@
 import type { Progress } from "./progression/level.js";
+import type { PlayerStats } from "./progression/stats.js";
 import type { AttributeId } from "./items/attributes.js";
 import type { UpgradeFailure } from "./items/upgrade.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -16,6 +17,8 @@ import {
   encodeServerMessage,
   parseClientMessage,
   type BodyType,
+  type AttributesData,
+  type ProfileVisibility,
   type AttributesView,
   type ClientBuild,
   type ClientMessage,
@@ -520,8 +523,12 @@ export class GameServer {
           this.sendError(session, ErrorCode.PlayerNotFound, "Esse jogador não está mais por perto.");
           return;
         }
+        // Perfil fechado para quem pediu ([SOC-08]): só quem é, sem os atributos.
+        const data: AttributesData = this.canSeeProfile(session.account.playerId, attributes.id)
+          ? attributes
+          : { id: attributes.id, name: attributes.name, level: attributes.level, hidden: true };
         if (session.socket.readyState === WebSocket.OPEN) {
-          session.socket.send(encodeServerMessage({ type: ServerMessageType.Attributes, data: attributes }));
+          session.socket.send(encodeServerMessage({ type: ServerMessageType.Attributes, data }));
         }
         return;
       }
@@ -602,6 +609,17 @@ export class GameServer {
   private friendIdsOf(playerId: string): string[] {
     const saved: readonly string[] = this.online.get(playerId)?.account?.friends ?? [];
     return [...saved, ...(this.fakeFriends.get(playerId) ?? [])];
+  }
+
+  /**
+   * `true` se [viewerId] pode ver o perfil (tela de Atributos) de [ownerId] — Configuração → Perfil ([SOC-08]): você
+   * mesmo sempre; `public` = todos; `friends` = só amigos; `nobody` = ninguém. Fake de teste (sem conta) = público.
+   */
+  private canSeeProfile(viewerId: string, ownerId: string): boolean {
+    if (viewerId === ownerId) return true;
+    const visibility: ProfileVisibility = this.online.get(ownerId)?.account?.social.profile ?? "public";
+    if (visibility === "public") return true;
+    return visibility === "friends" && this.areFriends(viewerId, ownerId);
   }
 
   /** `true` se `a` e `b` são amigos (olha os dois lados: o fake não tem lista própria). */
@@ -1272,6 +1290,13 @@ export class GameServer {
             console.error(`[${session.connectionId}] falha ao salvar nível/XP de ${account.username}:`, error);
           });
         },
+        // Contadores do perfil ([SOC-08]): na sessão (próxima entrada) e no banco.
+        onStats: (stats: PlayerStats): void => {
+          if (session.account !== null) session.account = { ...session.account, stats };
+          this.options.accounts.saveStats(account.playerId, stats).catch((error: unknown) => {
+            console.error(`[${session.connectionId}] falha ao salvar os contadores de ${account.username}:`, error);
+          });
+        },
         // Morreu ([JOGO-21]): sorteia a peça da roleta (pode quebrar) e manda a tela de morte.
         onDeath: (info: DeathInfo): void => {
           void this.handleDeath(session, info);
@@ -1287,6 +1312,7 @@ export class GameServer {
       account.progress,
       attributeEffectsOf(account.inventory),
       lookLevelsOf(account.inventory),
+      account.stats,
     );
     if (result.status === "full") {
       this.reject(session, ErrorCode.ZoneFull, "zona lotada");

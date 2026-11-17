@@ -3,6 +3,7 @@ import { MongoClient, MongoServerError, type Collection, type Db } from "mongodb
 import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
+import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
 import { DEFAULT_SOCIAL_SETTINGS, isBodyType, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
 import { hashPassword, verifyPassword } from "./password.js";
@@ -46,6 +47,8 @@ interface AccountDocument {
   body?: string | null;
   /** Nível e XP ([JOGO-12]). Pode faltar em conta antiga (vira nível 1 ao ler). Lido sempre por readProgress. */
   progress?: Progress;
+  /** Contadores do perfil ([SOC-08]). Pode faltar em conta antiga (= tudo zero). Lido sempre por readStats. */
+  stats?: PlayerStats;
   /** Amigos (ids de jogador, mútuo, [SOC-04]). Pode faltar em conta antiga (= nenhum). Lido sempre por readFriendIds. */
   friends?: string[];
   /** Configuração social ([SOC-04]). Pode faltar em conta antiga (= mostra tudo). Lido sempre por readSocialSettings. */
@@ -118,6 +121,7 @@ export class MongoAccountStore implements AccountStore {
         inventory: starterInventory(),
         body: null,
         progress: STARTING_PROGRESS,
+        stats: STARTING_STATS,
         friends: [],
         social: DEFAULT_SOCIAL_SETTINGS,
       };
@@ -176,6 +180,10 @@ export class MongoAccountStore implements AccountStore {
 
   async saveProgress(playerId: string, progress: Progress): Promise<void> {
     await this.accounts.updateOne({ playerId }, { $set: { progress } });
+  }
+
+  async saveStats(playerId: string, stats: PlayerStats): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { stats } });
   }
 
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
@@ -249,6 +257,7 @@ export class MongoAccountStore implements AccountStore {
       inventory: readInventory(doc.inventory),
       body: isBodyType(doc.body) ? doc.body : null,
       progress: readProgress(doc.progress),
+      stats: readStats(doc.stats),
       friends: readFriendIds(doc.friends),
       social: readSocialSettings(doc.social),
     };
