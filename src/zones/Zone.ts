@@ -386,18 +386,31 @@ const SNAPSHOT_FIELD_KEYS = ["x", "y", "z", "rotY", "hp", "maxHp", "level", "dea
 
 /**
  * Campos de snapshot de uma entidade num tick, já prontos para o envio ([INFRA-11]): valores na ordem de
- * {@link SNAPSHOT_FIELD_KEYS} (posição em cm, giro 0,01 rad), o pedaço de JSON de cada um (`"x":1.25`), todos juntos
- * (`full`, para quem acabou de ver) e o id em JSON. Imutável: nada mudou de um tick para o outro = o mesmo objeto.
+ * {@link SNAPSHOT_FIELD_KEYS} (posição em mm, giro 0,01 rad), o pedaço de JSON de cada um (`"x":1.25`) e as entradas
+ * prontas do snapshot: `fullEntry` (todos os campos, para quem acabou de ver) e `deltaEntry` (só o que mudou desde a
+ * versão anterior, para quem viu a anterior — quase todo mundo). Montadas UMA vez por tick para todos os que veem
+ * ([INFRA-11] fase 2). Imutável: nada mudou de um tick para o outro = o mesmo objeto.
  */
 interface EntityFields {
   readonly idJson: string;
   readonly values: ReadonlyArray<number | boolean>;
   readonly parts: readonly string[];
-  readonly full: string;
+  /** Cresce 1 a cada mudança da entidade (0 = primeira). */
+  readonly version: number;
+  /** `{"id":..,todos os campos}`. */
+  readonly fullEntry: string;
+  /** `{"id":..,campos diferentes da versão `version − 1`}` (vazio na versão 0). */
+  readonly deltaEntry: string;
 }
 
-/** Grade espacial de um tick: célula ("cx,cz", lado {@link VIEW_RADIUS} m) → jogadores e NPCs dentro dela. */
-type SpatialGrid = Map<string, { players: Entity[]; npcs: Entity[] }>;
+/** Célula da grade espacial: jogadores e NPCs dentro dela. */
+interface GridCell {
+  readonly players: Entity[];
+  readonly npcs: Entity[];
+}
+
+/** Grade espacial de um tick: célula ({@link Zone.cellKey}, lado {@link VIEW_RADIUS} m) → quem está nela. */
+type SpatialGrid = Map<number, GridCell>;
 
 /** Evento do tick já separado para o filtro por vista (`Zone.eventFor`): JSON, ids envolvidos e ponto (ou null). */
 interface PreparedEvent {
@@ -1476,12 +1489,37 @@ export class Zone {
    *   {@link applyAttack}); ninguém no alcance = sem alvo.
    */
   private npcThink(): void {
+    // Percepção dos zumbis pela grade dos jogadores ([INFRA-11] fase 2): cada um olha só as células em volta de casa,
+    // não a zona inteira (102 zumbis × 400 jogadores eram 40 mil contas por tick). Montada só se tem jogador.
+    const playerGrid: SpatialGrid | null = this.players.size === 0 ? null : this.buildGrid(false);
     for (const npc of this.dummies.values()) {
       if (npc.dead) continue;
       if (npc.behavior.kind === "shooter") this.shooterThink(npc, npc.behavior);
       else if (npc.behavior.kind === "brawler") this.brawlerThink(npc);
-      else if (npc.behavior.kind === "zombie") this.zombieThink(npc, npc.behavior);
+      else if (npc.behavior.kind === "zombie") this.zombieThink(npc, npc.behavior, playerGrid);
     }
+  }
+
+  /**
+   * Jogadores da [grid] a até [radius] m de (x, z), sem olhar o resto da zona. Cobre as células que o círculo toca
+   * (raio maior que uma célula também funciona).
+   */
+  private static playersNear(grid: SpatialGrid, x: number, z: number, radius: number): ZonePlayer[] {
+    const found: ZonePlayer[] = [];
+    const radiusSq: number = radius * radius;
+    for (let cx = Zone.cellOf(x - radius); cx <= Zone.cellOf(x + radius); cx++) {
+      for (let cz = Zone.cellOf(z - radius); cz <= Zone.cellOf(z + radius); cz++) {
+        const cell: GridCell | undefined = grid.get(Zone.cellKey(cx, cz));
+        if (cell === undefined) continue;
+        for (const entity of cell.players) {
+          if (entity.kind !== "player") continue;
+          const dx: number = entity.state.x - x;
+          const dz: number = entity.state.z - z;
+          if (dx * dx + dz * dz <= radiusSq) found.push(entity);
+        }
+      }
+    }
+    return found;
   }
 
   /**
@@ -1491,7 +1529,7 @@ export class Zone {
    * lançamento em andamento → usa a habilidade (pronta e no alcance dela), senão anda até o alcance do ataque simples
    * (o golpe é o mesmo dos jogadores, {@link applyAttack}). Lançando, fica parado.
    */
-  private zombieThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "zombie" }>): void {
+  private zombieThink(npc: ZoneDummy, behavior: Extract<NpcBehavior, { kind: "zombie" }>, playerGrid: SpatialGrid | null): void {
     if (npc.returning) {
       if (this.walkToward(npc, npc.home.x, npc.home.z, behavior.speed)) {
         npc.returning = false;
@@ -1504,11 +1542,14 @@ export class Zone {
       return;
     }
     // Percepção: quem chega perto da casa entra na tabela com uma ameaça pequena, só para ele começar a vir.
-    for (const player of this.players.values()) {
-      if (this.isEnemy(npc, player) && Zone.distance(player.state, npc.home) <= behavior.aggroRadius) {
-        npc.threat.ensure(player.id, THREAT_INITIAL);
+    if (playerGrid !== null) {
+      for (const player of Zone.playersNear(playerGrid, npc.home.x, npc.home.z, behavior.aggroRadius)) {
+        if (this.isEnemy(npc, player)) npc.threat.ensure(player.id, THREAT_INITIAL);
       }
     }
+    // Dormindo: em casa, sem ninguém na tabela nem provocação, nada a fazer neste tick.
+    if (npc.threat.size === 0 && npc.tauntedBy === null && npc.attackTarget === null && npc.cast === null &&
+      npc.state.x === npc.home.x && npc.state.z === npc.home.z) return;
     const target: ZonePlayer | undefined = this.chooseZombieTarget(npc);
     if (target === undefined) {
       this.setNpcTarget(npc, null);
@@ -2519,17 +2560,15 @@ export class Zone {
       next.set(entity.id, now);
       const before: EntityFields | undefined = viewer.view.get(entity.id);
       if (before === now) continue;
-      let diff: string;
-      if (before === undefined || before.values.length !== now.values.length) {
-        diff = now.full;
-      } else {
-        diff = "";
-        for (let i = 0; i < now.values.length; i++) {
-          if (before.values[i] !== now.values[i]) diff += (diff.length > 0 ? "," : "") + (now.parts[i] ?? "");
-        }
-        if (diff.length === 0) continue;
+      let entry: string;
+      if (before === undefined) entry = now.fullEntry;
+      // O caso comum (viu a versão anterior): a entrada já está pronta, igual para todos.
+      else if (before.version === now.version - 1) entry = now.deltaEntry;
+      else {
+        const diff: string = Zone.fieldsDiff(before, now.values, now.parts);
+        entry = diff.length === 0 ? "" : `{"id":${now.idJson},${diff}}`;
       }
-      out += `${out.length > 0 ? "," : ""}{"id":${now.idJson},${diff}}`;
+      if (entry.length > 0) out += (out.length > 0 ? "," : "") + entry;
     }
     return out;
   }
@@ -2546,19 +2585,49 @@ export class Zone {
       const values: Array<number | boolean> = [snap.x, snap.y, snap.z, snap.rotY, snap.hp, snap.maxHp, snap.level, snap.dead, snap.shield, snap.guard, snap.speed];
       if (snap.mana !== undefined && snap.maxMana !== undefined) values.push(snap.mana, snap.maxMana);
       const cached: EntityFields | undefined = this.fieldCache.get(entity.id);
-      if (cached !== undefined && cached.values.length === values.length && cached.values.every((v, i) => v === values[i])) continue;
+      if (cached !== undefined && Zone.sameValues(cached.values, values)) continue;
       const parts: string[] = values.map((value, i) => `"${SNAPSHOT_FIELD_KEYS[i] ?? ""}":${String(value)}`);
-      this.fieldCache.set(entity.id, { idJson: JSON.stringify(entity.id), values, parts, full: parts.join(",") });
+      const idJson: string = cached?.idJson ?? JSON.stringify(entity.id);
+      const fullEntry: string = `{"id":${idJson},${parts.join(",")}}`;
+      const delta: string = cached === undefined ? "" : Zone.fieldsDiff(cached, values, parts);
+      this.fieldCache.set(entity.id, {
+        idJson,
+        values,
+        parts,
+        version: cached === undefined ? 0 : cached.version + 1,
+        fullEntry,
+        deltaEntry: delta.length === 0 ? "" : `{"id":${idJson},${delta}}`,
+      });
     }
     for (const id of Array.from(this.fieldCache.keys())) if (!alive.has(id)) this.fieldCache.delete(id);
   }
 
-  /** Grade espacial do tick (células de {@link VIEW_RADIUS} m): quem está perto de alguém fica nas 9 células em volta. */
-  private buildGrid(): SpatialGrid {
+  /** Mesmos valores, na mesma ordem. */
+  private static sameValues(a: ReadonlyArray<number | boolean>, b: ReadonlyArray<number | boolean>): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  /** Pedaços de JSON (`"x":1.25,...`) dos campos de [values] diferentes de [before] (outra quantidade = todos). */
+  private static fieldsDiff(before: EntityFields, values: ReadonlyArray<number | boolean>, parts: readonly string[]): string {
+    if (before.values.length !== values.length) return parts.join(",");
+    let diff: string = "";
+    for (let i = 0; i < values.length; i++) {
+      if (before.values[i] !== values[i]) diff += (diff.length > 0 ? "," : "") + (parts[i] ?? "");
+    }
+    return diff;
+  }
+
+  /**
+   * Grade espacial (células de {@link VIEW_RADIUS} m): quem está perto de alguém fica nas 9 células em volta.
+   * `withNpcs = false` monta só a dos jogadores (percepção dos monstros, {@link npcThink}).
+   */
+  private buildGrid(withNpcs: boolean = true): SpatialGrid {
     const grid: SpatialGrid = new Map();
     const add = (entity: Entity, kind: "players" | "npcs"): void => {
-      const key: string = Zone.cellKey(Math.floor(entity.state.x / VIEW_RADIUS), Math.floor(entity.state.z / VIEW_RADIUS));
-      let cell: { players: Entity[]; npcs: Entity[] } | undefined = grid.get(key);
+      const key: number = Zone.cellKey(Zone.cellOf(entity.state.x), Zone.cellOf(entity.state.z));
+      let cell: GridCell | undefined = grid.get(key);
       if (cell === undefined) {
         cell = { players: [], npcs: [] };
         grid.set(key, cell);
@@ -2566,12 +2635,21 @@ export class Zone {
       cell[kind].push(entity);
     };
     for (const player of this.players.values()) add(player, "players");
-    for (const npc of this.dummies.values()) add(npc, "npcs");
+    if (withNpcs) for (const npc of this.dummies.values()) add(npc, "npcs");
     return grid;
   }
 
-  private static cellKey(cx: number, cz: number): string {
-    return `${cx},${cz}`;
+  /** Coluna/linha da grade de uma coordenada (m). */
+  private static cellOf(coordinate: number): number {
+    return Math.floor(coordinate / VIEW_RADIUS);
+  }
+
+  /**
+   * Chave numérica da célula (mais barata que texto no `Map`). Única enquanto |cz| < 2048 células (92 km): o mapa
+   * tem 300 m.
+   */
+  private static cellKey(cx: number, cz: number): number {
+    return cx * 4096 + cz;
   }
 
   /** O que vai no `me` de [player] (todos os campos; {@link meDiff} escolhe os que mudaram). */
@@ -2615,21 +2693,31 @@ export class Zone {
    */
   private selectView(viewer: ZonePlayer, grid: SpatialGrid): { players: Entity[]; npcs: Entity[] } {
     const group: readonly string[] = this.groups.membersOf(viewer.id);
-    const cx: number = Math.floor(viewer.state.x / VIEW_RADIUS);
-    const cz: number = Math.floor(viewer.state.z / VIEW_RADIUS);
+    const cx: number = Zone.cellOf(viewer.state.x);
+    const cz: number = Zone.cellOf(viewer.state.z);
+    const vx: number = viewer.state.x;
+    const vz: number = viewer.state.z;
+    const radiusSq: number = VIEW_RADIUS * VIEW_RADIUS;
     const pick = (kind: "players" | "npcs", max: number): Entity[] => {
       const always: Entity[] = [];
-      const near: Array<{ entity: Entity; distance: number }> = [];
+      // Candidatos e a distância² de cada um em listas paralelas (sem um objeto por candidato a cada tick).
+      const near: Entity[] = [];
+      const nearSq: number[] = [];
       for (let dx = -1; dx <= 1; dx++) {
         for (let dz = -1; dz <= 1; dz++) {
-          const cell: { players: Entity[]; npcs: Entity[] } | undefined = grid.get(Zone.cellKey(cx + dx, cz + dz));
+          const cell: GridCell | undefined = grid.get(Zone.cellKey(cx + dx, cz + dz));
           if (cell === undefined) continue;
           for (const entity of cell[kind]) {
             if (entity.id === viewer.id || entity.id === viewer.attackTarget) continue;
-            const distance: number = Zone.distance(entity.state, viewer.state);
-            if (distance > VIEW_RADIUS) continue;
-            if (group.includes(entity.id)) always.push(entity);
-            else near.push({ entity, distance });
+            const ex: number = entity.state.x - vx;
+            const ez: number = entity.state.z - vz;
+            const distanceSq: number = ex * ex + ez * ez;
+            if (distanceSq > radiusSq) continue;
+            if (group.length > 0 && group.includes(entity.id)) always.push(entity);
+            else {
+              near.push(entity);
+              nearSq.push(distanceSq);
+            }
           }
         }
       }
@@ -2639,8 +2727,16 @@ export class Zone {
         const entity: Entity | undefined = kind === "players" ? this.players.get(id) : this.dummies.get(id);
         if (entity !== undefined && !always.includes(entity)) always.push(entity);
       }
-      if (near.length > max) near.sort((a, b) => a.distance - b.distance).length = max;
-      for (const { entity } of near) always.push(entity);
+      if (near.length <= max) {
+        for (const entity of near) always.push(entity);
+        return always;
+      }
+      // Multidão: só os `max` mais perto.
+      const order: number[] = near.map((_, i) => i).sort((a, b) => (nearSq[a] ?? 0) - (nearSq[b] ?? 0));
+      for (let i = 0; i < max; i++) {
+        const entity: Entity | undefined = near[order[i] ?? 0];
+        if (entity !== undefined) always.push(entity);
+      }
       return always;
     };
     return { players: pick("players", MAX_VIEW_PLAYERS), npcs: pick("npcs", MAX_VIEW_NPCS) };

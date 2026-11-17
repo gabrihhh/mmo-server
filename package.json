@@ -13,6 +13,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "clean": "rimraf build",
     "typecheck": "tsc --noEmit",
+    "bench": "tsx bench/zone.bench.ts",
     "test": "mocha -r tsx test/**.test.ts --exit --timeout 15000",
     "db:up": "docker compose up -d mongo",
     "db:down": "docker compose stop mongo"

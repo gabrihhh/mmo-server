@@ -140,6 +140,20 @@ describe("ameaça (aggro) dos monstros", () => {
     assert.strictEqual(table.size, 0);
   });
 
+  it("percepção pela grade ([INFRA-11]): acha quem está no raio (até maior que uma célula de 45 m) e ignora o resto", () => {
+    // Casa na borda de uma célula (x = 44,9) e raio de 60 m: o círculo cobre várias células da grade.
+    const zone: Zone = zoneWith([zombie("z1", 44.9, 0, { behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 60, leashRadius: 200, speed: 0 } })]);
+    join(zone, "dentro", 44.9 - 59, 0);
+    join(zone, "diagonal", 44.9 + 40, 40);
+    join(zone, "fora", 44.9 + 61, 0);
+    join(zone, "longe", -140, -140);
+    ticks(zone, 1);
+    assert.strictEqual(threat(zone, "z1", "dentro"), THREAT_INITIAL);
+    assert.strictEqual(threat(zone, "z1", "diagonal"), THREAT_INITIAL, "56,6 m na diagonal, outra célula");
+    assert.strictEqual(threat(zone, "z1", "fora"), 0);
+    assert.strictEqual(threat(zone, "z1", "longe"), 0);
+  });
+
   it("dano gera ameaça (1 por ponto) e entra na tabela; percepção dá a ameaça inicial", () => {
     const zone = zoneWith([zombie("z", 0, 0), zombie("z2", 30, 0, { behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 5, leashRadius: 50, speed: 3.5 } })]);
     join(zone, "a", 0, 2);
