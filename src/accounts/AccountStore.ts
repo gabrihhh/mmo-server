@@ -4,6 +4,7 @@ import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
+import { EMPTY_PERIODS, readPeriods, type PeriodCounters, type RankingSource } from "../progression/ranking.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { DEFAULT_SOCIAL_SETTINGS, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
@@ -44,6 +45,8 @@ export interface Account {
   readonly progress: Progress;
   /** Contadores do perfil: XP de monstros, jogadores mortos, mortes ([SOC-08]). Conta antiga: tudo zero. */
   readonly stats: PlayerStats;
+  /** Contadores do dia e da semana para os rankings ([SOC-07]). Conta antiga: vazio. */
+  readonly periods: PeriodCounters;
   /** Amigos (ids de jogador, amizade mútua, [SOC-04]). Conta nova/antiga: nenhum. Fakes de teste não entram aqui. */
   readonly friends: readonly string[];
   /** Configuração social (Sempre/Ocultar pedidos de amizade e convites de grupo, [SOC-04]). Conta antiga: mostra tudo. */
@@ -104,8 +107,13 @@ export interface AccountStore {
   saveInventory(playerId: string, inventory: Inventory): Promise<void>;
   /** Salva nível e XP (chamado quando o jogador ganha XP, [JOGO-12]). */
   saveProgress(playerId: string, progress: Progress): Promise<void>;
-  /** Salva os contadores do perfil (matou monstro/jogador, morreu, [SOC-08]). */
-  saveStats(playerId: string, stats: PlayerStats): Promise<void>;
+  /** Salva os contadores do perfil (matou monstro/jogador, morreu, [SOC-08]) e os do dia/semana ([SOC-07]). */
+  saveStats(playerId: string, stats: PlayerStats, periods: PeriodCounters): Promise<void>;
+  /**
+   * Contas que entram nos rankings ([SOC-07]): as que já pontuaram (XP de monstros ou jogadores mortos), sem as de
+   * convidado (e-mail `@convidado.local`).
+   */
+  rankingSources(): Promise<RankingSource[]>;
   /**
    * Grava o corpo do personagem SE ainda não houver um (a escolha é para sempre). `true` = gravou; `false` = já tinha
    * (ou conta inexistente).
@@ -155,6 +163,14 @@ export function hashSessionToken(sessionToken: string): string {
   return createHash("sha256").update(sessionToken).digest("hex");
 }
 
+/** Domínio de e-mail das contas "Entrar como convidado" (teste, [CLI-05]): ficam fora dos rankings ([SOC-07]). */
+export const GUEST_EMAIL_DOMAIN = "@convidado.local";
+
+/** `true` se o e-mail (já em minúsculas) é de conta de convidado. */
+export function isGuestEmail(emailKey: string): boolean {
+  return emailKey.endsWith(GUEST_EMAIL_DOMAIN);
+}
+
 /** Registro interno da versão em memória. */
 interface MemoryRecord {
   playerId: string;
@@ -168,6 +184,7 @@ interface MemoryRecord {
   body: BodyType | null;
   progress: Progress;
   stats: PlayerStats;
+  periods: PeriodCounters;
   friends: string[];
   social: SocialSettings;
   guildLeftAt: number | null;
@@ -203,6 +220,7 @@ export class InMemoryAccountStore implements AccountStore {
       body: null,
       progress: STARTING_PROGRESS,
       stats: STARTING_STATS,
+      periods: EMPTY_PERIODS,
       friends: [],
       social: DEFAULT_SOCIAL_SETTINGS,
       guildLeftAt: null,
@@ -245,9 +263,17 @@ export class InMemoryAccountStore implements AccountStore {
     if (record !== undefined) record.progress = progress;
   }
 
-  async saveStats(playerId: string, stats: PlayerStats): Promise<void> {
+  async saveStats(playerId: string, stats: PlayerStats, periods: PeriodCounters): Promise<void> {
     const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
-    if (record !== undefined) record.stats = stats;
+    if (record === undefined) return;
+    record.stats = stats;
+    record.periods = periods;
+  }
+
+  async rankingSources(): Promise<RankingSource[]> {
+    return this.records
+      .filter((r) => !isGuestEmail(r.emailKey) && (r.stats.monsterXp > 0 || r.stats.kills > 0))
+      .map((r) => ({ id: r.playerId, name: r.username, stats: readStats(r.stats), periods: readPeriods(r.periods) }));
   }
 
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
@@ -337,6 +363,7 @@ export class InMemoryAccountStore implements AccountStore {
       body: record.body,
       progress: readProgress(record.progress),
       stats: readStats(record.stats),
+      periods: readPeriods(record.periods),
       friends: readFriendIds(record.friends),
       social: readSocialSettings(record.social),
       guildLeftAt: record.guildLeftAt,

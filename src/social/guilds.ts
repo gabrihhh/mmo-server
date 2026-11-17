@@ -190,6 +190,11 @@ export class Guilds {
     return guild === undefined ? null : { id: guild.id, tag: guild.tag };
   }
 
+  /** Todas as guildas (ranking de guilda, [SOC-07]). */
+  all(): GuildRecord[] {
+    return Array.from(this.guilds.values());
+  }
+
   /** A guilda inteira (testes e diagnóstico). */
   get(guildId: string): GuildRecord | undefined {
     return this.guilds.get(guildId);

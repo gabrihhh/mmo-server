@@ -1,4 +1,5 @@
 import { isAttributeId, type AttributeId } from "../items/attributes.js";
+import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type RankingPeriod } from "../progression/ranking.js";
 
 /**
  * Contrato de rede cliente ↔ servidor.
@@ -19,6 +20,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * (`version_mismatch`), a não ser que o pacote do cliente esteja desatualizado: aí vai `update_required` (v16).
  * v17: `group_positions` (posição dos membros do grupo longe, para o mapa; mmo-docs [SOC-03]).
  * v18: `tauntSeconds` no {@link AbilityView} (Desafio do cavaleiro provoca os monstros; mmo-docs [JOGO-14]).
+ * v31: rankings ([SOC-07]): `ranking_request { category, period }` → `ranking` (top 100, sua posição, quando vira).
  * v30: guilda ([SOC-06]): `guild_create`/`guild_invite`/`guild_answer`/`guild_leave`/`guild_kick`/`guild_role` →
  *   `guild`/`guild_invited`/`guild_notice`; `player_guild` (tag de um jogador da zona mudou); `guildId`/`guildTag` no
  *   {@link PlayerInfo}; `guildInvites` na Configuração social.
@@ -35,7 +37,7 @@ import { isAttributeId, type AttributeId } from "../items/attributes.js";
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 30;
+export const PROTOCOL_VERSION = 31;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -146,6 +148,8 @@ export const ClientMessageType = {
   GuildKick: "guild_kick",
   /** Líder promove a oficial / rebaixa a membro. Payload: {@link GuildRoleData}. */
   GuildRole: "guild_role",
+  /** Pede uma tabela de ranking ([SOC-07]). Payload: {@link RankingRequestData}. Resposta: {@link ServerMessageType.Ranking}. */
+  RankingRequest: "ranking_request",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -218,6 +222,8 @@ export const ServerMessageType = {
    * guildeiro. Payload: {@link PlayerGuildData}.
    */
   PlayerGuild: "player_guild",
+  /** Uma tabela de ranking (resposta ao `ranking_request`, [SOC-07]). Payload: {@link RankingData}. */
+  Ranking: "ranking",
   /**
    * Há um pacote do jogo mais novo para a plataforma do cliente (mmo-docs [INFRA-08]): vai no lugar do `auth_ok` (cliente
    * que entra com pacote velho) ou a quem já está jogando quando uma versão nova é publicada. Logo depois o servidor fecha
@@ -736,7 +742,8 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.GuildAnswer; readonly data: GuildAnswerData }
   | { readonly type: typeof ClientMessageType.GuildLeave; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.GuildKick; readonly data: GuildTargetData }
-  | { readonly type: typeof ClientMessageType.GuildRole; readonly data: GuildRoleData };
+  | { readonly type: typeof ClientMessageType.GuildRole; readonly data: GuildRoleData }
+  | { readonly type: typeof ClientMessageType.RankingRequest; readonly data: RankingRequestData };
 
 /** Estado público de um jogador, como vai no `snapshot` (a cada tick, sem o nome para economizar). */
 export interface PlayerSnapshot {
@@ -1201,6 +1208,37 @@ export interface GuildNoticeData {
   readonly message: string;
 }
 
+/** Payload de `ranking_request`. */
+export interface RankingRequestData {
+  readonly category: RankingCategory;
+  readonly period: RankingPeriod;
+}
+
+/** Uma linha de ranking: posição, id (jogador ou guilda), nome (ou "[TAG] Nome") e valor (XP ou jogadores mortos). */
+export interface RankingRowView {
+  readonly rank: number;
+  readonly id: string;
+  readonly name: string;
+  readonly value: number;
+}
+
+/** Payload de `ranking` ([SOC-07]). */
+export interface RankingData {
+  readonly category: RankingCategory;
+  readonly period: RankingPeriod;
+  /** Top 100. */
+  readonly rows: readonly RankingRowView[];
+  /** A SUA linha (ou a da sua guilda nos rankings de guilda); `null` = ainda não pontuou / sem guilda. */
+  readonly me: RankingRowView | null;
+  /** Segundos até o período virar (0 = global, não vira). */
+  readonly resetsIn: number;
+  /** Há quantos segundos a tabela foi calculada (atualiza a cada {@link RANKING_REFRESH_SECONDS} s). */
+  readonly age: number;
+}
+
+/** De quanto em quanto tempo (s) o servidor recalcula as tabelas de ranking (no máximo). */
+export const RANKING_REFRESH_SECONDS = 60;
+
 /** Payload de `player_guild`: a guilda nova de um jogador da zona (`null` = saiu/sem guilda). */
 export interface PlayerGuildData {
   readonly id: string;
@@ -1360,6 +1398,7 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.GuildInvited; readonly data: GuildInvitedData }
   | { readonly type: typeof ServerMessageType.GuildNotice; readonly data: GuildNoticeData }
   | { readonly type: typeof ServerMessageType.PlayerGuild; readonly data: PlayerGuildData }
+  | { readonly type: typeof ServerMessageType.Ranking; readonly data: RankingData }
   | { readonly type: typeof ServerMessageType.UpdateRequired; readonly data: UpdateRequiredData }
   | { readonly type: typeof ServerMessageType.Error; readonly data: { readonly code: ErrorCode; readonly message: string } };
 
@@ -1640,6 +1679,16 @@ export function parseGuildCreateData(data: unknown): GuildCreateData | null {
   return { name, tag };
 }
 
+/** Valida o payload de `ranking_request`. */
+export function parseRankingRequestData(data: unknown): RankingRequestData | null {
+  if (!isRecord(data)) return null;
+  const { category, period } = data;
+  const validCategory: RankingCategory | undefined = RANKING_CATEGORIES.find((c) => c === category);
+  const validPeriod: RankingPeriod | undefined = RANKING_PERIODS.find((p) => p === period);
+  if (validCategory === undefined || validPeriod === undefined) return null;
+  return { category: validCategory, period: validPeriod };
+}
+
 /** Valida o payload de `guild_role`. */
 export function parseGuildRoleData(data: unknown): GuildRoleData | null {
   if (!isRecord(data)) return null;
@@ -1808,6 +1857,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.GuildRole: {
       const data = parseGuildRoleData(raw);
       return data === null ? null : { type: ClientMessageType.GuildRole, data };
+    }
+    case ClientMessageType.RankingRequest: {
+      const data = parseRankingRequestData(raw);
+      return data === null ? null : { type: ClientMessageType.RankingRequest, data };
     }
     default:
       return null;

@@ -1,5 +1,6 @@
 import type { Progress } from "./progression/level.js";
 import type { PlayerStats } from "./progression/stats.js";
+import { RankingBoards, addToPeriods, secondsUntilReset, type PeriodCounters, type RankRow, type RankingCategory, type RankingPeriod } from "./progression/ranking.js";
 import type { AttributeId } from "./items/attributes.js";
 import type { UpgradeFailure } from "./items/upgrade.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -13,6 +14,7 @@ import {
   CloseCode,
   ErrorCode,
   PROTOCOL_VERSION,
+  RANKING_REFRESH_SECONDS,
   ServerMessageType,
   encodeServerMessage,
   parseClientMessage,
@@ -182,6 +184,10 @@ export class GameServer {
   private readonly friendRequests: FriendRequests;
   /** Guildas ([SOC-06]): todas na memória (carregadas em {@link listen}), gravadas no banco a cada mudança. */
   private readonly guilds: Guilds;
+  /** Tabelas de ranking calculadas ([SOC-07]); refeitas no máximo a cada {@link RANKING_REFRESH_SECONDS} s. */
+  private rankingBoards: RankingBoards | null = null;
+  /** Cálculo em andamento (vários pedidos juntos esperam o mesmo). */
+  private rankingBuild: Promise<RankingBoards> | null = null;
   /**
    * Amizades com jogadores fake de teste ([SOC-01]): fake não tem conta no banco, então a amizade com ele fica só na
    * memória do servidor (jogador → ids de fake), some quando o servidor reinicia e nunca vai para a conta.
@@ -612,7 +618,64 @@ export class GameServer {
       case ClientMessageType.GuildRole:
         this.guildRequest(session, (id) => this.guilds.setRole(id, message.data.playerId, message.data.role));
         return;
+      case ClientMessageType.RankingRequest:
+        void this.sendRanking(session, message.data.category, message.data.period);
+        return;
     }
+  }
+
+  /**
+   * Manda a tabela [category]/[period] ([SOC-07]): top 100 + a linha de quem pediu (ou da guilda dele). As tabelas
+   * vêm do cache ({@link rankingBoards}), refeito a partir do banco quando passa de {@link RANKING_REFRESH_SECONDS} s.
+   */
+  private async sendRanking(session: Session, category: RankingCategory, period: RankingPeriod): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    let boards: RankingBoards;
+    try {
+      boards = await this.currentRankings();
+    } catch (error: unknown) {
+      console.error("[ranking] falha ao calcular:", error);
+      this.sendError(session, ErrorCode.BadMessage, "Ranking indisponível agora. Tente de novo.");
+      return;
+    }
+    const guildCategory: boolean = category === "guild_monsters" || category === "guild_pvp";
+    const ownId: string | null = guildCategory ? (this.guilds.guildOf(account.playerId)?.id ?? null) : account.playerId;
+    const me: RankRow | null = ownId === null ? null : boards.rowOf(category, period, ownId);
+    const now: number = Date.now();
+    this.sendTo(account.playerId, {
+      type: ServerMessageType.Ranking,
+      data: {
+        category,
+        period,
+        rows: boards.top(category, period),
+        me,
+        resetsIn: secondsUntilReset(period, now),
+        age: Math.max(0, Math.round((now - boards.builtAtMs) / 1000)),
+      },
+    });
+  }
+
+  /** As tabelas atuais: o cache se tem menos de {@link RANKING_REFRESH_SECONDS} s, senão recalcula (uma vez só). */
+  private currentRankings(): Promise<RankingBoards> {
+    const cached: RankingBoards | null = this.rankingBoards;
+    if (cached !== null && Date.now() - cached.builtAtMs < RANKING_REFRESH_SECONDS * 1000) return Promise.resolve(cached);
+    if (this.rankingBuild !== null) return this.rankingBuild;
+    this.rankingBuild = this.options.accounts
+      .rankingSources()
+      .then((sources) => {
+        const guilds = this.guilds.all().map((g) => ({ id: g.id, name: `[${g.tag}] ${g.name}`, memberIds: g.members.map((m) => m.id) }));
+        const boards: RankingBoards = new RankingBoards(sources, guilds, Date.now());
+        this.rankingBoards = boards;
+        return boards;
+      })
+      .finally(() => {
+        this.rankingBuild = null;
+      });
+    return this.rankingBuild;
   }
 
   /** Pedido de guilda de quem está autenticado; recusado vira `error` só para ele ([SOC-06]). */
@@ -1395,8 +1458,12 @@ export class GameServer {
         },
         // Contadores do perfil ([SOC-08]): na sessão (próxima entrada) e no banco.
         onStats: (stats: PlayerStats): void => {
-          if (session.account !== null) session.account = { ...session.account, stats };
-          this.options.accounts.saveStats(account.playerId, stats).catch((error: unknown) => {
+          const current: Account | null = session.account;
+          if (current === null) return;
+          // Rankings do dia/semana ([SOC-07]): soma só o que aumentou agora (XP de monstros, jogadores mortos).
+          const periods: PeriodCounters = addToPeriods(current.periods, stats.monsterXp - current.stats.monsterXp, stats.kills - current.stats.kills, Date.now());
+          session.account = { ...current, stats, periods };
+          this.options.accounts.saveStats(account.playerId, stats, periods).catch((error: unknown) => {
             console.error(`[${session.connectionId}] falha ao salvar os contadores de ${account.username}:`, error);
           });
         },

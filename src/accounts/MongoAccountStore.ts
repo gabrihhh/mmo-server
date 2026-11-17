@@ -4,6 +4,7 @@ import { normalizeKey } from "./credentials.js";
 import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
+import { EMPTY_PERIODS, readPeriods, type PeriodCounters, type RankingSource } from "../progression/ranking.js";
 import { DEFAULT_SOCIAL_SETTINGS, isBodyType, readSocialSettings, type BodyType, type SocialSettings } from "../net/protocol.js";
 import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
@@ -50,6 +51,8 @@ interface AccountDocument {
   progress?: Progress;
   /** Contadores do perfil ([SOC-08]). Pode faltar em conta antiga (= tudo zero). Lido sempre por readStats. */
   stats?: PlayerStats;
+  /** Contadores do dia/semana dos rankings ([SOC-07]). Pode faltar (= vazio). Lido sempre por readPeriods. */
+  periods?: PeriodCounters;
   /** Amigos (ids de jogador, mútuo, [SOC-04]). Pode faltar em conta antiga (= nenhum). Lido sempre por readFriendIds. */
   friends?: string[];
   /** Configuração social ([SOC-04]). Pode faltar em conta antiga (= mostra tudo). Lido sempre por readSocialSettings. */
@@ -129,6 +132,7 @@ export class MongoAccountStore implements AccountStore {
         body: null,
         progress: STARTING_PROGRESS,
         stats: STARTING_STATS,
+        periods: EMPTY_PERIODS,
         friends: [],
         social: DEFAULT_SOCIAL_SETTINGS,
       };
@@ -189,8 +193,20 @@ export class MongoAccountStore implements AccountStore {
     await this.accounts.updateOne({ playerId }, { $set: { progress } });
   }
 
-  async saveStats(playerId: string, stats: PlayerStats): Promise<void> {
-    await this.accounts.updateOne({ playerId }, { $set: { stats } });
+  async saveStats(playerId: string, stats: PlayerStats, periods: PeriodCounters): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { stats, periods } });
+  }
+
+  async rankingSources(): Promise<RankingSource[]> {
+    const result: RankingSource[] = [];
+    const docs = this.accounts.find(
+      { $or: [{ "stats.monsterXp": { $gt: 0 } }, { "stats.kills": { $gt: 0 } }], emailKey: { $not: /@convidado\.local$/ } },
+      { projection: { playerId: 1, username: 1, stats: 1, periods: 1 } },
+    );
+    for await (const doc of docs) {
+      result.push({ id: doc.playerId, name: doc.username, stats: readStats(doc.stats), periods: readPeriods(doc.periods) });
+    }
+    return result;
   }
 
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
@@ -286,6 +302,7 @@ export class MongoAccountStore implements AccountStore {
       body: isBodyType(doc.body) ? doc.body : null,
       progress: readProgress(doc.progress),
       stats: readStats(doc.stats),
+      periods: readPeriods(doc.periods),
       friends: readFriendIds(doc.friends),
       social: readSocialSettings(doc.social),
       guildLeftAt: typeof doc.guildLeftAt === "number" ? doc.guildLeftAt : null,
