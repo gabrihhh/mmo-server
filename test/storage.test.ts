@@ -7,7 +7,7 @@ import { inventoryView } from "../src/items/view.js";
 describe("armazém ([JOGO-26])", () => {
   const base = (): Inventory => ({
     ...starterInventory(),
-    equipped: { hand: { uid: "w", itemId: "training_sword" }, head: null, chest: null, feet: null },
+    equipped: { hand: { uid: "w", itemId: "knight_sword" }, head: null, chest: null, feet: null },
     bag: [{ uid: "a", itemId: "knight_sword", level: 3 }],
   });
 
@@ -25,10 +25,10 @@ describe("armazém ([JOGO-26])", () => {
   });
 
   it("20 espaços por aba; cheio recusa; mochila cheia não deixa tirar", () => {
-    const full: Inventory = { ...base(), storage: Array.from({ length: STORAGE_TAB_SIZE }, (_, i) => ({ uid: `s${i}`, itemId: "training_hood" })) };
+    const full: Inventory = { ...base(), storage: Array.from({ length: STORAGE_TAB_SIZE }, (_, i) => ({ uid: `s${i}`, itemId: "mage_hat" })) };
     const refused = putInStorage(full, "a");
     assert.ok(!refused.ok && refused.reason === "storage_full");
-    const bagFull: Inventory = { ...full, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `b${i}`, itemId: "training_hood" })) };
+    const bagFull: Inventory = { ...full, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `b${i}`, itemId: "mage_hat" })) };
     const noRoom = takeFromStorage(bagFull, "s0");
     assert.ok(!noRoom.ok && noRoom.reason === "bag_full");
   });

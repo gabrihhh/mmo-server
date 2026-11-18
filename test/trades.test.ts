@@ -70,7 +70,8 @@ const ACCEPT: FakePlayerConfig = {
 };
 const REJECT: FakePlayerConfig = { ...ACCEPT, id: "fake_reject", name: "Fake Recusa", x: 4, autoReply: "reject" };
 
-const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
+/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
 
 function zone(): Zone {
   return new Zone({ id: "t", halfSize: 150, maxPlayers: 20, spawnRadius: 0, pvp: true, moveBuffer: 1, dummies: [], fakePlayers: [ACCEPT, REJECT] });
@@ -79,7 +80,7 @@ function zone(): Zone {
 /** Põe um jogador em (x, 0) com `gold` moedas e `items` na mochila (uid = `<id>-<n>`). */
 function player(z: Zone, id: string, x: number, gold: number, items: number): Member {
   const member = new Member(id);
-  member.bagItems = Array.from({ length: items }, (_, i) => ({ uid: `${id}-${i}`, itemId: "training_sword" }));
+  member.bagItems = Array.from({ length: items }, (_, i) => ({ uid: `${id}-${i}`, itemId: "knight_sword" }));
   z.join(member, { x, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 0, gold });
   return member;
 }

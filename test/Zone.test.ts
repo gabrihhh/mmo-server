@@ -203,13 +203,13 @@ describe("Zone", () => {
     const zone = newZone();
     const a = new FakeMember("a");
     const b = new FakeMember("b");
-    const sword: Look = { ...NO_LOOK, hand: "training_sword" };
+    const sword: Look = { ...NO_LOOK, hand: "knight_sword" };
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, new Map(), sword);
     const rb = zone.join(b);
     assert.ok(rb.status === "joined");
     assert.deepStrictEqual(rb.players.find((p) => p.id === "a")?.look, sword, "quem entra vê a espada de a");
 
-    const staff: Look = { ...NO_LOOK, hand: "training_staff" };
+    const staff: Look = { ...NO_LOOK, hand: "arcane_staff" };
     zone.setLoadout("a", UNARMED_ATTACK, new Map(), staff);
     zone.setLoadout("a", UNARMED_ATTACK, new Map(), staff); // igual: não repete o evento
     zone.tick();

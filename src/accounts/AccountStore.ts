@@ -38,7 +38,7 @@ export interface Account {
   readonly username: string;
   /** Onde o jogador estava ao sair pela última vez; `null` em conta nova. */
   readonly lastPosition: SavedPosition | null;
-  /** Itens vestidos e mochila ([JOGO-04]). Conta nova começa com o kit de treino. */
+  /** Itens vestidos e mochila ([JOGO-04]). Conta nova começa sem itens ({@link starterInventory}). */
   readonly inventory: Inventory;
   /** Corpo do personagem, escolhido uma vez na primeira entrada; `null` = ainda não escolheu. */
   readonly body: BodyType | null;

@@ -62,8 +62,8 @@ describe("catálogo e inventário", () => {
   /** Inventário com a espada vestida e o cajado na mochila. */
   function swordAndStaff(): Inventory {
     return {
-      equipped: { hand: { uid: "s", itemId: "training_sword" }, head: { uid: "h", itemId: "training_hood" }, chest: null, feet: { uid: "f", itemId: "training_boots" } },
-      bag: [{ uid: "st", itemId: "training_staff" }],
+      equipped: { hand: { uid: "s", itemId: "knight_sword" }, head: { uid: "h", itemId: "mage_hat" }, chest: null, feet: { uid: "f", itemId: "mage_shoes" } },
+      bag: [{ uid: "st", itemId: "arcane_staff" }],
       grants: ["sets_v1", "sets_v2"],
     };
   }
@@ -73,8 +73,8 @@ describe("catálogo e inventário", () => {
     const result = equip(inv, "st");
     assert.ok(result.ok);
     assert.strictEqual(result.inventory.equipped.hand?.uid, "st");
-    assert.deepStrictEqual(result.inventory.bag.map((s) => s.itemId), ["training_sword"]);
-    assert.strictEqual(inv.equipped.hand?.itemId, "training_sword", "o original não muda");
+    assert.deepStrictEqual(result.inventory.bag.map((s) => s.itemId), ["knight_sword"]);
+    assert.strictEqual(inv.equipped.hand?.itemId, "knight_sword", "o original não muda");
   });
 
   it("equip em slot vazio tira o item da mochila", () => {
@@ -97,12 +97,12 @@ describe("catálogo e inventário", () => {
     assert.strictEqual(off.inventory.equipped.head, null);
     assert.deepStrictEqual(unequip(off.inventory, "head"), { ok: false, reason: "slot_empty" });
 
-    const full: Inventory = { ...inv, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `u${i}`, itemId: "training_staff" })) };
+    const full: Inventory = { ...inv, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `u${i}`, itemId: "arcane_staff" })) };
     assert.deepStrictEqual(unequip(full, "feet"), { ok: false, reason: "bag_full" });
   });
 
   it("arrastar: unequip na vaga solta e bag_move troca de lugar ([CLI-10])", () => {
-    const inv: Inventory = { ...swordAndStaff(), bag: [{ uid: "a", itemId: "training_staff" }, { uid: "b", itemId: "arcane_staff" }] };
+    const inv: Inventory = { ...swordAndStaff(), bag: [{ uid: "a", itemId: "arcane_staff" }, { uid: "b", itemId: "arcane_staff" }] };
     const off = unequip(inv, "head", 1);
     assert.ok(off.ok);
     assert.deepStrictEqual(off.inventory.bag.map((s) => s.uid), ["a", "h", "b"], "entra na vaga 1, os outros andam");
@@ -113,7 +113,7 @@ describe("catálogo e inventário", () => {
     const swapped = moveInBag(inv, 0, 1);
     assert.ok(swapped.ok);
     assert.deepStrictEqual(swapped.inventory.bag.map((s) => s.uid), ["b", "a"]);
-    const toEmpty = moveInBag({ ...inv, bag: [...inv.bag, { uid: "c", itemId: "training_hood" }] }, 0, 20);
+    const toEmpty = moveInBag({ ...inv, bag: [...inv.bag, { uid: "c", itemId: "mage_hat" }] }, 0, 20);
     assert.ok(toEmpty.ok);
     assert.deepStrictEqual(toEmpty.inventory.bag.map((s) => s.uid), ["b", "c", "a"], "vaga livre = vai para o fim");
     assert.deepStrictEqual(moveInBag(inv, 5, 0), { ok: false, reason: "item_not_found" });
@@ -123,8 +123,8 @@ describe("catálogo e inventário", () => {
   it("readInventory: sem dado → inicial; item desconhecido some; slot errado vai para a mochila", () => {
     assert.strictEqual(readInventory(undefined).equipped.hand, null);
     const inv: Inventory = readInventory({
-      equipped: { hand: { uid: "a", itemId: "training_boots" }, head: { uid: "b", itemId: "item_apagado" }, chest: null },
-      bag: [{ uid: "c", itemId: "training_staff" }, { lixo: true }],
+      equipped: { hand: { uid: "a", itemId: "mage_shoes" }, head: { uid: "b", itemId: "item_apagado" }, chest: null },
+      bag: [{ uid: "c", itemId: "arcane_staff" }, { lixo: true }],
       grants: ["sets_v1", "sets_v2"],
     });
     assert.strictEqual(inv.equipped.hand, null);
@@ -133,37 +133,37 @@ describe("catálogo e inventário", () => {
   });
 
   it("conta antiga (sem grants) recebe uma vez os conjuntos novos que ainda não tem, com uid fixo", () => {
-    const old = { equipped: { hand: { uid: "a", itemId: "knight_sword" } }, bag: [{ uid: "c", itemId: "training_staff" }] };
+    const old = { equipped: { hand: { uid: "a", itemId: "knight_sword" } }, bag: [{ uid: "c", itemId: "item_apagado" }] };
     const inv: Inventory = readInventory(old);
     assert.deepStrictEqual(inv.grants, ["sets_v1", "sets_v2"]);
-    const given: string[] = inv.bag.slice(1).map((s) => s.itemId);
+    const given: string[] = inv.bag.map((s) => s.itemId); // item_apagado some (não existe mais)
     const expected: string[] = [...MAGE_SET, ...KNIGHT_SET, ...RANGER_SET, ...ASSASSIN_SET, ...HEALER_SET];
     assert.deepStrictEqual(given, expected.filter((id) => id !== "knight_sword"), "não duplica o que já tem");
     assert.deepStrictEqual(readInventory(old).bag, inv.bag, "ler de novo antes de salvar dá os mesmos uids");
     assert.deepStrictEqual(readInventory(inv).bag, inv.bag, "depois de salvo não dá de novo");
 
-    const nearlyFull = { equipped: {}, bag: Array.from({ length: BAG_CAPACITY - 2 }, (_, i) => ({ uid: `u${i}`, itemId: "training_staff" })) };
+    const nearlyFull = { equipped: {}, bag: Array.from({ length: BAG_CAPACITY - 2 }, (_, i) => ({ uid: `u${i}`, itemId: "arcane_staff" })) };
     assert.strictEqual(readInventory(nearlyFull).bag.length, BAG_CAPACITY, "só o que couber");
   });
 
   it("view: cartas da arma, ataque simples e o soco sem arma", () => {
     const view = inventoryView(swordAndStaff());
-    assert.deepStrictEqual(view.equipped.hand?.abilities.map((a) => a.title), ["Golpe forte", "Investida", "Giro"]);
-    assert.strictEqual(view.equipped.hand?.basicAttack?.range, 2.5);
-    assert.strictEqual(view.equipped.feet?.abilities[0]?.id, "sprint");
+    assert.deepStrictEqual(view.equipped.hand?.abilities.map((a) => a.title), ["Corte em linha", "Avanço heroico", "Desafio"]);
+    assert.strictEqual(view.equipped.hand?.basicAttack?.range, 2.8);
+    assert.strictEqual(view.equipped.feet?.abilities[0]?.id, "blink");
     assert.strictEqual(view.unarmedAttack.id, "punch");
-    assert.strictEqual(view.equipped.feet?.abilities[0]?.cooldown, 12, "recarga vai para o cliente");
-    assert.strictEqual(view.equipped.hand?.basicAttack?.castTime, 1, "lançamento vai para o cliente");
-    assert.strictEqual(view.equipped.hand?.abilities[0]?.damage, 25, "dano vai para a ficha do item");
-    assert.strictEqual(view.equipped.hand?.set, "Treino");
+    assert.strictEqual(view.equipped.feet?.abilities[0]?.cooldown, 10, "recarga vai para o cliente");
+    assert.strictEqual(view.equipped.hand?.basicAttack?.castTime, 1.3, "lançamento vai para o cliente");
+    assert.strictEqual(view.equipped.hand?.abilities[0]?.damage, 14, "dano vai para a ficha do item");
+    assert.strictEqual(view.equipped.hand?.set, "Cavaleiro");
     assert.ok(view.equipped.head?.description);
   });
 
   it("destrói item da mochila ou vestido e recusa o que não existe ([JOGO-24])", () => {
     const inv: Inventory = {
       ...starterInventory(),
-      equipped: { hand: { uid: "w", itemId: "training_sword" }, head: null, chest: null, feet: null },
-      bag: [{ uid: "a", itemId: "training_staff" }, { uid: "b", itemId: "training_hood" }],
+      equipped: { hand: { uid: "w", itemId: "knight_sword" }, head: null, chest: null, feet: null },
+      bag: [{ uid: "a", itemId: "arcane_staff" }, { uid: "b", itemId: "mage_hat" }],
     };
     const fromBag = destroyItem(inv, "a");
     assert.ok(fromBag.ok);

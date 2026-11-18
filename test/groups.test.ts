@@ -85,7 +85,8 @@ const ACCEPT: FakePlayerConfig = {
 };
 const REJECT: FakePlayerConfig = { ...ACCEPT, id: "fake_reject", name: "Fake Recusa", x: 4, autoReply: "reject" };
 
-const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
+/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
 
 function abilityOf(itemId: string, abilityId: string): AbilityDef {
   const found: AbilityDef | undefined = ITEMS[itemId]?.abilities.find((a) => a.id === abilityId);
@@ -263,7 +264,7 @@ describe("grupo ([SOC-03])", () => {
 
   it("membros não se atacam nem tomam dano de área de membro (com PvP); quem é de fora toma", () => {
     const z = zone();
-    const meteor: AbilityDef = abilityOf("training_staff", "meteor");
+    const meteor: AbilityDef = abilityOf("arcane_staff", "starfall");
     const a = new Member("a");
     const b = new Member("b");
     const c = new Member("c");

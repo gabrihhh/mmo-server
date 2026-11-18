@@ -54,7 +54,7 @@ describe("MongoAccountStore (MongoDB real)", function () {
     const resumedInventory = resumed?.inventory;
     assert.strictEqual(resumedInventory?.equipped.hand, null, "conta nova nasce pelada");
     assert.deepStrictEqual(resumedInventory?.bag, [], "e sem nada na mochila ([JOGO-04])");
-    const sword = { uid: "espada", itemId: "training_sword" };
+    const sword = { uid: "espada", itemId: "knight_sword" };
     await store.saveInventory(byName.account.playerId, { ...resumedInventory, equipped: { ...resumedInventory.equipped, hand: sword } });
     assert.deepStrictEqual((await store.resume(byName.sessionToken))?.inventory.equipped.hand, sword, "inventário salvo");
 

@@ -7,7 +7,7 @@ describe("loja do ferreiro ([JOGO-23])", () => {
   it("preço de venda: 20% da compra + 25% do custo de melhoria até o nível", () => {
     assert.strictEqual(sellPrice({ uid: "a", itemId: "knight_sword" }), 100);
     assert.strictEqual(sellPrice({ uid: "a", itemId: "knight_sword", level: 5 }), 176);
-    assert.strictEqual(sellPrice({ uid: "a", itemId: "training_sword" }), 20);
+    assert.strictEqual(sellPrice({ uid: "a", itemId: "mage_hat" }), 100, "todo conjunto custa o mesmo");
   });
 
   it("compra põe item +0 no fim da mochila e cobra; recusa sem moedas ou mochila cheia", () => {
@@ -19,7 +19,7 @@ describe("loja do ferreiro ([JOGO-23])", () => {
     assert.strictEqual(bought.inventory.bag.at(-1)?.level, undefined);
     const poor = buyItem(inv, "knight_sword", 499);
     assert.ok(!poor.ok && poor.reason === "not_enough_gold");
-    const full: Inventory = { ...inv, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `b${i}`, itemId: "training_hood" })) };
+    const full: Inventory = { ...inv, bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({ uid: `b${i}`, itemId: "mage_hat" })) };
     const noRoom = buyItem(full, "knight_sword", 1000);
     assert.ok(!noRoom.ok && noRoom.reason === "bag_full");
     const unknown = buyItem(inv, "nao_existe", 1000);
@@ -29,7 +29,7 @@ describe("loja do ferreiro ([JOGO-23])", () => {
   it("venda tira da mochila e paga; item vestido não vende", () => {
     const inv: Inventory = {
       ...starterInventory(),
-      equipped: { hand: { uid: "w", itemId: "training_sword" }, head: null, chest: null, feet: null },
+      equipped: { hand: { uid: "w", itemId: "knight_sword" }, head: null, chest: null, feet: null },
       bag: [{ uid: "s", itemId: "knight_sword", level: 5 }],
     };
     const sold = sellItem(inv, "s");

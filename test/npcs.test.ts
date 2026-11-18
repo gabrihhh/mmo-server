@@ -51,7 +51,7 @@ const SHOOTER: DummyConfig = {
   x: 0,
   z: -16,
   body: "male",
-  behavior: { kind: "shooter", target: "bag", rotation: ["bolt", "fireball", "meteor"], pauseSeconds: 0.5 },
+  behavior: { kind: "shooter", target: "bag", rotation: ["quick_shot", "piercing_bolt", "bolt_rain"], pauseSeconds: 0.5 },
 };
 const BRAWLER: DummyConfig = { id: "brawler", name: "Brigão", x: 10, z: 0, body: "male", behavior: { kind: "brawler", weapon: "knight_sword" } };
 
@@ -63,7 +63,8 @@ function ticks(z: Zone, seconds: number): void {
   for (let i = 0; i < Math.round(seconds * TICK_RATE_HZ); i++) z.tick();
 }
 
-const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
+/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
 const KNIGHT_ATTACK: AbilityDef = ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK;
 
 describe("NPCs de teste", () => {
@@ -73,11 +74,11 @@ describe("NPCs de teste", () => {
     z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     ticks(z, 12);
     const casts: unknown[] = a.allEvents.filter((e) => e["type"] === "cast_start" && e["source"] === "shooter").map((e) => e["ability"]);
-    assert.deepStrictEqual(casts.slice(0, 3), ["bolt", "fireball", "meteor"], "segue a rotação");
+    assert.deepStrictEqual(casts.slice(0, 3), ["quick_shot", "piercing_bolt", "bolt_rain"], "segue a rotação");
     assert.ok(a.allEvents.some((e) => e["type"] === "damage" && e["source"] === "shooter" && e["target"] === "bag"), "acerta o saco");
-    assert.ok(a.allEvents.some((e) => e["type"] === "projectile" && e["source"] === "shooter"), "bola de fogo voa de verdade");
+    assert.ok(a.allEvents.some((e) => e["type"] === "projectile" && e["source"] === "shooter"), "virote voa de verdade");
     const look: unknown = a.allEvents.find((e) => e["type"] === "look" && e["id"] === "shooter")?.["look"];
-    assert.ok(typeof look === "object" && look !== null && "hand" in look && look.hand === "training_staff", "veste o conjunto");
+    assert.ok(typeof look === "object" && look !== null && "hand" in look && look.hand === "ranger_crossbow", "veste o conjunto");
     // Campos fixos do NPC vão no welcome (npcSnapshots), não no snapshot de cada tick ([INFRA-11]).
     const info = z.npcSnapshots().find((n) => n.id === "shooter");
     assert.strictEqual(info?.body, "male", "vai no welcome como humano");
@@ -85,14 +86,14 @@ describe("NPCs de teste", () => {
   });
 
   it("tiros e áreas do atirador acertam jogadores no caminho/área (não só o saco)", () => {
-    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["meteor", "fireball"], pauseSeconds: 0.5 } }]);
+    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt_rain", "piercing_bolt"], pauseSeconds: 0.5 } }]);
     const a = new Member("a");
-    // Em cima do saco (área do meteoro) e na linha da bola de fogo.
+    // Em cima do saco (área da chuva de virotes) e na linha do virote.
     z.join(a, { x: 0, y: 0, z: -9, rotY: 0 });
     ticks(z, 6);
     const hits: unknown[] = a.allEvents.filter((e) => e["type"] === "damage" && e["source"] === "shooter" && e["target"] === "a").map((e) => e["ability"]);
-    assert.ok(hits.includes("meteor"), "meteoro pegou o jogador na área");
-    assert.ok(hits.includes("fireball"), "bola de fogo pegou o jogador no caminho");
+    assert.ok(hits.includes("bolt_rain"), "chuva de virotes pegou o jogador na área");
+    assert.ok(hits.includes("piercing_bolt"), "virote pegou o jogador no caminho");
   });
 
   it("atirador é invulnerável e não é alvo de ataque", () => {
@@ -126,7 +127,7 @@ describe("NPCs de teste", () => {
 
   it("saco em 1 de vida volta à vida cheia depois do tempo, mesmo apanhando sem parar", () => {
     // Três posições de carta diferentes (hand:2, hand:0, hand:1): não esperam a recarga uma da outra.
-    const z = zone([{ ...BAG, maxHp: 30 }, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt", "fireball", "meteor"], pauseSeconds: 0 } }]);
+    const z = zone([{ ...BAG, maxHp: 30 }, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["quick_shot", "piercing_bolt", "bolt_rain"], pauseSeconds: 0 } }]);
     const a = new Member("a");
     z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     const seen: number[] = [];
@@ -142,19 +143,19 @@ describe("NPCs de teste", () => {
   });
 
   it("saco recupera vida depois de um tempo sem apanhar", () => {
-    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["bolt"], pauseSeconds: 100 } }]);
+    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["quick_shot"], pauseSeconds: 100 } }]);
     const a = new Member("a");
     z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     ticks(z, 3);
     const hit: unknown = a.field("bag", "hp");
-    assert.ok(typeof hit === "number" && hit < DUMMY_MAX_HP, "levou o raio");
+    assert.ok(typeof hit === "number" && hit < DUMMY_MAX_HP, "levou o tiro");
     ticks(z, 5);
     assert.strictEqual(a.field("bag", "hp"), DUMMY_MAX_HP, "encheu de novo");
   });
 
   it("atirador respeita a recarga da POSIÇÃO da carta: habilidade de outro item na mesma posição espera", () => {
-    // Bola de fogo (Treino, hand:0, recarga 4 s) e Lança de gelo (Mago, hand:0): mesma posição.
-    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["fireball", "ice_lance"], pauseSeconds: 0 } }]);
+    // Virote certeiro (Atirador, hand:0, recarga 5 s) e Lança de gelo (Mago, hand:0): mesma posição.
+    const z = zone([BAG, { ...SHOOTER, behavior: { kind: "shooter", target: "bag", rotation: ["piercing_bolt", "ice_lance"], pauseSeconds: 0 } }]);
     const a = new Member("a");
     z.join(a, { x: 25, y: 0, z: 15, rotY: 0 });
     const startTicks: number[] = [];
@@ -165,8 +166,8 @@ describe("NPCs de teste", () => {
     }
     assert.ok(startTicks.length >= 2);
     const gap: number = ((startTicks[1] ?? 0) - (startTicks[0] ?? 0)) / TICK_RATE_HZ;
-    const fireball: AbilityDef | undefined = ITEMS["training_staff"]?.abilities[0];
-    assert.ok(fireball !== undefined && gap >= fireball.cooldown - 0.05, `esperou a recarga da bola de fogo (${gap} s)`);
+    const piercing: AbilityDef | undefined = ITEMS["ranger_crossbow"]?.abilities[0];
+    assert.ok(piercing !== undefined && gap >= piercing.cooldown - 0.05, `esperou a recarga do virote (${gap} s)`);
   });
 
   it("brigão bate em quem chega perto (não em quem está longe), morre e reaparece", () => {

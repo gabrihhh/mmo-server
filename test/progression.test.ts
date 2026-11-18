@@ -58,7 +58,8 @@ class Member implements ZoneMember {
   }
 }
 
-const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
+/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
 
 function zombieConfig(kind: "fighter" | "shooter", x: number, z: number, level: number = 1): DummyConfig {
   const fighter: boolean = kind === "fighter";
@@ -236,7 +237,7 @@ describe("zumbis", () => {
   it("atacado de fora do raio: vai atrás de quem bateu", () => {
     const zone = zoneWith([zombieConfig("fighter", 0, 0)]);
     const a = new Member("a");
-    const staff: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
+    const staff: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
     // 8,4 m de casa: fora do raio de 8 m, mas no alcance do cajado (8 m + 0,5 de folga).
     zone.join(a, { x: 0, y: 0, z: 8.4, rotY: 0 }, staff);
     ticks(zone, 20);
@@ -306,7 +307,7 @@ describe("zumbis", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 40 }]);
     const a = new Member("a");
     const b = new Member("b");
-    const staff: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
+    const staff: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, staff);
     zone.setAttackTarget("a", "zombie");
@@ -380,7 +381,7 @@ describe("zumbis", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
     const a = new Member("a");
     const b = new Member("b");
-    const staff: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
+    const staff: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     // b começa a golpear depois (cajado, lançamento mais longo): quando a espada de a mata, o golpe de b está no meio.
     zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, staff);

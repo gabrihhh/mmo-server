@@ -123,7 +123,7 @@ export interface ItemDef {
   readonly name: string;
   /** Frase curta (português) na ficha do item no inventário. Só exibição. */
   readonly description: string;
-  /** Conjunto a que o item pertence (agrupa na ficha: "Treino", "Mago", "Cavaleiro"...). Só exibição. */
+  /** Conjunto a que o item pertence (agrupa na ficha: "Mago", "Cavaleiro"...). Só exibição. */
   readonly set: string;
   readonly slot: EquipSlot;
   /** Vida máxima extra enquanto vestido (soma com as outras peças, [JOGO-09]). */
@@ -134,7 +134,7 @@ export interface ItemDef {
   readonly abilities: readonly AbilityDef[];
   /**
    * Pode sair nos baús dos acampamentos ([JOGO-19], `src/items/loot.ts`)? Padrão: sim — item novo entra no sorteio
-   * sozinho. `false` só no que não faz sentido ganhar (o kit de Treino, que toda conta já tem).
+   * sozinho. `false` só no que não faz sentido ganhar (hoje nenhum item).
    */
   readonly lootable?: boolean;
 }
@@ -194,7 +194,6 @@ export const MONSTER_ABILITIES: Readonly<Record<string, AbilityDef>> = {
  * Todo conjunto tem pelo menos uma carta defensiva (escudo, redução de dano, cura ou fuga).
  */
 export const SET_PROFILES: Readonly<Record<string, SetProfile>> = {
-  Treino: { damage: "medium", health: "low", healing: "low", cooldown: "medium" },
   Mago: { damage: "medium", health: "low", healing: "low", cooldown: "medium" },
   Cavaleiro: { damage: "low", health: "high", healing: "low", cooldown: "medium" },
   Atirador: { damage: "medium", health: "low", healing: "low", cooldown: "medium" },
@@ -203,80 +202,12 @@ export const SET_PROFILES: Readonly<Record<string, SetProfile>> = {
 };
 
 /**
- * Todos os itens que existem ([JOGO-03], [JOGO-09]): kit de treino + conjuntos Mago, Cavaleiro, Atirador, Assassino e
- * Curandeiro.
+ * Todos os itens que existem ([JOGO-09]): conjuntos Mago, Cavaleiro, Atirador, Assassino e Curandeiro (o kit de treino
+ * saiu do jogo em 2026-11-17, [JOGO-03]).
  * ATENÇÃO: cada itemId precisa de ícone em mmo-client/assets/icons/items/<itemId>.png e cada habilidade em
  * mmo-client/assets/icons/abilities/<abilityId>.png (sem ícone o cliente desenha um quadro vazio).
  */
 export const ITEMS: Readonly<Record<string, ItemDef>> = {
-  // --- Kit de treino -------------------------------------------------------------------------------------------
-  training_sword: {
-    id: "training_sword",
-    name: "Espada de treino",
-    description: "Espada curva de duas mãos, boa para aprender a lutar de perto.",
-    set: "Treino",
-    lootable: false,
-    slot: "hand",
-    bonusHp: 0,
-    basicAttack: ability({ id: "sword_attack", title: "Ataque", description: "Golpe de espada no alvo.", aim: "target", range: 2.5, cooldown: 1, castTime: 1, damage: 10 }),
-    abilities: [
-      // Corpo a corpo: acerta só quem está em volta do personagem (não precisa de alvo).
-      ability({ id: "heavy_strike", title: "Golpe forte", description: "Pancada no chão que acerta todos em volta.", aim: "area_self", radius: 2.5, cooldown: 6, castTime: 0.5, manaCost: 15, damage: 25 }),
-      // Sem lançamento: começa na hora e percorre 6 m em 0,3 s pela fila de movimento (predição exata, [JOGO-07]).
-      ability({ id: "dash", title: "Investida", description: "Avança rápido na direção escolhida.", aim: "direction", range: 6, radius: 1, cooldown: 8, castTime: 0, manaCost: 10, dashDistance: 6, dashSeconds: 0.3 }),
-      ability({ id: "spin", title: "Giro", description: "Gira a espada e corta todos ao redor.", aim: "area_self", radius: 3, cooldown: 10, castTime: 0.4, manaCost: 20, damage: 15 }),
-    ],
-  },
-  training_staff: {
-    id: "training_staff",
-    name: "Cajado de treino",
-    description: "Cajado de madeira simples para as primeiras magias.",
-    set: "Treino",
-    lootable: false,
-    slot: "hand",
-    bonusHp: 0,
-    basicAttack: ability({ id: "staff_attack", title: "Ataque", description: "Faísca mágica no alvo.", aim: "target", range: 8, cooldown: 1.2, castTime: 1.2, damage: 7, releaseTime: 0.3 }),
-    abilities: [
-      ability({ id: "fireball", title: "Bola de fogo", description: "Projétil de fogo que acerta o primeiro no caminho (dá para desviar).", aim: "direction", range: 12, radius: 0.6, cooldown: 4, castTime: 0.6, manaCost: 15, damage: 20, projectileSpeed: 14 }),
-      ability({ id: "meteor", title: "Meteoro", description: "Meteoro cai no ponto escolhido e queima todos na área.", aim: "area", range: 10, radius: 2.5, cooldown: 12, castTime: 1, manaCost: 30, damage: 30 }),
-      ability({ id: "bolt", title: "Raio", description: "Raio rápido no alvo.", aim: "target", range: 10, cooldown: 7, castTime: 0.4, manaCost: 12, damage: 18, releaseTime: 0.15 }),
-    ],
-  },
-  training_hood: {
-    id: "training_hood",
-    name: "Capuz de treino",
-    description: "Capuz de linho grosso.",
-    set: "Treino",
-    lootable: false,
-    slot: "head",
-    bonusHp: 0,
-    basicAttack: null,
-    abilities: [ability({ id: "heal", title: "Cura", description: "Recupera um pouco de vida.", aim: "self", cooldown: 15, castTime: 0.8, manaCost: 25, heal: 30 })],
-  },
-  training_vest: {
-    id: "training_vest",
-    name: "Colete de treino",
-    description: "Colete de couro acolchoado.",
-    set: "Treino",
-    lootable: false,
-    slot: "chest",
-    bonusHp: 0,
-    basicAttack: null,
-    abilities: [ability({ id: "shield", title: "Escudo", description: "Escudo que absorve dano por pouco tempo.", aim: "self", cooldown: 18, castTime: 0.2, manaCost: 20, shield: 30, shieldSeconds: 4 })],
-  },
-  training_boots: {
-    id: "training_boots",
-    name: "Bota de treino",
-    description: "Botas de couro para correr.",
-    set: "Treino",
-    lootable: false,
-    slot: "feet",
-    bonusHp: 0,
-    basicAttack: null,
-    abilities: [
-      ability({ id: "sprint", title: "Disparada", description: "Corre com o dobro da velocidade por um instante.", aim: "self", cooldown: 12, castTime: 0, manaCost: 10, speedMultiplier: 2, speedSeconds: 2.5 }),
-    ],
-  },
 
   // --- Mago: dano médio constante de longe, vida baixa ----------------------------------------------------------
   arcane_staff: {
@@ -567,11 +498,10 @@ export const HEALER_SET: readonly string[] = ["healer_tome", "healer_circlet", "
 export const STARTER_BAG: readonly string[] = [];
 
 /**
- * Kit completo (treino + todos os conjuntos): o que a conta nova ganhava até 2026-11-16. Hoje só os testes usam, para
+ * Kit completo (todos os conjuntos): o que a conta nova ganhava até 2026-11-16. Hoje só os testes usam, para
  * ter itens para vestir ({@link InMemoryAccountStore} com `newInventory`).
  */
 export const FULL_KIT: readonly string[] = [
-  "training_sword", "training_staff", "training_hood", "training_vest", "training_boots",
   ...MAGE_SET,
   ...KNIGHT_SET,
   ...RANGER_SET,

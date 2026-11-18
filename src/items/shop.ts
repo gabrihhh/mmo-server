@@ -8,9 +8,7 @@ import { upgradeCost } from "./upgrade.js";
  * Preços provisórios.
  */
 
-/** Preço de compra (moedas) de uma peça do conjunto Treino. */
-export const TRAINING_PRICE = 100;
-/** Preço de compra (moedas) de uma peça dos demais conjuntos. */
+/** Preço de compra (moedas) de uma peça de qualquer conjunto. */
 export const SET_PRICE = 500;
 /** Parte do preço de compra que o ferreiro paga na venda (0,2 = 20%). */
 export const SELL_BASE_SHARE = 0.2;
@@ -19,7 +17,8 @@ export const SELL_UPGRADE_SHARE = 0.25;
 
 /** Preço de compra de [def] na loja. */
 export function buyPrice(def: ItemDef): number {
-  return def.set === "Treino" ? TRAINING_PRICE : SET_PRICE;
+  void def; // mesmo preço para todas as peças (o Treino, mais barato, saiu em 2026-11-17)
+  return SET_PRICE;
 }
 
 /** Itens à venda na loja: todo o catálogo, na ordem dele (agrupado por conjunto). */

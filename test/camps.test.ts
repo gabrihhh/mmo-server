@@ -26,7 +26,7 @@ class Member implements ZoneMember {
 }
 
 /** Golpe que mata na hora (os zumbis têm 1 de vida) e alcança os três. */
-const KILL: AbilityDef = { ...(ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK), damage: 9999, range: 6, castTime: 0.05, cooldown: 0.05 };
+const KILL: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), damage: 9999, range: 6, castTime: 0.05, cooldown: 0.05 };
 
 const zombie = (id: string, x: number, z: number, level: number, boss: boolean = false): DummyConfig => ({
   id,

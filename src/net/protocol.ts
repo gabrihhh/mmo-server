@@ -1259,7 +1259,7 @@ export interface ItemView {
   readonly uid: string;
   readonly itemId: string;
   readonly name: string;
-  /** Frase curta e conjunto ("Treino", "Mago", "Cavaleiro") para a ficha do item. */
+  /** Frase curta e conjunto ("Mago", "Cavaleiro", "Atirador") para a ficha do item. */
   readonly description: string;
   readonly set: string;
   readonly slot: EquipSlotName;
@@ -1309,7 +1309,7 @@ export interface InventoryView {
 export interface EquippedItemSummary {
   readonly itemId: string;
   readonly name: string;
-  /** Conjunto ("Treino", "Mago"...): cor da moldura do ícone no cliente. */
+  /** Conjunto ("Mago", "Cavaleiro"...): cor da moldura do ícone no cliente. */
   readonly set: string;
 }
 

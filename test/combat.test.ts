@@ -30,8 +30,9 @@ class Member implements ZoneMember {
   }
 }
 
-const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
-const STAFF: AbilityDef = ITEMS["training_staff"]?.basicAttack ?? UNARMED_ATTACK;
+/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
+const STAFF: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
 
 function zone(pvp: boolean = true): Zone {
   return new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });

@@ -36,17 +36,28 @@ class Member implements ZoneMember {
   }
 }
 
-/** Todas as habilidades do catálogo (o jogador de teste veste tudo). */
-const ALL: ReadonlyMap<string, AbilityDef> = new Map(
-  Object.values(ITEMS).flatMap((item) => item.abilities.map((a): [string, AbilityDef] => [a.id, a])),
-);
-const SWORD: AbilityDef = ITEMS["training_sword"]?.basicAttack ?? UNARMED_ATTACK;
-
 function abilityOf(itemId: string, abilityId: string): AbilityDef {
   const found: AbilityDef | undefined = ITEMS[itemId]?.abilities.find((a) => a.id === abilityId);
   assert.ok(found, abilityId);
   return found;
 }
+
+/**
+ * Cartas só do teste, com os números do antigo kit de treino (saiu do jogo em 2026-11-17): as contas de 110%/130%
+ * abaixo foram feitas com eles (Raio 18 no alvo, Bola de fogo 20 com projétil, Meteoro 30 em área). Fora do catálogo,
+ * cada uma tem a própria posição de carta (`Zone.cardSlot`).
+ */
+const TEST_BOLT: AbilityDef = { ...abilityOf("ranger_crossbow", "quick_shot"), id: "bolt", range: 10, cooldown: 7, castTime: 0.4, manaCost: 12, damage: 18, releaseTime: 0.15 };
+const TEST_FIREBALL: AbilityDef = { ...abilityOf("arcane_staff", "ice_lance"), id: "fireball", range: 12, radius: 0.6, cooldown: 4, castTime: 0.6, damage: 20, projectileSpeed: 14 };
+const TEST_METEOR: AbilityDef = { ...abilityOf("arcane_staff", "starfall"), id: "meteor", range: 10, radius: 2.5, cooldown: 12, castTime: 1, manaCost: 30, damage: 30 };
+
+/** Todas as habilidades do catálogo + as cartas só do teste (o jogador de teste veste tudo). */
+const ALL: ReadonlyMap<string, AbilityDef> = new Map([
+  ...Object.values(ITEMS).flatMap((item) => item.abilities.map((a): [string, AbilityDef] => [a.id, a])),
+  ...[TEST_BOLT, TEST_FIREBALL, TEST_METEOR].map((a): [string, AbilityDef] => [a.id, a]),
+]);
+/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
 
 /**
  * Zumbi lutador (espada longa, alcance 2,8 m) nível 0 em (x, z). Percepção quase nula (só entra na tabela quem bate)

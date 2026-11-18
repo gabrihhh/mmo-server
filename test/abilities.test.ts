@@ -88,7 +88,7 @@ describe("habilidades (cast)", () => {
   it("todos os conjuntos: toda carta de dano/cura/escudo é aceita e faz efeito no boneco/em si", () => {
     for (const itemId of [...MAGE_SET, ...KNIGHT_SET, ...RANGER_SET, ...ASSASSIN_SET, ...HEALER_SET]) {
       for (const ability of ITEMS[itemId]?.abilities ?? []) {
-        if (isMovementAbility(ability)) continue; // Teleporte/Avanço/Marcha: mesma regra de Investida/Disparada ([JOGO-07])
+        if (isMovementAbility(ability)) continue; // Teleporte/Avanço/Passos: testados à parte abaixo ([JOGO-07])
         const { z, a } = setup();
         const aim: Partial<CastData> =
           ability.aim === "target" ? { targetId: "dummy" } : ability.aim === "direction" ? { x: 0, z: -1 } : ability.aim === "area" ? { x: 0, z: -2 } : {};
@@ -102,62 +102,62 @@ describe("habilidades (cast)", () => {
     }
   });
 
-  it("Golpe forte: gasta mana, começa recarga, dano em volta no fim do lançamento (sem precisar de alvo)", () => {
+  it("Turbilhão de lâminas: gasta mana, começa recarga, dano em volta no fim do lançamento (sem precisar de alvo)", () => {
     const { z, a } = setup();
-    const strike: AbilityDef = def("training_sword", "heavy_strike");
+    const strike: AbilityDef = def("assassin_daggers", "blade_flurry");
     assert.strictEqual(strike.aim, "area_self");
-    assert.deepStrictEqual(z.castAbility("a", cast("heavy_strike")), { ok: true });
+    assert.deepStrictEqual(z.castAbility("a", cast("blade_flurry")), { ok: true });
     z.tick();
-    assert.ok(a.has("cast_start", "heavy_strike"));
+    assert.ok(a.has("cast_start", "blade_flurry"));
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP, "sem dano antes do fim");
     finish(z, strike);
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP - strike.damage);
-    const again = z.castAbility("a", cast("heavy_strike"));
+    const again = z.castAbility("a", cast("blade_flurry"));
     assert.ok(!again.ok && again.reason === "on_cooldown", "recarga");
   });
 
-  it("Golpe forte: não pega quem está longe (só em volta do personagem)", () => {
+  it("Turbilhão de lâminas: não pega quem está longe (só em volta do personagem)", () => {
     const { z, a } = setup({ x: 0, z: -4 });
-    const strike: AbilityDef = def("training_sword", "heavy_strike");
-    z.castAbility("a", cast("heavy_strike", { targetId: "dummy" }));
+    const strike: AbilityDef = def("assassin_daggers", "blade_flurry");
+    z.castAbility("a", cast("blade_flurry", { targetId: "dummy" }));
     finish(z, strike);
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP);
   });
 
   it("recarga é da POSIÇÃO da carta: trocar de arma não zera; a nova espera o que faltava e depois usa a dela", () => {
     const { z } = setup();
-    const meteor: AbilityDef = def("training_staff", "meteor"); // hand:1, recarga 12 s
+    const rain: AbilityDef = def("ranger_crossbow", "bolt_rain"); // hand:1 do Atirador, recarga 10 s
     const nova: AbilityDef = def("arcane_staff", "arcane_nova"); // hand:1 do Mago
-    z.setLoadout("a", UNARMED_ATTACK, new Map([[meteor.id, meteor]]));
-    assert.deepStrictEqual(z.castAbility("a", cast("meteor", { x: 0, z: -5 })), { ok: true });
-    for (let i = 0; i < Math.ceil(meteor.castTime * TICK_RATE_HZ) + 1; i++) z.tick();
+    z.setLoadout("a", UNARMED_ATTACK, new Map([[rain.id, rain]]));
+    assert.deepStrictEqual(z.castAbility("a", cast("bolt_rain", { x: 0, z: -5 })), { ok: true });
+    for (let i = 0; i < Math.ceil(rain.castTime * TICK_RATE_HZ) + 1; i++) z.tick();
     // Troca de arma: a carta da mesma posição agora é a Nova arcana.
     z.setLoadout("a", UNARMED_ATTACK, new Map([[nova.id, nova]]));
     const early = z.castAbility("a", cast("arcane_nova"));
-    assert.ok(!early.ok && early.reason === "on_cooldown", "espera o que faltava do meteoro");
-    for (let i = 0; i < meteor.cooldown * TICK_RATE_HZ; i++) z.tick();
-    assert.deepStrictEqual(z.castAbility("a", cast("arcane_nova")), { ok: true }, "depois da recarga do meteoro, pode");
+    assert.ok(!early.ok && early.reason === "on_cooldown", "espera o que faltava da chuva");
+    for (let i = 0; i < rain.cooldown * TICK_RATE_HZ; i++) z.tick();
+    assert.deepStrictEqual(z.castAbility("a", cast("arcane_nova")), { ok: true }, "depois da recarga da chuva, pode");
     for (let i = 0; i < Math.ceil(nova.castTime * TICK_RATE_HZ) + 1; i++) z.tick();
-    // Agora vale a recarga da própria Nova: pronta depois de nova.cooldown, não de meteor.cooldown.
+    // Agora vale a recarga da própria Nova: pronta depois de nova.cooldown, não de rain.cooldown.
     for (let i = 0; i < nova.cooldown * TICK_RATE_HZ - Math.ceil(nova.castTime * TICK_RATE_HZ); i++) z.tick();
     assert.deepStrictEqual(z.castAbility("a", cast("arcane_nova")), { ok: true }, "recarga nova = a da Nova arcana");
   });
 
   it("andar durante o lançamento cancela a habilidade: sem efeito, mana devolvida, recarga zerada", () => {
     const { z, a } = setup({ x: 50, z: 50 });
-    const meteor: AbilityDef = def("training_staff", "meteor");
-    z.castAbility("a", cast("meteor", { x: 0, z: -5 }));
+    const starfall: AbilityDef = def("arcane_staff", "starfall");
+    z.castAbility("a", cast("starfall", { x: 0, z: -5 }));
     z.queueInput("a", { seq: 1, x: 0, z: 0 }); // parado: não cancela
     z.tick();
-    assert.ok(!a.has("cast_cancel", "meteor"), "input parado não cancela");
+    assert.ok(!a.has("cast_cancel", "starfall"), "input parado não cancela");
     z.queueInput("a", { seq: 2, x: 1, z: 0 });
     z.tick();
-    assert.ok(a.has("cast_cancel", "meteor"), "cancelou ao andar");
-    finish(z, meteor);
-    assert.ok(!a.events.some((e) => e["type"] === "impact" && e["ability"] === "meteor"), "sem efeito");
+    assert.ok(a.has("cast_cancel", "starfall"), "cancelou ao andar");
+    finish(z, starfall);
+    assert.ok(!a.events.some((e) => e["type"] === "impact" && e["ability"] === "starfall"), "sem efeito");
     const me: unknown = a.last["me"];
     assert.ok(typeof me === "object" && me !== null && "mana" in me && me.mana === PLAYER_MAX_MANA, "mana devolvida");
-    assert.deepStrictEqual(z.castAbility("a", cast("meteor", { x: 0, z: -5 })), { ok: true }, "sem recarga");
+    assert.deepStrictEqual(z.castAbility("a", cast("starfall", { x: 0, z: -5 })), { ok: true }, "sem recarga");
   });
 
   it("andar cancela o golpe do ataque simples (sem dano) e não começa outro andando; parado, volta a atacar", () => {
@@ -182,11 +182,11 @@ describe("habilidades (cast)", () => {
     const { z } = setup({ x: 0, z: -20 });
     const reason = (r: ReturnType<Zone["castAbility"]>): string => (r.ok ? "ok" : r.reason);
     assert.strictEqual(reason(z.castAbility("a", cast("nao_existe"))), "ability_not_equipped");
-    assert.strictEqual(reason(z.castAbility("a", cast("bolt"))), "invalid_target");
-    assert.strictEqual(reason(z.castAbility("a", cast("bolt", { targetId: "a" }))), "invalid_target", "você mesmo");
-    assert.strictEqual(reason(z.castAbility("a", cast("bolt", { targetId: "dummy" }))), "out_of_range");
+    assert.strictEqual(reason(z.castAbility("a", cast("quick_shot"))), "invalid_target");
+    assert.strictEqual(reason(z.castAbility("a", cast("quick_shot", { targetId: "a" }))), "invalid_target", "você mesmo");
+    assert.strictEqual(reason(z.castAbility("a", cast("quick_shot", { targetId: "dummy" }))), "out_of_range");
     let spent = 0;
-    for (const id of ["meteor", "spin", "heal", "shield"]) {
+    for (const id of ["starfall", "arcane_nova", "bandage", "leather_guard"]) {
       const r = z.castAbility("a", cast(id));
       if (r.ok) {
         spent += ALL.get(id)?.manaCost ?? 0;
@@ -196,63 +196,64 @@ describe("habilidades (cast)", () => {
     assert.ok(spent > 0);
   });
 
-  it("Bola de fogo: projétil voa até o alvo (dano na chegada, não no fim do lançamento); erra se não há ninguém", () => {
+  it("Lança de gelo: projétil voa até o alvo (dano na chegada, não no fim do lançamento); erra se não há ninguém", () => {
     const { z, a } = setup({ x: 0, z: -5 });
-    const fireball: AbilityDef = def("training_staff", "fireball");
-    assert.ok(fireball.projectileSpeed > 0);
-    z.castAbility("a", cast("fireball", { x: 0, z: -1 }));
-    finish(z, fireball);
-    assert.ok(a.events.some((e) => e["type"] === "projectile" && e["ability"] === "fireball" && e["dirZ"] === -1), "saiu o projétil");
+    const lance: AbilityDef = def("arcane_staff", "ice_lance");
+    assert.ok(lance.projectileSpeed > 0);
+    z.castAbility("a", cast("ice_lance", { x: 0, z: -1 }));
+    finish(z, lance);
+    assert.ok(a.events.some((e) => e["type"] === "projectile" && e["ability"] === "ice_lance" && e["dirZ"] === -1), "saiu o projétil");
     assert.strictEqual(npcHp(a), DUMMY_MAX_HP, "ainda voando: sem dano");
-    // Encosta no corpo a 5 - 0,4 - 0,6 = 4 m: 4 / 14 m/s ≈ 0,29 s (9 ticks a 30 Hz).
-    for (let i = 0; i < Math.ceil((4 / fireball.projectileSpeed) * TICK_RATE_HZ); i++) z.tick();
-    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - fireball.damage);
+    // Encosta no corpo (raio 0,4 m) a 5 - 0,4 - raio do projétil (Lança: 0,4) = 4,2 m.
+    const contact: number = 5 - 0.4 - lance.radius;
+    for (let i = 0; i < Math.ceil((contact / lance.projectileSpeed) * TICK_RATE_HZ); i++) z.tick();
+    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - lance.damage);
     const end = a.events.find((e) => e["type"] === "projectile_end");
-    assert.ok(end && typeof end["z"] === "number" && Math.abs(end["z"] + 4) < 1e-6, "acaba onde encostou (z = -4)");
-    assert.ok(a.has("impact", "fireball"));
+    assert.ok(end && typeof end["z"] === "number" && Math.abs(end["z"] + contact) < 1e-6, "acaba onde encostou");
+    assert.ok(a.has("impact", "ice_lance"));
 
-    for (let i = 0; i < fireball.cooldown * TICK_RATE_HZ; i++) z.tick();
+    for (let i = 0; i < lance.cooldown * TICK_RATE_HZ; i++) z.tick();
     a.events.length = 0;
-    z.castAbility("a", cast("fireball", { x: 1, z: 0 }));
-    finish(z, fireball);
-    for (let i = 0; i < Math.ceil((fireball.range / fireball.projectileSpeed) * TICK_RATE_HZ) + 1; i++) z.tick();
-    assert.ok(a.has("miss", "fireball"), "para o lado: voa até o alcance e erra");
+    z.castAbility("a", cast("ice_lance", { x: 1, z: 0 }));
+    finish(z, lance);
+    for (let i = 0; i < Math.ceil((lance.range / lance.projectileSpeed) * TICK_RATE_HZ) + 1; i++) z.tick();
+    assert.ok(a.has("miss", "ice_lance"), "para o lado: voa até o alcance e erra");
     assert.ok(a.events.some((e) => e["type"] === "projectile_end"));
   });
 
-  it("Bola de fogo: dá para desviar saindo do caminho enquanto ela voa", () => {
+  it("Lança de gelo: dá para desviar saindo do caminho enquanto ela voa", () => {
     const { z, a } = setup({ x: 50, z: 50 }); // boneco longe
     const b = new Member("b");
     z.join(b, { x: 0, y: 0, z: -10, rotY: 0 }, UNARMED_ATTACK, ALL);
-    const fireball: AbilityDef = def("training_staff", "fireball");
-    z.castAbility("a", cast("fireball", { x: 0, z: -1 }));
-    finish(z, fireball);
-    // b anda para o lado (5 m/s) durante o voo (~0,64 s até chegar perto dele): sai do caminho (1 s andando).
+    const lance: AbilityDef = def("arcane_staff", "ice_lance");
+    z.castAbility("a", cast("ice_lance", { x: 0, z: -1 }));
+    finish(z, lance);
+    // b anda para o lado (5 m/s) durante o voo (~0,5 s até chegar perto dele): sai do caminho (1 s andando).
     for (let seq = 1; seq <= TICK_RATE_HZ; seq++) {
       z.queueInput("b", { seq, x: 1, z: 0 });
       z.tick();
     }
     assert.ok(!a.events.some((e) => e["type"] === "damage" && e["target"] === "b"), "b desviou");
-    assert.ok(a.has("miss", "fireball"));
+    assert.ok(a.has("miss", "ice_lance"));
   });
 
-  it("Meteoro: dano em área no ponto; ponto além do alcance é limitado ao alcance", () => {
+  it("Chuva de estrelas: dano em área no ponto escolhido", () => {
     const { z, a } = setup({ x: 0, z: -9 });
-    const meteor: AbilityDef = def("training_staff", "meteor");
-    z.castAbility("a", cast("meteor", { x: 0, z: -9 }));
-    finish(z, meteor);
-    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - meteor.damage);
+    const starfall: AbilityDef = def("arcane_staff", "starfall");
+    z.castAbility("a", cast("starfall", { x: 0, z: -9 }));
+    finish(z, starfall);
+    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - starfall.damage);
   });
 
-  it("Giro: dano em quem está ao redor", () => {
+  it("Nova arcana: dano em quem está ao redor", () => {
     const { z, a } = setup({ x: 2, z: 0 });
-    const spin: AbilityDef = def("training_sword", "spin");
-    z.castAbility("a", cast("spin"));
-    finish(z, spin);
-    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - spin.damage);
+    const nova: AbilityDef = def("arcane_staff", "arcane_nova");
+    z.castAbility("a", cast("arcane_nova"));
+    finish(z, nova);
+    assert.strictEqual(npcHp(a), DUMMY_MAX_HP - nova.damage);
   });
 
-  it("Cura recupera vida; Escudo absorve dano antes da vida e acaba sozinho", () => {
+  it("Atadura recupera vida; Escudo absorve dano antes da vida e acaba sozinho", () => {
     const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true, dummies: [] });
     const a = new Member("a");
     const b = new Member("b");
@@ -260,8 +261,8 @@ describe("habilidades (cast)", () => {
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, UNARMED_ATTACK, ALL);
     zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, bigHit, ALL);
 
-    const shield: AbilityDef = def("training_vest", "shield");
-    zone.castAbility("a", cast("shield"));
+    const shield: AbilityDef = def("ranger_jerkin", "leather_guard");
+    zone.castAbility("a", cast("leather_guard"));
     finish(zone, shield);
     assert.strictEqual(zone.getSnapshot("a")?.shield, shield.shield);
 
@@ -274,22 +275,22 @@ describe("habilidades (cast)", () => {
     assert.strictEqual(hit["amount"], 50 - shield.shield);
     zone.setAttackTarget("b", null);
 
-    const heal: AbilityDef = def("training_hood", "heal");
+    const heal: AbilityDef = def("ranger_hood", "bandage");
     const before: number = zone.getSnapshot("a")?.hp ?? NaN;
-    zone.castAbility("a", cast("heal"));
+    zone.castAbility("a", cast("bandage"));
     finish(zone, heal);
     assert.ok((zone.getSnapshot("a")?.hp ?? 0) >= Math.min(PLAYER_MAX_HP, before + heal.heal) - 0.5, "curou");
     const me: unknown = a.last["me"];
     assert.ok(typeof me === "object" && me !== null && "mana" in me && typeof me.mana === "number" && me.mana < PLAYER_MAX_MANA, "gastou mana");
   });
 
-  it("Investida na fila: percorre a distância nos passos seguintes (não teleporta), ignorando o joystick", () => {
+  it("Avanço heroico na fila: percorre a distância nos passos seguintes (não teleporta), ignorando o joystick", () => {
     const { z } = setup({ x: 50, z: 50 });
-    const dash: AbilityDef = def("training_sword", "dash");
+    const dash: AbilityDef = def("knight_sword", "heroic_charge");
     const steps: number = dashSteps(dash);
     assert.ok(steps > 1, "dura mais de um passo");
     z.queueInput("a", { seq: 1, x: 1, z: 0 });
-    assert.deepStrictEqual(z.castAbility("a", cast("dash", { x: 0, z: -1, seq: 2 })), { ok: true }, "enfileirado");
+    assert.deepStrictEqual(z.castAbility("a", cast("heroic_charge", { x: 0, z: -1, seq: 2 })), { ok: true }, "enfileirado");
     z.tick(); // seq 1 (passo) e 2 (começa a Investida, sem mover)
     const step: number = quantize(5 / TICK_RATE_HZ);
     assert.ok(Math.abs((z.getSnapshot("a")?.z ?? NaN) - 0) < 1e-9, "o comando em si não move");
@@ -310,10 +311,10 @@ describe("habilidades (cast)", () => {
     assert.ok(Math.abs(snap.x - quantize(2 * step)) < 1e-9 && Math.abs(snap.z - -dash.dashDistance) < 0.01, `posição ${snap.x}, ${snap.z}`);
   });
 
-  it("Disparada: dobra a velocidade dos próximos passos (contados em passos) e acaba", () => {
+  it("Passos leves: acelera os próximos passos (contados em passos) e acaba", () => {
     const { z } = setup({ x: 50, z: 50 });
-    const sprint: AbilityDef = def("training_boots", "sprint");
-    z.castAbility("a", cast("sprint", { seq: 1 }));
+    const sprint: AbilityDef = def("healer_sandals", "light_steps");
+    z.castAbility("a", cast("light_steps", { seq: 1 }));
     let seq = 1;
     const steps: number = Math.round(sprint.speedSeconds * TICK_RATE_HZ);
     for (let i = 0; i < steps; i++) {
@@ -322,7 +323,7 @@ describe("habilidades (cast)", () => {
     }
     const fast: number = z.getSnapshot("a")?.x ?? NaN;
     // Arredonda ao mm a cada passo: tolerância de 1 mm por passo.
-    assert.ok(Math.abs(fast - steps * 2 * (5 / TICK_RATE_HZ)) < steps * 0.001, `rápido: ${fast}`);
+    assert.ok(Math.abs(fast - steps * sprint.speedMultiplier * (5 / TICK_RATE_HZ)) < steps * 0.001, `rápido: ${fast}`);
     z.queueInput("a", { seq: ++seq, x: 1, z: 0 });
     z.tick();
     assert.ok(Math.abs((z.getSnapshot("a")?.x ?? NaN) - (fast + 5 / TICK_RATE_HZ)) < 0.001, "volta ao normal");
@@ -337,10 +338,10 @@ describe("habilidades (cast)", () => {
       if (text.includes('"type":"error"')) errors.push(text);
       original(text);
     };
-    z.castAbility("a", cast("dash", { x: 1, z: 0, seq: 1 }));
+    z.castAbility("a", cast("heroic_charge", { x: 1, z: 0, seq: 1 }));
     z.tick();
     const after: number = z.getSnapshot("a")?.x ?? NaN;
-    z.castAbility("a", cast("dash", { x: 1, z: 0, seq: 2 }));
+    z.castAbility("a", cast("heroic_charge", { x: 1, z: 0, seq: 2 }));
     z.tick();
     assert.strictEqual(z.getSnapshot("a")?.x, after, "segunda investida recusada (recarga)");
     assert.ok(errors.some((e) => e.includes("on_cooldown")));

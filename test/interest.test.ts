@@ -131,7 +131,7 @@ describe("área de interesse do snapshot", () => {
     zone.setAttackTarget("fighter", "boneco");
     for (let i = 0; i < 40; i++) zone.tick();
     assert.ok(!events.includes("damage") && !events.includes("cast_start"), "a luta a 200 m não chega");
-    zone.setLoadout("fighter", UNARMED_ATTACK, new Map(), { hand: "training_staff", head: null, chest: null, feet: null });
+    zone.setLoadout("fighter", UNARMED_ATTACK, new Map(), { hand: "arcane_staff", head: null, chest: null, feet: null });
     zone.tick();
     assert.ok(events.includes("look"), "a roupa nova chega mesmo longe");
   });

@@ -28,10 +28,9 @@ const items = (entries: readonly LootEntry[]): ItemDef[] =>
 
 /** Sorteio dos baús ([JOGO-19]). */
 describe("loot dos baús", () => {
-  it("lê o catálogo: roupa e arma por classe, sem o kit de Treino; item novo entra sozinho", () => {
+  it("lê o catálogo: roupa e arma por classe; item novo entra sozinho", () => {
     const armor = lootPool("armor");
     const weapons = lootPool("weapon");
-    assert.ok(!armor.has("Treino") && !weapons.has("Treino"), "Treino fica de fora (lootable: false)");
     for (const list of armor.values()) for (const item of list) assert.notStrictEqual(item.slot, "hand");
     for (const list of weapons.values()) for (const item of list) assert.strictEqual(item.slot, "hand");
     const knight: ItemDef | undefined = ITEMS["knight_sword"];

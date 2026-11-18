@@ -36,7 +36,7 @@ describe("troca pela rede (trade_*)", () => {
     await first.close();
     await store.saveInventory(playerId, {
       equipped: { hand: null, head: null, chest: null, feet: null },
-      bag: [{ uid: `${username}-sword`, itemId: "training_sword" }],
+      bag: [{ uid: `${username}-sword`, itemId: "knight_sword" }],
       grants: Object.keys(GRANTS),
     });
     await store.saveProgress(playerId, { level: 0, xp: 0, gold });

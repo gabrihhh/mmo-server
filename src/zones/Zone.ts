@@ -2452,7 +2452,7 @@ export class Zone {
 
   /**
    * Aparência com o conjunto de `item` inteiro vestido (um item por slot, [JOGO-09]), com o próprio `item` no slot
-   * dele (o Treino tem duas armas: quem lança o Raio segura o cajado, não a espada).
+   * dele (conjunto com duas armas: quem lança a carta segura a arma dela).
    */
   private static setLook(item: ItemDef): Look {
     const look: Record<EquipSlotName, string | null> = { hand: null, head: null, chest: null, feet: null };

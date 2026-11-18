@@ -223,7 +223,7 @@ describe("GameServer", () => {
       assert.strictEqual(equipped.hand, null, "conta nova não tem nada vestido");
       const bag: unknown = first.data["bag"];
       assert.ok(Array.isArray(bag));
-      const staff = bag.map(itemOf).find((item) => item?.itemId === "training_staff");
+      const staff = bag.map(itemOf).find((item) => item?.itemId === "arcane_staff");
       assert.ok(staff);
 
       p.client.send("equip", { uid: staff.uid });
@@ -237,7 +237,7 @@ describe("GameServer", () => {
       await c.next("auth_ok");
       const resumed: unknown = (await c.next("inventory")).data["equipped"];
       assert.ok(typeof resumed === "object" && resumed !== null && "hand" in resumed);
-      assert.strictEqual(itemOf(resumed.hand)?.itemId, "training_staff");
+      assert.strictEqual(itemOf(resumed.hand)?.itemId, "arcane_staff");
     });
 
     it("recusas viram erro e não mudam nada", async () => {
@@ -408,17 +408,17 @@ describe("GameServer", () => {
 
     it("cast: aceito vira cast_start; durante o lançamento = busy; depois, antes da recarga = on_cooldown", async () => {
       const a: Player = await registered();
-      await wear(a, "training_vest");
+      await wear(a, "ranger_jerkin");
       await join(a);
-      a.client.send("cast", { abilityId: "shield" });
+      a.client.send("cast", { abilityId: "leather_guard" });
       await a.client.nextMatching("snapshot", (m) => {
         const events: unknown = m.data["events"];
         return Array.isArray(events) && events.some((e) => typeof e === "object" && e !== null && "type" in e && e.type === "cast_start");
       });
-      a.client.send("cast", { abilityId: "shield" });
+      a.client.send("cast", { abilityId: "leather_guard" });
       assert.strictEqual((await a.client.next("error")).data["code"], "busy", "ainda lançando");
       await sleep(400);
-      a.client.send("cast", { abilityId: "shield" });
+      a.client.send("cast", { abilityId: "leather_guard" });
       assert.strictEqual((await a.client.next("error")).data["code"], "on_cooldown");
       a.client.send("cast", { abilityId: "nao_existe" });
       assert.strictEqual((await a.client.next("error")).data["code"], "ability_not_equipped");

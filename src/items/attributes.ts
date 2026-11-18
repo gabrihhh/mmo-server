@@ -54,7 +54,6 @@ export const CRIT_MULTIPLIER = 1.5;
  * conjunto.
  */
 export const SET_ATTRIBUTES: Readonly<Record<string, readonly AttributeId[]>> = {
-  Treino: ["damage", "health", "attackSpeed"],
   Mago: ["damage", "mana", "cooldown", "crit"],
   Cavaleiro: ["defense", "health", "damage", "lifesteal"],
   Atirador: ["damage", "attackSpeed", "crit"],

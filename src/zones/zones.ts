@@ -94,7 +94,7 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
   { id: "dummy_3", name: "Boneco de treino" },
   // Saco de pancadas: leva os tiros do atirador, não morre, dá para curar.
   { id: "test_bag", name: "Saco de pancadas", behavior: { kind: "punchingBag", regenDelaySeconds: 5, regenPerSecond: 40 } },
-  // Atirador: humano invulnerável, alterna habilidades de longe de três conjuntos no saco de pancadas.
+  // Atirador: humano invulnerável, alterna habilidades de longe de dois conjuntos no saco de pancadas.
   {
     id: "test_shooter",
     name: "Atirador de treino",
@@ -102,7 +102,7 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
     behavior: {
       kind: "shooter",
       target: "test_bag",
-      rotation: ["fireball", "meteor", "ice_lance", "starfall", "piercing_bolt", "bolt_rain", "bolt", "quick_shot"],
+      rotation: ["ice_lance", "starfall", "piercing_bolt", "bolt_rain", "quick_shot"],
       pauseSeconds: 2,
     },
   },
@@ -111,7 +111,7 @@ const TEST_NPCS: readonly Omit<DummyConfig, "x" | "z">[] = [
     id: "blacksmith",
     name: "Ferreiro",
     body: "male",
-    look: { hand: null, head: null, chest: "knight_plate", feet: "training_boots" },
+    look: { hand: null, head: null, chest: "knight_plate", feet: "knight_greaves" },
     behavior: { kind: "blacksmith" },
   },
   // Armazém ([JOGO-26]): o baú grande da praça (não é pessoa); perto dele guarda itens além da mochila.

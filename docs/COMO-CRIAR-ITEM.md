@@ -1,7 +1,7 @@
 # Como criar um item
 
-Guia prático. As regras do jogo ficam no mmo-docs: [JOGO-01] equipamento → habilidades, [JOGO-03] números do
-kit de treino, [JOGO-04] inventário, [JOGO-06] habilidades no servidor, [JOGO-09] conjuntos em baixo/médio/alto
+Guia prático. As regras do jogo ficam no mmo-docs: [JOGO-01] equipamento → habilidades, [JOGO-03] onde ficam
+os conjuntos (o kit de treino saiu em 2026-11-17), [JOGO-04] inventário, [JOGO-06] habilidades no servidor, [JOGO-09] conjuntos em baixo/médio/alto
 (perfil, vida extra, defesa, aliados) e [JOGO-10] números dos conjuntos.
 
 ## Ideia principal
@@ -68,11 +68,11 @@ iron_helmet: {
 Arma (3 habilidades + ataque simples):
 
 ```ts
-training_axe: {
-  id: "training_axe",
-  name: "Machado de treino",
+barbarian_axe: {
+  id: "barbarian_axe",
+  name: "Machado do bárbaro",
   description: "Machado pesado de lenhador.",
-  set: "Treino",
+  set: "Bárbaro",
   slot: "hand",
   basicAttack: ability({ id: "axe_attack", title: "Ataque", aim: "target", range: 2.5, cooldown: 1.3, castTime: 1.3, damage: 13 }),
   abilities: [
