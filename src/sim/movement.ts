@@ -101,3 +101,38 @@ export function dashMovement(state: MoveState, dirX: number, dirZ: number, dista
     rotY: Math.atan2(-dx, -dz),
   };
 }
+
+/**
+ * Limites da arena do Coliseu (mmo-docs [JOGO-28]): muro redondo e, na preparação e nas pausas, a barreira no meio.
+ * Metros.
+ */
+export interface ArenaBounds {
+  /** Raio do muro (centro na origem). */
+  readonly radius: number;
+  /**
+   * Lado em que a barreira prende o jogador: -1 = só x ≤ −`barrierGap` (time 0), 1 = só x ≥ `barrierGap` (time 1),
+   * 0 = barreira desligada.
+   */
+  readonly side: -1 | 0 | 1;
+  /** Folga da barreira até o plano x = 0. */
+  readonly barrierGap: number;
+}
+
+/**
+ * Prende a posição dentro da arena, depois de cada passo/trecho de Investida: primeiro o muro (puxa para o círculo na
+ * mesma direção), depois a barreira (x do lado do time). Dentro dos limites devolve o mesmo estado (sem quantizar de
+ * novo). Mesma conta e ordem no cliente.
+ */
+export function constrainArena(state: MoveState, bounds: ArenaBounds): MoveState {
+  let x: number = state.x;
+  let z: number = state.z;
+  const distance: number = Math.sqrt(x * x + z * z);
+  if (distance > bounds.radius) {
+    x = (x * bounds.radius) / distance;
+    z = (z * bounds.radius) / distance;
+  }
+  if (bounds.side < 0) x = Math.min(x, -bounds.barrierGap);
+  else if (bounds.side > 0) x = Math.max(x, bounds.barrierGap);
+  if (x === state.x && z === state.z) return state;
+  return { x: quantize(x), y: state.y, z: quantize(z), rotY: state.rotY };
+}

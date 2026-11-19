@@ -29,12 +29,14 @@ import {
   TICK_RATE_HZ,
   TICK_SECONDS,
   MIN_INPUT_LENGTH,
+  constrainArena,
   dashMovement,
   quantize,
   stepMovement,
   type MoveParams,
   type MoveState,
 } from "../sim/movement.js";
+import type { TeamIndex, TeamRoundState } from "../arena/rounds.js";
 import {
   addGold,
   addXp,
@@ -273,7 +275,22 @@ export interface ZoneConfig {
    * `SAFE_ZONE_HALF`). Ausente/0 = nenhuma.
    */
   readonly safeZoneHalf?: number;
+  /**
+   * Arena do Coliseu ([JOGO-28]): instância de uma partida. Inimigo/aliado só pelo time ({@link Zone.setArenaTeam}),
+   * ignorando grupo, guilda, níveis e área segura; ninguém renasce sozinho; morrer não tira nada nem conta no perfil;
+   * muro redondo e barreira no meio ({@link Zone.setArenaPhase}). Ausente = zona comum.
+   */
+  readonly arena?: ArenaZoneConfig;
 }
+
+/** Parâmetros da arena do Coliseu ([JOGO-28]). Metros. */
+export interface ArenaZoneConfig {
+  /** Raio do muro redondo (centro na origem). */
+  readonly radius: number;
+}
+
+/** Folga (m) da barreira do meio da arena até o plano x = 0 (o corpo não encosta na linha). */
+export const ARENA_BARRIER_GAP = 0.5;
 
 /**
  * Acampamento com baú ([JOGO-19]): onde fica o baú (no chão, m) e os monstros dele (ids de `dummies`). O nível do baú
@@ -776,6 +793,18 @@ export class Zone {
   /** Sorteio (0 a <1) do crítico ([JOGO-16]) e da melhoria no ferreiro; os testes trocam por um fixo. */
   random: () => number = Math.random;
 
+  // --- Arena do Coliseu ([JOGO-28]); só valem com `config.arena` ---
+  /** Time de cada jogador da arena. */
+  private readonly arenaTeams: Map<string, TeamIndex> = new Map();
+  /** Barreira do meio ligada (preparação e pausas). */
+  private arenaBarrier: boolean = false;
+  /** Cartas e ataque simples travados (preparação e pausas). */
+  private arenaLocked: boolean = false;
+  /** Dano causado no round por jogador (vida + escudo tirados de inimigos): desempate do fim do tempo. */
+  private readonly roundDamage: Map<string, number> = new Map();
+  /** Último tick em que cada jogador fez algo de verdade (andou, lançou, escolheu alvo): AFK da arena. */
+  private readonly lastActionTick: Map<string, number> = new Map();
+
   constructor(readonly config: ZoneConfig) {
     for (const dummy of config.dummies) {
       const home: MoveState = { x: dummy.x, y: 0, z: dummy.z, rotY: 0 };
@@ -1220,6 +1249,7 @@ export class Zone {
       fake: null,
     };
     this.players.set(member.id, player);
+    this.lastActionTick.set(member.id, this.currentTick);
 
     this.broadcast({ type: ServerMessageType.PlayerJoined, data: { player: Zone.info(player) } }, member.id);
     return { status: "joined", players: Array.from(this.players.values(), (p) => Zone.info(p)) };
@@ -1233,6 +1263,9 @@ export class Zone {
     // A troca dele acaba e os pedidos somem ([SOC-05]).
     this.trades.removePlayer(id);
     this.players.delete(id);
+    this.lastActionTick.delete(id);
+    this.arenaTeams.delete(id);
+    this.roundDamage.delete(id);
     for (const other of this.players.values()) if (other.attackTarget === id) other.attackTarget = null;
     // Saiu da zona: sai da tabela de ameaça dos monstros ([JOGO-14]).
     this.forgetThreat(id);
@@ -1337,6 +1370,8 @@ export class Zone {
   private startAbility(id: string, request: CastData): CastResult {
     const player: ZonePlayer | undefined = this.players.get(id);
     if (player === undefined || player.dead) return Zone.refuse("busy", "Você não pode agir agora.");
+    // Arena na preparação/pausa ([JOGO-28]): cartas travadas.
+    if (this.arenaLocked) return Zone.refuse("busy", "Espere o round começar.");
     if (player.cast !== null && player.cast.kind === "ability") return Zone.refuse("busy", "Já está lançando uma habilidade.");
     const ability: AbilityDef | undefined = player.abilities.get(request.abilityId);
     if (ability === undefined) return Zone.refuse("ability_not_equipped", "Essa habilidade não está vestida.");
@@ -1382,7 +1417,7 @@ export class Zone {
       case "ally": {
         // Sem alvo (ou alvo = você): em você mesmo. Alvo que não é aliado: recusa.
         const target: Entity | undefined = request.targetId === null ? player : this.entity(request.targetId);
-        if (target === undefined || !Zone.isAlly(target)) return Zone.refuse("invalid_target", "Escolha um aliado.");
+        if (target === undefined || !this.isAlly(player, target)) return Zone.refuse("invalid_target", "Escolha um aliado.");
         if (!Zone.inRange(player, target, ability.range)) return Zone.refuse("out_of_range", "Fora de alcance.");
         targetId = target.id;
         break;
@@ -1393,6 +1428,7 @@ export class Zone {
     }
 
     player.mana -= ability.manaCost;
+    this.lastActionTick.set(player.id, this.currentTick);
     // Atributo Recarga ([JOGO-16]): menos tempo de recarga.
     player.readyTick.set(Zone.cardSlot(ability.id), this.currentTick + secondsToTicks(ability.cooldown * (1 - player.effects.cooldown)));
     if (isMovementAbility(ability)) {
@@ -1486,6 +1522,7 @@ export class Zone {
     // Trocar de alvo cancela o golpe do ataque simples em andamento (habilidade não).
     if (player.cast !== null && player.cast.kind === "attack" && player.cast.targetId !== targetId) player.cast = null;
     player.attackTarget = targetId;
+    this.lastActionTick.set(player.id, this.currentTick);
     return "ok";
   }
 
@@ -1614,13 +1651,14 @@ export class Zone {
   private step(player: ZonePlayer, input: InputData): void {
     const dash: DashMove | null = player.dash;
     if (dash !== null) {
-      player.state = dashMovement(player.state, dash.dirX, dash.dirZ, dash.stepDistance, this.config.halfSize);
+      player.state = this.constrain(player, dashMovement(player.state, dash.dirX, dash.dirZ, dash.stepDistance, this.config.halfSize));
       dash.stepsLeft--;
       if (dash.stepsLeft <= 0) player.dash = null;
       return;
     }
     if (Math.sqrt(input.x * input.x + input.z * input.z) >= MIN_INPUT_LENGTH) {
       player.lastMoveTick = this.currentTick;
+      this.lastActionTick.set(player.id, this.currentTick);
       // Só antes de o tiro sair: o que já saiu da mão chega ([JOGO-05]).
       if (player.cast !== null && this.currentTick < player.cast.releaseTick) this.cancelCast(player, player.cast);
     }
@@ -1632,7 +1670,16 @@ export class Zone {
       if (boost.stepsLeft <= 0) player.boost = null;
     }
     const params: MoveParams = { speed, halfSize: this.config.halfSize };
-    player.state = stepMovement(player.state, input, TICK_SECONDS, params);
+    player.state = this.constrain(player, stepMovement(player.state, input, TICK_SECONDS, params));
+  }
+
+  /** Na arena ([JOGO-28]): prende `state` no muro redondo e, com a barreira ligada, no lado do time. */
+  private constrain(player: ZonePlayer, state: MoveState): MoveState {
+    const arena: ArenaZoneConfig | undefined = this.config.arena;
+    if (arena === undefined) return state;
+    const team: TeamIndex | undefined = this.arenaTeams.get(player.id);
+    const side: -1 | 0 | 1 = !this.arenaBarrier || team === undefined ? 0 : team === 0 ? -1 : 1;
+    return constrainArena(state, { radius: arena.radius, side, barrierGap: ARENA_BARRIER_GAP });
   }
 
   /**
@@ -2119,6 +2166,11 @@ export class Zone {
   }
 
   private applyAttack(player: Entity): void {
+    // Arena na preparação/pausa ([JOGO-28]): ataque simples travado (o alvo fica; o golpe começa quando destravar).
+    if (this.arenaLocked) {
+      if (player.cast?.kind === "attack") player.cast = null;
+      return;
+    }
     if (player.dead || player.attackTarget === null) {
       // Golpe órfão (o alvo saiu/morreu e já foi solto): não fica "golpeando" o nada.
       if (player.cast?.kind === "attack") player.cast = null;
@@ -2222,7 +2274,7 @@ export class Zone {
         // Cura/escudo em área: em você e nos aliados em volta ([JOGO-09]).
         if (ability.heal > 0 || ability.shield > 0) {
           for (const ally of this.entities()) {
-            if (!Zone.isAlly(ally)) continue;
+            if (!this.isAlly(player, ally)) continue;
             const dx: number = ally.state.x - player.state.x;
             const dz: number = ally.state.z - player.state.z;
             if (Math.sqrt(dx * dx + dz * dz) <= ability.radius + BODY_RADIUS) this.support(player, ally, ability);
@@ -2231,7 +2283,7 @@ export class Zone {
         return;
       case "ally": {
         const target: Entity | undefined = cast.targetId === null ? undefined : this.entity(cast.targetId);
-        if (target !== undefined && Zone.isAlly(target) && Zone.inRange(player, target, ability.range)) {
+        if (target !== undefined && this.isAlly(player, target) && Zone.inRange(player, target, ability.range)) {
           this.support(player, target, ability);
         } else {
           this.events.push({ type: "miss", source: player.id, target: cast.targetId ?? "", ability: ability.id });
@@ -2382,6 +2434,12 @@ export class Zone {
    */
   private isEnemy(source: Entity, target: Entity): boolean {
     if (target.dead || target.id === source.id) return false;
+    // Arena ([JOGO-28]): só o time decide (ignora grupo, guilda, níveis e área segura).
+    if (this.config.arena !== undefined) {
+      const sourceTeam: TeamIndex | undefined = this.arenaTeams.get(source.id);
+      const targetTeam: TeamIndex | undefined = this.arenaTeams.get(target.id);
+      return sourceTeam !== undefined && targetTeam !== undefined && sourceTeam !== targetTeam;
+    }
     if (target.kind === "dummy" && (target.behavior.kind === "shooter" || Zone.isService(target.behavior))) return false;
     // Jogador fake de teste: NPCs e monstros não o atacam (senão ele sumia no meio do teste, [SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return false;
@@ -2408,8 +2466,14 @@ export class Zone {
    * pancadas de teste ([JOGO-11]). Todo jogador conta como aliado (do grupo ou não, [SOC-03]), mesmo numa zona com PvP
    * (onde quem não é do seu grupo também é inimigo). ATENÇÃO: mesma regra em mmo-client/scripts/world/zone.gd (get_allies).
    */
-  private static isAlly(target: Entity): boolean {
+  private isAlly(source: Entity, target: Entity): boolean {
     if (target.dead) return false;
+    // Arena ([JOGO-28]): só você e o seu time.
+    if (this.config.arena !== undefined) {
+      if (target.id === source.id) return true;
+      const team: TeamIndex | undefined = this.arenaTeams.get(source.id);
+      return team !== undefined && this.arenaTeams.get(target.id) === team;
+    }
     return target.kind === "player" || target.behavior.kind === "punchingBag";
   }
 
@@ -2418,7 +2482,7 @@ export class Zone {
    * (mira "ally"), outro jogador vivo (você mesmo não: o alvo fixo é sempre outro).
    */
   private validAttackTarget(player: Entity, attack: AbilityDef, target: Entity): boolean {
-    if (attack.aim === "ally") return target.id !== player.id && Zone.isAlly(target);
+    if (attack.aim === "ally") return target.id !== player.id && this.isAlly(player, target);
     return this.isEnemy(player, target);
   }
 
@@ -2526,7 +2590,7 @@ export class Zone {
     // Fake de teste não leva dano de NPC/monstro, nem de área/projétil que passe por ele ([SOC-01]).
     if (source.kind === "dummy" && target.kind === "player" && target.fake !== null) return;
     // Membro do grupo não leva dano de outro membro ([SOC-03]; segurança além do isEnemy).
-    if (source.kind === "player" && target.kind === "player" && (this.groups.sameGroup(source.id, target.id) || Zone.sameGuild(source, target))) return;
+    if (this.config.arena === undefined && source.kind === "player" && target.kind === "player" && (this.groups.sameGroup(source.id, target.id) || Zone.sameGuild(source, target))) return;
     // Redução de dano ([JOGO-09]) vale antes do escudo; arredonda para inteiro (números limpos na tela).
     // Nível de quem bate ([JOGO-12]): jogador × (1 + 1% por nível), monstro × 1,02^nível × o multiplicador dele.
     // Atributos de melhoria ([JOGO-16]): Dano e Crítico de quem bate (jogador), Defesa de quem apanha (jogador).
@@ -2558,6 +2622,10 @@ export class Zone {
       }
     }
     this.events.push({ type: "damage", source: source.id, target: target.id, amount: dealt, absorbed, ability: abilityId, ...(crit ? { crit: true } : {}) });
+    // Desempate do round da arena ([JOGO-28]): dano em inimigo (vida + escudo).
+    if (this.config.arena !== undefined && source.kind === "player" && this.isEnemy(source, target)) {
+      this.roundDamage.set(source.id, (this.roundDamage.get(source.id) ?? 0) + dealt + absorbed);
+    }
     // Roubo de vida ([JOGO-16]): parte do dano causado (vida + escudo) volta para quem bateu, até a vida máxima.
     if (source.kind === "player" && source.effects.lifesteal > 0 && !source.dead) {
       const stolen: number = round1(Math.min(source.maxHp - source.hp, (dealt + absorbed) * source.effects.lifesteal));
@@ -2581,10 +2649,14 @@ export class Zone {
       target.dash = null;
       // Morreu: sai da tabela de ameaça dos monstros ([JOGO-14]).
       this.forgetThreat(target.id);
+      // Arena ([JOGO-28]): não renasce no round, não perde nada e não conta no perfil.
+      if (this.config.arena !== undefined) target.respawnTick = Number.POSITIVE_INFINITY;
       // Perde moedas e XP ([JOGO-21]); a tela de morte (roleta do item) é de quem guarda o inventário. Fake não perde.
       // Contador de mortes do perfil ([SOC-08]); fake não conta.
-      if (target.fake === null) this.setStats(target, addDeath(target.stats));
-      if (target.fake === null && source.kind === "player" && source.id !== target.id) {
+      if (target.fake === null && this.config.arena === undefined) this.setStats(target, addDeath(target.stats));
+      if (this.config.arena !== undefined) {
+        // Nada: quem cuida do placar é a partida (ArenaMatch).
+      } else if (target.fake === null && source.kind === "player" && source.id !== target.id) {
         // Jogador morto no perfil de quem matou ([SOC-08]).
         if (source.fake === null) this.setStats(source, addKill(source.stats));
         // Morto por jogador ([JOGO-22]): perde 1 nível e 10% das moedas, que vão para quem matou (+1 nível).
@@ -2755,8 +2827,119 @@ export class Zone {
    * {@link PLAYER_RESPAWN_SECONDS} automático. Vivo ou fora da zona: nada.
    */
   requestRespawn(playerId: string): void {
+    // Arena ([JOGO-28]): ninguém renasce no meio do round (sem botão).
+    if (this.config.arena !== undefined) return;
     const player: ZonePlayer | undefined = this.players.get(playerId);
     if (player !== undefined && player.dead) player.respawnTick = this.currentTick;
+  }
+
+  // --- Arena do Coliseu ([JOGO-28]); quem comanda é a partida (src/arena/match.ts) ---
+
+  /** Põe o jogador `id` no time `team` (inimigo/aliado só pelo time). Fora da arena: nada. */
+  setArenaTeam(id: string, team: TeamIndex): void {
+    if (this.config.arena === undefined || !this.players.has(id)) return;
+    this.arenaTeams.set(id, team);
+  }
+
+  /**
+   * Fase da arena: `barrier` = barreira do meio ligada (cada time preso no seu lado); `locked` = cartas e ataque simples
+   * travados. Preparação e pausas: os dois ligados; round: os dois desligados.
+   */
+  setArenaPhase(barrier: boolean, locked: boolean): void {
+    this.arenaBarrier = barrier;
+    this.arenaLocked = locked;
+  }
+
+  /**
+   * Fim do round: tira do jogo tudo o que ainda daria dano ou efeito (projéteis, lançamentos, golpes, alvo fixo, fila
+   * de comandos, Investida, Disparada). Depois disto nenhum dano conta para o round que acabou.
+   */
+  clearArenaCombat(): void {
+    this.projectiles = [];
+    for (const player of this.players.values()) {
+      player.cast = null;
+      player.attackTarget = null;
+      player.inputs.length = 0;
+      player.boost = null;
+      player.dash = null;
+    }
+  }
+
+  /**
+   * Começo de round: cada jogador de `spawns` volta vivo no ponto dele, com vida/mana cheias, sem escudo/redução,
+   * recargas zeradas e o combate limpo ({@link clearArenaCombat}); quem não está em `spawns` (abandonou) fica morto. O
+   * dano do round zera e a contagem de AFK recomeça agora. Manda `respawn` de quem voltou (o cliente reposiciona).
+   */
+  resetArenaRound(spawns: ReadonlyMap<string, SpawnPoint>): void {
+    this.clearArenaCombat();
+    this.roundDamage.clear();
+    for (const player of this.players.values()) {
+      const spawn: SpawnPoint | undefined = spawns.get(player.id);
+      player.shield = 0;
+      player.shieldUntilTick = 0;
+      player.reduction = 0;
+      player.reductionUntilTick = 0;
+      player.readyTick.clear();
+      this.lastActionTick.set(player.id, this.currentTick);
+      if (spawn === undefined) {
+        player.dead = true;
+        player.hp = 0;
+        player.respawnTick = Number.POSITIVE_INFINITY;
+        continue;
+      }
+      player.dead = false;
+      player.respawnTick = 0;
+      player.hp = player.maxHp;
+      player.mana = player.maxMana;
+      player.state = { x: quantize(spawn.x), y: spawn.y, z: quantize(spawn.z), rotY: spawn.rotY };
+      player.moveBuffering = true;
+      player.moveBufferWait = 0;
+      this.events.push({ type: "respawn", id: player.id });
+    }
+  }
+
+  /**
+   * Estado do time `team` para decidir o round: vida em fração de cada jogador listado em `ids` (fora da zona ou morto
+   * = 0) e o dano que eles causaram no round.
+   */
+  arenaTeamState(ids: readonly string[]): TeamRoundState {
+    const hpFractions: number[] = ids.map((id) => {
+      const player: ZonePlayer | undefined = this.players.get(id);
+      return player === undefined || player.dead || player.maxHp <= 0 ? 0 : player.hp / player.maxHp;
+    });
+    const damage: number = ids.reduce((total, id) => total + (this.roundDamage.get(id) ?? 0), 0);
+    return { hpFractions, damage };
+  }
+
+  /**
+   * Abandono na arena: o corpo de `id` cai morto e fica assim o resto da partida (não renasce nos rounds seguintes, pois
+   * a partida não o põe nos `spawns`). Manda `death` como se tivesse morrido (killer = ele mesmo).
+   */
+  killInArena(id: string): void {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    if (this.config.arena === undefined || player === undefined || player.dead) return;
+    player.dead = true;
+    player.hp = 0;
+    player.respawnTick = Number.POSITIVE_INFINITY;
+    player.shield = 0;
+    player.cast = null;
+    player.attackTarget = null;
+    player.inputs.length = 0;
+    player.boost = null;
+    player.dash = null;
+    for (const entity of this.entities()) if (entity.attackTarget === id) entity.attackTarget = null;
+    this.events.push({ type: "death", id, killer: id });
+  }
+
+  /** Último tick em que `id` andou, lançou ou escolheu alvo (AFK da arena); `undefined` fora da zona. */
+  lastActionTickOf(id: string): number | undefined {
+    return this.lastActionTick.get(id);
+  }
+
+  /** `true` se `id` está na zona e vivo. */
+  isAlive(id: string): boolean {
+    const player: ZonePlayer | undefined = this.players.get(id);
+    return player !== undefined && !player.dead;
   }
 
   /** Baús da zona como vão no `welcome`: onde ficam, nível, chefe e se está aberto agora. */
