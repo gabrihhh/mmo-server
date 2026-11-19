@@ -18,9 +18,12 @@ export function storageOf(inventory: Inventory): readonly ItemStack[] {
   return inventory.storage ?? [];
 }
 
-/** Espaços do armazém: 1 aba grátis + as compradas. */
-export function storageCapacity(inventory: Inventory): number {
-  return STORAGE_TAB_SIZE * (1 + (inventory.storageTabs ?? 0));
+/**
+ * Espaços do armazém: 1 aba grátis + as compradas (moedas ou Diamantes, as duas somam em `storageTabs`) +
+ * [extraTabs] (a aba do VIP enquanto ativo, [JOGO-27]).
+ */
+export function storageCapacity(inventory: Inventory, extraTabs: number = 0): number {
+  return STORAGE_TAB_SIZE * (1 + (inventory.storageTabs ?? 0) + Math.max(0, extraTabs));
 }
 
 /** Preço da próxima aba, já tendo comprado [bought]: 5.000, 7.500, 11.250… (arredondado). */
@@ -36,8 +39,11 @@ export type StorageResult =
   | { readonly ok: true; readonly inventory: Inventory; readonly goldDelta: number }
   | { readonly ok: false; readonly reason: StorageFailure };
 
-/** Guarda o item [uid] da mochila no fim do armazém. Vestido não entra (`item_equipped`). */
-export function putInStorage(inventory: Inventory, uid: string): StorageResult {
+/**
+ * Guarda o item [uid] da mochila no fim do armazém. Vestido não entra (`item_equipped`). [extraTabs] = abas do VIP
+ * ({@link storageCapacity}); acabou o VIP, o que passou da capacidade fica guardado, só não entra mais nada.
+ */
+export function putInStorage(inventory: Inventory, uid: string, extraTabs: number = 0): StorageResult {
   const index: number = inventory.bag.findIndex((stack) => stack.uid === uid);
   const stack: ItemStack | undefined = inventory.bag[index];
   if (stack === undefined) {
@@ -45,7 +51,7 @@ export function putInStorage(inventory: Inventory, uid: string): StorageResult {
     return { ok: false, reason: worn ? "item_equipped" : "item_not_found" };
   }
   const storage: readonly ItemStack[] = storageOf(inventory);
-  if (storage.length >= storageCapacity(inventory)) return { ok: false, reason: "storage_full" };
+  if (storage.length >= storageCapacity(inventory, extraTabs)) return { ok: false, reason: "storage_full" };
   return {
     ok: true,
     inventory: { ...inventory, bag: inventory.bag.filter((_, i) => i !== index), storage: [...storage, stack] },

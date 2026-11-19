@@ -50,8 +50,17 @@ describe("parseClientMessage", () => {
     });
     assert.deepStrictEqual(parseClientMessage('{"type":"upgrade","data":{"uid":"abc","attribute":"crit"}}'), {
       type: ClientMessageType.Upgrade,
-      data: { uid: "abc", attribute: "crit" },
+      data: { uid: "abc", attribute: "crit", guaranteed: false },
     });
+    assert.deepStrictEqual(parseClientMessage('{"type":"upgrade","data":{"uid":"abc","attribute":"crit","guaranteed":true}}'), {
+      type: ClientMessageType.Upgrade,
+      data: { uid: "abc", attribute: "crit", guaranteed: true },
+    });
+    assert.deepStrictEqual(parseClientMessage('{"type":"premium_buy","data":{"productId":"vip_30d"}}'), {
+      type: ClientMessageType.PremiumBuy,
+      data: { productId: "vip_30d" },
+    });
+    assert.strictEqual(parseClientMessage('{"type":"premium_pack","data":{}}'), null);
     assert.deepStrictEqual(parseClientMessage('{"type":"bag_move","data":{"from":0,"to":4}}'), {
       type: ClientMessageType.BagMove,
       data: { from: 0, to: 4 },

@@ -48,10 +48,13 @@ import { isChatChannel, type ChatChannel } from "../social/chat.js";
  * v25: tela de morte ([JOGO-21]): `death_report` (perdas e a peça da roleta) e `respawn` (renascer pelo botão).
  * v24: fusão no ferreiro ([JOGO-20]): `fuse`/`fuse_result`, `xp`/`xpNext`/`fusionXp` no ItemView.
  * v23: baús dos acampamentos ([JOGO-19]): `chests` no welcome, evento `chest`, `chest_open`/`chest_take`/`chest_loot`.
+ * v40: Loja premium ([JOGO-27]): `premium_open`/`premium_buy`/`premium_pack`/`premium_history` → `premium`/
+ *   `premium_result`/`premium_history_list`; `guaranteed` no `upgrade` (pedra garantida); `protected` no
+ *   `death_report`; erros `not_enough_diamonds`, `already_owned`, `purchases_unavailable`, `no_upgrade_stone`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 39;
+export const PROTOCOL_VERSION = 40;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -216,6 +219,17 @@ export const ClientMessageType = {
   TradeConfirm: "trade_confirm",
   /** Fecha a janela de troca (cancela para os dois). Payload: `{}`. */
   TradeCancel: "trade_cancel",
+  /** Abre o Menu → Loja premium ([JOGO-27]). Sem payload. Resposta: `premium`. */
+  PremiumOpen: "premium_open",
+  /** Compra um produto da Loja com Diamantes. Payload: {@link PremiumBuyData}. Resposta: `premium_result` + `premium`. */
+  PremiumBuy: "premium_buy",
+  /**
+   * Compra um pacote de Diamantes. Hoje só a compra de TESTE (servidor com `PREMIUM_TEST_PURCHASES=1`); a da loja do
+   * celular (com recibo) é a etapa 2 ([INFRA-14]). Payload: {@link PremiumPackData}. Resposta: `premium_result` + `premium`.
+   */
+  PremiumPack: "premium_pack",
+  /** Pede o histórico de compras da Loja. Sem payload. Resposta: `premium_history_list`. */
+  PremiumHistory: "premium_history",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -336,6 +350,12 @@ export const ServerMessageType = {
   UpdateRequired: "update_required",
   /** Pedido recusado ou mensagem inválida. Ver {@link ErrorCode}. */
   Error: "error",
+  /** Saldo, efeitos ativos, produtos e pacotes da Loja premium ([JOGO-27]). Payload: {@link PremiumData}. */
+  Premium: "premium",
+  /** Compra feita na Loja premium (pacote ou produto). Payload: {@link PremiumResultData}. */
+  PremiumResult: "premium_result",
+  /** Histórico de compras da Loja premium. Payload: {@link PremiumHistoryData}. */
+  PremiumHistoryList: "premium_history_list",
 } as const;
 
 /** Códigos enviados em {@link ServerMessageType.Error}. */
@@ -480,6 +500,14 @@ export const ErrorCode = {
   NotInTrade: "not_in_trade",
   /** Confirmar antes dos {@link TRADE_CONFIRM_DELAY_SECONDS} s ou com uma mochila sem espaço. A conexão continua. */
   TradeNotReady: "trade_not_ready",
+  /** Loja premium ([JOGO-27]): Diamantes a menos que o preço. A conexão continua. */
+  NotEnoughDiamonds: "not_enough_diamonds",
+  /** Ferreiro: pediu a melhoria garantida sem ter pedra da Loja premium ([JOGO-27]). A conexão continua. */
+  NoUpgradeStone: "no_upgrade_stone",
+  /** Loja premium: produto de compra única que a conta já tem. A conexão continua. */
+  AlreadyOwned: "already_owned",
+  /** Loja premium: compra de pacote indisponível (sem compra de teste neste servidor e sem loja do celular ainda). */
+  PurchasesUnavailable: "purchases_unavailable",
   /** Falha interna (ex.: banco fora do ar). A conexão é fechada. */
   ServerError: "server_error",
 } as const;
@@ -661,6 +689,8 @@ export interface DeathReportData {
   readonly equipped: readonly DeathItemView[];
   readonly pickedSlot: EquipSlotName | null;
   readonly broken: boolean;
+  /** `true` = uma proteção da roleta da Loja premium ([JOGO-27]) foi gasta: a peça sorteada não quebrou. */
+  readonly protected: boolean;
   readonly autoRespawnSeconds: number;
 }
 
@@ -723,6 +753,11 @@ export interface ChestLootData {
 export interface UpgradeData {
   readonly uid: string;
   readonly attribute: AttributeId;
+  /**
+   * `true` = usar uma pedra de melhoria garantida da Loja premium ([JOGO-27]): não falha. O servidor só gasta a pedra
+   * se a chance for menor que 100%; sem pedra, a melhoria é recusada. Ausente = `false`.
+   */
+  readonly guaranteed: boolean;
 }
 
 /** Payload de `upgrade_result` ([JOGO-16]). */
@@ -862,6 +897,88 @@ export interface ShopResultData {
   readonly gold: number;
 }
 
+/** Id de produto/pacote da Loja premium vindo da rede: texto curto (o catálogo confere se existe). */
+function isPremiumId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 64;
+}
+
+/** Payload de `premium_buy` ([JOGO-27]): o produto a comprar com Diamantes. */
+export interface PremiumBuyData {
+  readonly productId: string;
+}
+
+/** Payload de `premium_pack`: o pacote de Diamantes a comprar. */
+export interface PremiumPackData {
+  readonly packId: string;
+}
+
+/** Um produto na Loja premium. */
+export interface PremiumProductView {
+  readonly id: string;
+  /** Aba: `vip`, `convenience` ou `power`. */
+  readonly category: string;
+  readonly name: string;
+  readonly description: string;
+  /** Preço em Diamantes. */
+  readonly price: number;
+  /** `true` = compra única que a conta já tem (botão "Comprado"). */
+  readonly owned: boolean;
+}
+
+/** Um pacote de Diamantes. */
+export interface PremiumPackView {
+  readonly id: string;
+  readonly diamonds: number;
+  /** Preço exibido (R$). */
+  readonly priceLabel: string;
+  /** `true` = nunca comprou este pacote: a 1ª compra vem em dobro. */
+  readonly doubled: boolean;
+}
+
+/**
+ * Payload de `premium`: o que a conta tem e o que a Loja vende. Tempos em segundos que FALTAM (o relógio do aparelho
+ * não importa); 0 = inativo. ATENÇÃO: lido em mmo-client/scripts/network/network.gd (premium_received).
+ */
+export interface PremiumData {
+  readonly diamonds: number;
+  readonly vipSeconds: number;
+  readonly xpBoostSeconds: number;
+  readonly upgradeStones: number;
+  readonly deathProtections: number;
+  /** Vagas de anúncio a mais no Mercado agora (permanentes + VIP). */
+  readonly marketSlots: number;
+  readonly products: readonly PremiumProductView[];
+  readonly packs: readonly PremiumPackView[];
+  /** `true` = este servidor aceita a compra de teste dos pacotes (dev, sem dinheiro). */
+  readonly testPurchases: boolean;
+}
+
+/** Payload de `premium_result`: o que foi comprado e quantos Diamantes entraram (pacote) ou saíram (produto). */
+export interface PremiumResultData {
+  readonly kind: "pack" | "product";
+  readonly id: string;
+  /** Nome do produto, ou "N Diamantes" no pacote. */
+  readonly name: string;
+  readonly diamonds: number;
+}
+
+/** Uma linha do histórico de compras. */
+export interface PremiumHistoryEntryView {
+  /** Quando (ms desde 1970, UTC). */
+  readonly at: number;
+  readonly kind: "pack" | "product";
+  /** Nome do produto ou "N Diamantes". */
+  readonly name: string;
+  /** Diamantes que entraram (+) ou saíram (−). */
+  readonly diamonds: number;
+  readonly test: boolean;
+}
+
+/** Payload de `premium_history_list`: da mais nova para a mais velha. */
+export interface PremiumHistoryData {
+  readonly entries: readonly PremiumHistoryEntryView[];
+}
+
 /** Payload de `item_destroy`: o item (vestido ou na mochila) a destruir ([JOGO-24]). */
 export interface ItemDestroyData {
   readonly uid: string;
@@ -983,6 +1100,10 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.BagMove; readonly data: BagMoveData }
   | { readonly type: typeof ClientMessageType.ItemDestroy; readonly data: ItemDestroyData }
   | { readonly type: typeof ClientMessageType.ShopOpen; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.PremiumOpen; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.PremiumBuy; readonly data: PremiumBuyData }
+  | { readonly type: typeof ClientMessageType.PremiumPack; readonly data: PremiumPackData }
+  | { readonly type: typeof ClientMessageType.PremiumHistory; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ShopBuy; readonly data: ShopBuyData }
   | { readonly type: typeof ClientMessageType.ShopSell; readonly data: ShopSellData }
   | { readonly type: typeof ClientMessageType.StoragePut; readonly data: ItemDestroyData }
@@ -1853,6 +1974,9 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.FuseResult; readonly data: FuseResultData }
   | { readonly type: typeof ServerMessageType.Shop; readonly data: ShopData }
   | { readonly type: typeof ServerMessageType.ShopResult; readonly data: ShopResultData }
+  | { readonly type: typeof ServerMessageType.Premium; readonly data: PremiumData }
+  | { readonly type: typeof ServerMessageType.PremiumResult; readonly data: PremiumResultData }
+  | { readonly type: typeof ServerMessageType.PremiumHistoryList; readonly data: PremiumHistoryData }
   | { readonly type: typeof ServerMessageType.Chat; readonly data: ChatData }
   | { readonly type: typeof ServerMessageType.MarketPage; readonly data: MarketPageData }
   | { readonly type: typeof ServerMessageType.MarketMineList; readonly data: MarketMineData }
@@ -2050,7 +2174,7 @@ export function parseUpgradeData(data: unknown): UpgradeData | null {
   if (!isRecord(data)) return null;
   const { uid, attribute } = data;
   if (typeof uid !== "string" || uid.length === 0 || uid.length > 64 || !isAttributeId(attribute)) return null;
-  return { uid, attribute };
+  return { uid, attribute, guaranteed: data["guaranteed"] === true };
 }
 
 /** Valida o payload de `item_destroy`. */
@@ -2330,6 +2454,18 @@ export function parseClientMessage(text: string): ClientMessage | null {
       if (!isRecord(raw)) return null;
       const { itemId } = raw;
       return typeof itemId === "string" && itemId.length > 0 && itemId.length <= 64 ? { type: ClientMessageType.ShopBuy, data: { itemId } } : null;
+    }
+    case ClientMessageType.PremiumOpen:
+      return { type: ClientMessageType.PremiumOpen, data: {} };
+    case ClientMessageType.PremiumHistory:
+      return { type: ClientMessageType.PremiumHistory, data: {} };
+    case ClientMessageType.PremiumBuy: {
+      const productId: unknown = isRecord(raw) ? raw["productId"] : undefined;
+      return isPremiumId(productId) ? { type: ClientMessageType.PremiumBuy, data: { productId } } : null;
+    }
+    case ClientMessageType.PremiumPack: {
+      const packId: unknown = isRecord(raw) ? raw["packId"] : undefined;
+      return isPremiumId(packId) ? { type: ClientMessageType.PremiumPack, data: { packId } } : null;
     }
     case ClientMessageType.ShopSell: {
       const data = parseItemDestroyData(raw);

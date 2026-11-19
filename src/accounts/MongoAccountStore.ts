@@ -9,6 +9,7 @@ import { DEFAULT_SOCIAL_SETTINGS, isBodyType, readSocialSettings, type BodyType,
 import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
 import { readListing, type Listing } from "../items/market.js";
+import { readPremium, type PremiumState } from "../premium/premium.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
@@ -60,6 +61,8 @@ interface AccountDocument {
   social?: SocialSettings;
   /** Quando saiu por vontade própria da última guilda (ms, [SOC-06]); falta/null = nunca. */
   guildLeftAt?: number | null;
+  /** Loja premium ([JOGO-27]): Diamantes, VIP, histórico. Pode faltar (= nada). Lido sempre por readPremium. */
+  premium?: PremiumState;
   /** Código de recuperar senha pendente ([INFRA-13]); falta/null = nenhum. */
   passwordReset?: PasswordResetRecord | null;
 }
@@ -250,6 +253,10 @@ export class MongoAccountStore implements AccountStore {
     await this.accounts.updateOne({ playerId }, { $set: { guildLeftAt: atMs } });
   }
 
+  async savePremium(playerId: string, premium: PremiumState): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { premium } });
+  }
+
   async loadGuilds(): Promise<GuildRecord[]> {
     const result: GuildRecord[] = [];
     for await (const doc of this.guilds.find({}, { projection: { _id: 0 } })) {
@@ -332,6 +339,7 @@ export class MongoAccountStore implements AccountStore {
       friends: readFriendIds(doc.friends),
       social: readSocialSettings(doc.social),
       guildLeftAt: typeof doc.guildLeftAt === "number" ? doc.guildLeftAt : null,
+      premium: readPremium(doc.premium),
     };
   }
 }

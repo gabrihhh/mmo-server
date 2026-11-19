@@ -70,7 +70,7 @@ describe("MongoAccountStore (MongoDB real)", function () {
     const b = await store.register("Amigo_B", "b@amigos.com", "senha-1234");
     assert.ok(a.ok && b.ok);
     assert.deepStrictEqual(a.account.friends, []);
-    assert.deepStrictEqual(a.account.social, { friendRequests: "always", groupInvites: "always" });
+    assert.deepStrictEqual(a.account.social, { friendRequests: "always", groupInvites: "always", guildInvites: "always", profile: "public", tradeRequests: "always" });
     const idA: string = a.account.playerId;
     const idB: string = b.account.playerId;
 

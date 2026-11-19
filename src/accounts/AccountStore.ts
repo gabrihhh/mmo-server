@@ -10,6 +10,7 @@ import { DEFAULT_SOCIAL_SETTINGS, readSocialSettings, type BodyType, type Social
 import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
 import { readListing, type Listing } from "../items/market.js";
+import { EMPTY_PREMIUM, readPremium, type PremiumState } from "../premium/premium.js";
 
 /**
  * Contas de jogador: cadastro com username + e-mail + senha, login por username OU e-mail,
@@ -54,6 +55,8 @@ export interface Account {
   readonly social: SocialSettings;
   /** Quando saiu por vontade própria da última guilda (ms; espera de 1 h para entrar em outra, [SOC-06]); `null` = nunca. */
   readonly guildLeftAt: number | null;
+  /** Diamantes, VIP e o que foi comprado na Loja premium ([JOGO-27]). Conta nova/antiga: nada. */
+  readonly premium: PremiumState;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
@@ -130,6 +133,8 @@ export interface AccountStore {
   saveSocialSettings(playerId: string, settings: SocialSettings): Promise<void>;
   /** Guarda quando o jogador saiu da guilda por vontade própria ([SOC-06]). */
   saveGuildLeftAt(playerId: string, atMs: number): Promise<void>;
+  /** Salva o estado da Loja premium da conta ([JOGO-27]): saldo de Diamantes, VIP, histórico. */
+  savePremium(playerId: string, premium: PremiumState): Promise<void>;
   /** Todas as guildas (coleção `guilds`), para carregar ao ligar o servidor ([SOC-06]). */
   loadGuilds(): Promise<GuildRecord[]>;
   /** Grava (cria ou substitui) uma guilda. */
@@ -200,6 +205,7 @@ interface MemoryRecord {
   friends: string[];
   social: SocialSettings;
   guildLeftAt: number | null;
+  premium: PremiumState;
   passwordReset: PasswordResetRecord | null;
 }
 
@@ -238,6 +244,7 @@ export class InMemoryAccountStore implements AccountStore {
       friends: [],
       social: DEFAULT_SOCIAL_SETTINGS,
       guildLeftAt: null,
+      premium: EMPTY_PREMIUM,
       passwordReset: null,
     };
     this.records.push(record);
@@ -327,6 +334,11 @@ export class InMemoryAccountStore implements AccountStore {
     if (record !== undefined) record.guildLeftAt = atMs;
   }
 
+  async savePremium(playerId: string, premium: PremiumState): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.premium = premium;
+  }
+
   async loadGuilds(): Promise<GuildRecord[]> {
     return Array.from(this.guilds.values(), (guild) => readGuildRecord(guild)).filter((g): g is GuildRecord => g !== null);
   }
@@ -398,6 +410,7 @@ export class InMemoryAccountStore implements AccountStore {
       friends: readFriendIds(record.friends),
       social: readSocialSettings(record.social),
       guildLeftAt: record.guildLeftAt,
+      premium: readPremium(record.premium),
     };
   }
 }

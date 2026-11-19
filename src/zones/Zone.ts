@@ -120,6 +120,11 @@ export interface ZoneMember {
    */
   onDeath?(info: DeathInfo): void;
   /**
+   * Multiplicadores da recompensa dos monstros deste jogador (VIP e poção de XP da Loja premium, [JOGO-27]), lidos a
+   * cada recompensa (o VIP pode acabar no meio da sessão). Ausente = 1 e 1.
+   */
+  rewardMultipliers?(): { readonly xp: number; readonly gold: number };
+  /**
    * `true` = este jogador oculta convites de grupo: todo convite é recusado sozinho, sem aparecer para ele, e quem
    * convidou recebe o aviso "X recusou o convite" ([SOC-03]). Ausente = mostra os convites.
    * Configuração → "Convites de grupo: Sempre / Ocultar" ([SOC-04], salvo na conta): o GameServer preenche isto no
@@ -1940,9 +1945,12 @@ export class Zone {
    * falta nem o dinheiro. O progresso novo vai para quem guarda a conta ({@link ZoneMember.onProgress}).
    */
   private grantReward(player: ZonePlayer, amount: number, gold: number): void {
-    // Só monstro dá recompensa: a XP entra também no contador do perfil ([SOC-08]).
+    // Só monstro dá recompensa: a XP entra também no contador do perfil ([SOC-08]) — a XP base, sem o bônus da Loja
+    // premium, para o ranking não ser comprado.
     this.setStats(player, addMonsterXp(player.stats, amount));
-    const progress: Progress = addGold(addXp(player.progress, amount), gold);
+    // VIP / poção de XP ([JOGO-27]).
+    const bonus = player.member.rewardMultipliers?.() ?? { xp: 1, gold: 1 };
+    const progress: Progress = addGold(addXp(player.progress, round1(amount * bonus.xp)), Math.round(gold * bonus.gold));
     player.progress = progress;
     if (progress.level !== player.level) {
       player.level = progress.level;
@@ -1956,13 +1964,21 @@ export class Zone {
 
   /**
    * Melhoria no ferreiro ([JOGO-16]): o jogador precisa estar vivo e a até {@link BLACKSMITH_RANGE} m de um ferreiro
-   * da zona. Quem decide o resultado é {@link upgradeItem} (com o sorteio {@link random}); aceita, as moedas saem do
-   * progresso do jogador (salvo por {@link ZoneMember.onProgress}). Devolve o resultado para quem guarda o inventário.
+   * da zona. Quem decide o resultado é {@link upgradeItem} (com o sorteio {@link random}; [guaranteed] = pedra da Loja
+   * premium, não sorteia); aceita, as moedas saem do progresso do jogador (salvo por {@link ZoneMember.onProgress}).
+   * Devolve o resultado para quem guarda o inventário.
    */
-  upgradeItem(playerId: string, inventory: Inventory, uid: string, attribute: AttributeId): UpgradeResult | { readonly ok: false; readonly reason: "too_far" } {
+  upgradeItem(
+    playerId: string,
+    inventory: Inventory,
+    uid: string,
+    attribute: AttributeId,
+    guaranteed: boolean = false,
+  ): UpgradeResult | { readonly ok: false; readonly reason: "too_far" } {
     const player: ZonePlayer | undefined = this.players.get(playerId);
     if (player === undefined || player.dead || !this.nearBlacksmith(player)) return { ok: false, reason: "too_far" };
-    const result: UpgradeResult = upgradeItem(inventory, uid, attribute, player.progress.gold, this.random());
+    // Pedra de melhoria garantida ([JOGO-27]): sorteio 0 = sempre dá certo (quem gasta a pedra é o GameServer).
+    const result: UpgradeResult = upgradeItem(inventory, uid, attribute, player.progress.gold, guaranteed ? 0 : this.random());
     if (!result.ok) return result;
     player.progress = { ...player.progress, gold: player.progress.gold - result.cost };
     player.member.onProgress?.(player.progress);
@@ -1997,13 +2013,20 @@ export class Zone {
 
   /**
    * Armazém ([JOGO-26]): [playerId] perto do baú guarda (`put`) ou tira (`take`) o item [uid], ou compra uma aba
-   * (`buyTab`, gasta moedas do progresso). Devolve o resultado para quem guarda o inventário.
+   * (`buyTab`, gasta moedas do progresso). [extraTabs] = abas do VIP ([JOGO-27]). Devolve o resultado para quem guarda
+   * o inventário.
    */
-  storageAction(playerId: string, inventory: Inventory, action: "put" | "take" | "buyTab", uid: string): StorageResult | { readonly ok: false; readonly reason: "too_far" } {
+  storageAction(
+    playerId: string,
+    inventory: Inventory,
+    action: "put" | "take" | "buyTab",
+    uid: string,
+    extraTabs: number = 0,
+  ): StorageResult | { readonly ok: false; readonly reason: "too_far" } {
     const player: ZonePlayer | undefined = this.players.get(playerId);
     if (player === undefined || player.dead || !this.nearService(player, "storage")) return { ok: false, reason: "too_far" };
     const result: StorageResult =
-      action === "put" ? putInStorage(inventory, uid) : action === "take" ? takeFromStorage(inventory, uid) : buyStorageTab(inventory, player.progress.gold);
+      action === "put" ? putInStorage(inventory, uid, extraTabs) : action === "take" ? takeFromStorage(inventory, uid) : buyStorageTab(inventory, player.progress.gold);
     if (!result.ok) return result;
     if (result.goldDelta !== 0) {
       player.progress = { ...player.progress, gold: player.progress.gold + result.goldDelta };

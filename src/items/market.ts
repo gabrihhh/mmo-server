@@ -123,10 +123,11 @@ export class Market {
 
   /**
    * Anuncia [item] de [sellerId] por [price] (taxa [fee] já paga). Recusa se passou do limite de anúncios.
-   * Quem chama já tirou o item da mochila.
+   * Quem chama já tirou o item da mochila. [limit] = anúncios permitidos ({@link MAX_LISTINGS} + vagas da Loja premium,
+   * [JOGO-27]).
    */
-  create(sellerId: string, sellerName: string, item: ItemStack, price: number, fee: number, nowMs: number): Listing | MarketFailure {
-    if (this.openCount(sellerId) >= MAX_LISTINGS) return "too_many_listings";
+  create(sellerId: string, sellerName: string, item: ItemStack, price: number, fee: number, nowMs: number, limit: number = MAX_LISTINGS): Listing | MarketFailure {
+    if (this.openCount(sellerId) >= limit) return "too_many_listings";
     const id: string = `${nowMs.toString(36)}-${(this.nextId++).toString(36)}-${item.uid}`;
     const listing: Listing = {
       id, sellerId, sellerName, item, price, fee, createdAt: nowMs, expiresAt: nowMs + LISTING_DURATION_MS, soldAt: null, buyerName: null, notified: false,

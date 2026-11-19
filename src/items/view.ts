@@ -82,8 +82,8 @@ export function lootViews(entries: readonly LootEntry[]): LootView[] {
   return views;
 }
 
-/** Inventário completo visto pelo cliente. */
-export function inventoryView(inventory: Inventory): InventoryView {
+/** Inventário completo visto pelo cliente. [extraStorageTabs] = abas do VIP no Armazém ([JOGO-27]). */
+export function inventoryView(inventory: Inventory, extraStorageTabs: number = 0): InventoryView {
   const slot = (stack: ItemStack | null): ItemView | null => (stack === null ? null : itemView(stack));
   return {
     equipped: {
@@ -96,7 +96,7 @@ export function inventoryView(inventory: Inventory): InventoryView {
     bagCapacity: BAG_CAPACITY,
     unarmedAttack: abilityView(UNARMED_ATTACK),
     storage: storageOf(inventory).map(itemView).filter((view): view is ItemView => view !== null),
-    storageCapacity: storageCapacity(inventory),
+    storageCapacity: storageCapacity(inventory, extraStorageTabs),
     storageTabCost: storageTabCost(inventory.storageTabs ?? 0),
   };
 }

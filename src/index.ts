@@ -5,6 +5,8 @@
  * o banco do docker-compose.yml — subir com `npm run db:up`) e `UPDATES_DIR` (padrão `updates`,
  * a pasta com o manifesto e os pacotes do jogo, mmo-docs [INFRA-08]). E-mail do recuperar senha ([INFRA-13]):
  * `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` (sem eles, o código vai para o log).
+ * Loja premium ([JOGO-27]): `PREMIUM_TEST_PURCHASES=1` liga a compra de TESTE dos pacotes de Diamantes (de graça; só
+ * no PC de desenvolvimento, nunca na VPS).
  * Lê o arquivo `.env` da pasta do servidor, se existir (variáveis já definidas no ambiente têm prioridade).
  * Também responde à descoberta na rede local (UDP 2568, [INFRA-10]): aparelhos no mesmo Wi-Fi acham o servidor sozinhos.
  */
@@ -35,7 +37,9 @@ try {
 const updatesDir: string | undefined = process.env["UPDATES_DIR"];
 const mailer: Mailer = mailerFromEnv(process.env);
 console.log(`E-mail (recuperar senha): ${mailer.label}`);
-const server: GameServer = new GameServer(updatesDir === undefined ? { accounts, mailer } : { accounts, mailer, updatesDir });
+const testPurchases: boolean = process.env["PREMIUM_TEST_PURCHASES"] === "1";
+if (testPurchases) console.log("Loja premium: compra de TESTE ligada (Diamantes de graça) — nunca em produção");
+const server: GameServer = new GameServer(updatesDir === undefined ? { accounts, mailer, testPurchases } : { accounts, mailer, updatesDir, testPurchases });
 const actualPort: number = await server.listen(port);
 console.log(`Servidor no ar: ws://localhost:${actualPort} (health: http://localhost:${actualPort}/health)`);
 const discovery = await startDiscovery(actualPort);

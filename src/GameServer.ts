@@ -2,7 +2,22 @@ import type { Progress } from "./progression/level.js";
 import type { PlayerStats } from "./progression/stats.js";
 import { RankingBoards, addToPeriods, secondsUntilReset, type PeriodCounters, type RankRow, type RankingCategory, type RankingPeriod } from "./progression/ranking.js";
 import type { AttributeId } from "./items/attributes.js";
-import type { UpgradeFailure } from "./items/upgrade.js";
+import { upgradeChance, type UpgradeFailure } from "./items/upgrade.js";
+import {
+  PREMIUM_PACKS,
+  PREMIUM_PRODUCTS,
+  bonusMarketSlots,
+  bonusStorageTabs,
+  buyProduct,
+  creditPack,
+  getPremiumPack,
+  getPremiumProduct,
+  rewardMultipliers,
+  useDeathProtection,
+  useUpgradeStone,
+  type PremiumFailure,
+  type PremiumState,
+} from "./premium/premium.js";
 import { buyPrice, shopItems, type ShopFailure } from "./items/shop.js";
 import type { StorageFailure } from "./items/storage.js";
 import { ChatLimiter, cleanChatText, type ChatCheck } from "./social/chat.js";
@@ -42,6 +57,7 @@ import {
   type SocialSettings,
   type DeathItemView,
   type ItemView,
+  type PremiumData,
   type ChatSendData,
   type MarketListingView,
   type MarketResultData,
@@ -103,6 +119,11 @@ export interface GameServerOptions {
   readonly updatePollIntervalMs?: number;
   /** Envio do código de recuperar senha ([INFRA-13]). Padrão: {@link LogMailer} (escreve no log). */
   readonly mailer?: Mailer;
+  /**
+   * Aceita a compra de TESTE dos pacotes de Diamantes ([JOGO-27]): Diamantes de graça, só para desenvolver. NUNCA ligar
+   * em produção. Padrão: `false` (o `index.ts` liga com `PREMIUM_TEST_PURCHASES=1`).
+   */
+  readonly testPurchases?: boolean;
 }
 
 /** Tamanho máximo de uma mensagem do cliente, em bytes. Maior que isso, o `ws` fecha a conexão (1009). */
@@ -232,6 +253,7 @@ export class GameServer {
       updatesDir: options.updatesDir ?? DEFAULT_UPDATES_DIR,
       updatePollIntervalMs: options.updatePollIntervalMs ?? DEFAULT_UPDATE_POLL_MS,
       mailer: options.mailer ?? new LogMailer(),
+      testPurchases: options.testPurchases ?? false,
     };
     this.passwordReset = new PasswordReset(this.options.accounts, this.options.mailer);
     this.updates = new UpdateWatcher({
@@ -544,7 +566,7 @@ export class GameServer {
         void this.changeInventory(session, (inventory) => unequip(inventory, GameServer.slotOf(message.data.slot), message.data.index));
         return;
       case ClientMessageType.Upgrade:
-        void this.handleUpgrade(session, message.data.uid, message.data.attribute);
+        void this.handleUpgrade(session, message.data.uid, message.data.attribute, message.data.guaranteed);
         return;
       case ClientMessageType.Respawn:
         if (session.zone !== null && session.account !== null) session.zone.requestRespawn(session.account.playerId);
@@ -563,6 +585,18 @@ export class GameServer {
         return;
       case ClientMessageType.ShopOpen:
         this.sendShop(session);
+        return;
+      case ClientMessageType.PremiumOpen:
+        this.sendPremium(session);
+        return;
+      case ClientMessageType.PremiumBuy:
+        void this.handlePremiumBuy(session, message.data.productId);
+        return;
+      case ClientMessageType.PremiumPack:
+        void this.handlePremiumPack(session, message.data.packId);
+        return;
+      case ClientMessageType.PremiumHistory:
+        this.sendPremiumHistory(session);
         return;
       case ClientMessageType.ShopBuy:
         void this.handleShop(session, "buy", message.data.itemId);
@@ -1238,6 +1272,8 @@ export class GameServer {
       }),
     );
     this.sendInventory(session);
+    // Loja premium ([JOGO-27]): saldo e pedras/proteções (o ferreiro e a Loja mostram).
+    this.sendPremium(session);
     void this.sendFriends(account.playerId);
     // A guilda dele; os guildeiros online passam a vê-lo online ([SOC-06]).
     this.guilds.sendGuild(account.playerId);
@@ -1250,7 +1286,8 @@ export class GameServer {
   /** Manda o inventário da conta desta sessão (vestido + mochila + o que cada item faz). */
   private sendInventory(session: Session): void {
     if (session.account === null || session.socket.readyState !== WebSocket.OPEN) return;
-    session.socket.send(encodeServerMessage({ type: ServerMessageType.Inventory, data: inventoryView(session.account.inventory) }));
+    const extraTabs: number = bonusStorageTabs(session.account.premium, Date.now());
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.Inventory, data: inventoryView(session.account.inventory, extraTabs) }));
   }
 
   /**
@@ -1293,18 +1330,30 @@ export class GameServer {
    * Melhoria no ferreiro ([JOGO-16]): a zona confere a distância, as moedas e sorteia (`Zone.upgradeItem`, que já
    * desconta as moedas e salva o progresso). Responde `upgrade_result`; se subiu de nível, salva o inventário, a zona
    * passa a usar os atributos novos (se o item está vestido) e vai o `inventory` novo.
+   * [wantsGuaranteed] = usar a pedra garantida da Loja premium ([JOGO-27]): só é gasta se a chance for menor que 100%
+   * (até o +5 nunca falha); sem pedra, recusa sem cobrar.
    */
-  private async handleUpgrade(session: Session, uid: string, attribute: AttributeId): Promise<void> {
+  private async handleUpgrade(session: Session, uid: string, attribute: AttributeId, wantsGuaranteed: boolean): Promise<void> {
     const zone: Zone | null = session.zone;
     if (session.account === null || zone === null) {
       this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
       return;
     }
     const playerId: string = session.account.playerId;
-    const result = zone.upgradeItem(playerId, session.account.inventory, uid, attribute);
+    const before = [...Object.values(session.account.inventory.equipped), ...session.account.inventory.bag].find((stack) => stack !== null && stack.uid === uid);
+    const guaranteed: boolean = wantsGuaranteed && before !== undefined && before !== null && upgradeChance(before.level ?? 0) < 1;
+    if (guaranteed && session.account.premium.upgradeStones <= 0) {
+      this.sendError(session, ErrorCode.NoUpgradeStone, "Você não tem pedra de melhoria garantida.");
+      return;
+    }
+    const result = zone.upgradeItem(playerId, session.account.inventory, uid, attribute, guaranteed);
     if (!result.ok) {
       this.sendError(session, GameServer.UPGRADE_ERRORS[result.reason], GameServer.UPGRADE_MESSAGES[result.reason]);
       return;
+    }
+    if (guaranteed && session.account !== null) {
+      const spent: PremiumState | null = useUpgradeStone(session.account.premium);
+      if (spent !== null) void this.setPremium(session, spent);
     }
     const level: number = result.stack.level ?? 0;
     const points: number = result.success ? (result.stack.attrs?.[attribute] ?? 0) - (GameServer.pointsBefore(session.account.inventory, uid, attribute)) : 0;
@@ -1336,6 +1385,157 @@ export class GameServer {
     // Moedas gastas e, se subiu, o item mudou: a troca aberta confere a oferta ([SOC-05]).
     zone.tradeBelongingsChanged(playerId);
   }
+
+  // --- Loja premium ([JOGO-27]) ---
+
+  /** Anúncios que [account] pode ter no Mercado: {@link MAX_LISTINGS} + vagas da Loja premium (permanentes + VIP). */
+  private static maxListings(account: Account): number {
+    return MAX_LISTINGS + bonusMarketSlots(account.premium, Date.now());
+  }
+
+  /** Nome exibido de um produto/pacote (histórico e resultado). */
+  private static premiumName(kind: "pack" | "product", id: string): string {
+    if (kind === "product") return getPremiumProduct(id)?.name ?? id;
+    const pack = getPremiumPack(id);
+    return pack === undefined ? id : `${pack.diamonds} Diamantes`;
+  }
+
+  /** O que a conta tem e o que a Loja vende, como o cliente vê ({@link PremiumData}). */
+  private premiumData(premium: PremiumState): PremiumData {
+    const now: number = Date.now();
+    const seconds = (until: number): number => Math.max(0, Math.ceil((until - now) / 1000));
+    return {
+      diamonds: premium.diamonds,
+      vipSeconds: seconds(premium.vipUntil),
+      xpBoostSeconds: seconds(premium.xpBoostUntil),
+      upgradeStones: premium.upgradeStones,
+      deathProtections: premium.deathProtections,
+      marketSlots: bonusMarketSlots(premium, now),
+      products: PREMIUM_PRODUCTS.map((product) => ({
+        id: product.id,
+        category: product.category,
+        name: product.name,
+        description: product.description,
+        price: product.price,
+        owned: product.id === "market_slots" && premium.marketSlots > 0,
+      })),
+      packs: PREMIUM_PACKS.map((pack) => ({ id: pack.id, diamonds: pack.diamonds, priceLabel: pack.priceLabel, doubled: !premium.packsBought.includes(pack.id) })),
+      testPurchases: this.options.testPurchases === true,
+    };
+  }
+
+  /** Manda o `premium` (saldo, efeitos, catálogo). Só autenticado. */
+  private sendPremium(session: Session): void {
+    if (session.account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre antes");
+      return;
+    }
+    if (session.socket.readyState !== WebSocket.OPEN) return;
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.Premium, data: this.premiumData(session.account.premium) }));
+  }
+
+  /**
+   * Troca o estado da Loja premium da conta: na sessão (na hora, síncrono: duas compras seguidas leem o saldo novo) e no
+   * banco. Manda o `premium` novo.
+   */
+  private async setPremium(session: Session, premium: PremiumState): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) return;
+    session.account = { ...account, premium };
+    this.sendPremium(session);
+    try {
+      await this.options.accounts.savePremium(account.playerId, premium);
+    } catch (error: unknown) {
+      console.error(`[${session.connectionId}] falha ao salvar a Loja premium de ${account.username}:`, error);
+    }
+  }
+
+  /**
+   * Compra um produto com Diamantes ([JOGO-27]): decide e grava no servidor (atômico com o saldo, na sessão). A aba do
+   * Armazém soma em `storageTabs` (salva o inventário); VIP/aba mudam a capacidade do Armazém, então vai o `inventory`.
+   */
+  private async handlePremiumBuy(session: Session, productId: string): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre antes");
+      return;
+    }
+    const result = buyProduct(account.premium, productId, Date.now());
+    if (!result.ok) {
+      this.sendError(session, GameServer.PREMIUM_ERRORS[result.reason], GameServer.PREMIUM_MESSAGES[result.reason]);
+      return;
+    }
+    this.log(`[loja] ${account.username} comprou ${result.product.id} por ${result.product.price} diamantes`);
+    if (result.storageTab) {
+      const inventory = { ...account.inventory, storageTabs: (account.inventory.storageTabs ?? 0) + 1 };
+      session.account = { ...account, inventory };
+      this.options.accounts.saveInventory(account.playerId, inventory).catch((error: unknown) => {
+        console.error(`[${session.connectionId}] falha ao salvar a aba do Armazém de ${account.username}:`, error);
+      });
+    }
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(
+        encodeServerMessage({ type: ServerMessageType.PremiumResult, data: { kind: "product", id: result.product.id, name: result.product.name, diamonds: result.product.price } }),
+      );
+    }
+    await this.setPremium(session, result.state);
+    if (result.storageTab || result.product.id === "vip_30d") this.sendInventory(session);
+  }
+
+  /**
+   * Compra um pacote de Diamantes. Etapa 1 ([JOGO-27]): só a compra de TESTE, com {@link GameServerOptions.testPurchases}.
+   * A compra real (recibo da Google Play / App Store conferido aqui) é a etapa 2 ([INFRA-14]).
+   */
+  private async handlePremiumPack(session: Session, packId: string): Promise<void> {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre antes");
+      return;
+    }
+    if (this.options.testPurchases !== true) {
+      this.sendError(session, ErrorCode.PurchasesUnavailable, "Compra de Diamantes ainda não disponível.");
+      return;
+    }
+    const result = creditPack(account.premium, packId, Date.now(), true);
+    if (!result.ok) {
+      this.sendError(session, ErrorCode.ItemNotFound, "Esse pacote não existe.");
+      return;
+    }
+    this.log(`[loja] ${account.username} comprou (teste) ${packId}: +${result.diamonds} diamantes`);
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(
+        encodeServerMessage({ type: ServerMessageType.PremiumResult, data: { kind: "pack", id: packId, name: GameServer.premiumName("pack", packId), diamonds: result.diamonds } }),
+      );
+    }
+    await this.setPremium(session, result.state);
+  }
+
+  /** Manda o histórico de compras da Loja (Menu → Loja → Histórico). */
+  private sendPremiumHistory(session: Session): void {
+    if (session.account === null || session.socket.readyState !== WebSocket.OPEN) return;
+    const entries = session.account.premium.history.map((entry) => ({
+      at: entry.at,
+      kind: entry.kind,
+      name: GameServer.premiumName(entry.kind, entry.id),
+      diamonds: entry.diamonds,
+      test: entry.test,
+    }));
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.PremiumHistoryList, data: { entries } }));
+  }
+
+  /** Código do protocolo para cada recusa da Loja premium. */
+  private static readonly PREMIUM_ERRORS: Readonly<Record<PremiumFailure, ErrorCode>> = {
+    product_not_found: ErrorCode.ItemNotFound,
+    not_enough_diamonds: ErrorCode.NotEnoughDiamonds,
+    already_owned: ErrorCode.AlreadyOwned,
+  };
+
+  /** Mensagens (em português) das recusas da Loja premium. */
+  private static readonly PREMIUM_MESSAGES: Readonly<Record<PremiumFailure, string>> = {
+    product_not_found: "Esse produto não existe.",
+    not_enough_diamonds: "Diamantes insuficientes.",
+    already_owned: "Você já tem esse produto.",
+  };
 
   /** Manda a lista da Loja do Ferreiro ([JOGO-23]): todas as peças +0 com o preço. */
   private sendShop(session: Session): void {
@@ -1409,7 +1609,7 @@ export class GameServer {
     const now: number = Date.now();
     this.market.prune(now);
     const listings: MarketListingView[] = this.market.mine(session.account.playerId, now).flatMap((l) => GameServer.listingView(l, now) ?? []);
-    session.socket.send(encodeServerMessage({ type: ServerMessageType.MarketMineList, data: { listings, maxListings: MAX_LISTINGS } }));
+    session.socket.send(encodeServerMessage({ type: ServerMessageType.MarketMineList, data: { listings, maxListings: GameServer.maxListings(session.account) } }));
   }
 
   private sendMarketSold(playerId: string, sale: Listing): void {
@@ -1468,13 +1668,14 @@ export class GameServer {
       const worn: boolean = Object.values(account.inventory.equipped).some((item) => item?.uid === uid);
       return worn ? this.sendError(session, ErrorCode.ItemEquipped, "Tire o item antes de anunciar.") : this.sendError(session, ErrorCode.ItemNotFound, "Esse item não está na mochila.");
     }
-    if (this.market.openCount(me) >= MAX_LISTINGS) return this.sendError(session, ErrorCode.TooManyListings, `Você já tem ${MAX_LISTINGS} anúncios.`);
+    const limit: number = GameServer.maxListings(account);
+    if (this.market.openCount(me) >= limit) return this.sendError(session, ErrorCode.TooManyListings, `Você já tem ${limit} anúncios.`);
     const fee: number = listingFee(price);
     if (!zone.spendGold(me, fee)) return this.sendError(session, ErrorCode.NotEnoughGold, `Você precisa de ${fee} moedas para a taxa.`);
-    const created: Listing | MarketFailure = this.market.create(me, account.username, stack, price, fee, Date.now());
+    const created: Listing | MarketFailure = this.market.create(me, account.username, stack, price, fee, Date.now(), limit);
     if (typeof created === "string") {
       zone.addGold(me, fee);
-      return this.sendError(session, ErrorCode.TooManyListings, `Você já tem ${MAX_LISTINGS} anúncios.`);
+      return this.sendError(session, ErrorCode.TooManyListings, `Você já tem ${limit} anúncios.`);
     }
     // O spendGold trocou as moedas na sessão (onProgress): lê a conta de novo.
     const fresh: Account = session.account ?? account;
@@ -1623,7 +1824,7 @@ export class GameServer {
       return;
     }
     const playerId: string = session.account.playerId;
-    const result = zone.storageAction(playerId, session.account.inventory, action, uid);
+    const result = zone.storageAction(playerId, session.account.inventory, action, uid, bonusStorageTabs(session.account.premium, Date.now()));
     if (!result.ok) {
       this.sendError(session, GameServer.STORAGE_ERRORS[result.reason], GameServer.STORAGE_MESSAGES[result.reason]);
       return;
@@ -1700,7 +1901,11 @@ export class GameServer {
       const view: ItemView | null = stack === null ? null : itemView(stack);
       if (view !== null) equipped.push({ slot, item: view });
     }
-    const roll: ItemRoll = rollDeathItem(before, Math.random);
+    const rolled: ItemRoll = rollDeathItem(before, Math.random);
+    // Proteção da roleta (Loja premium, [JOGO-27]): com peça sorteada, gasta uma e a peça não quebra.
+    const spent: PremiumState | null = rolled.slot === null ? null : useDeathProtection(account.premium);
+    if (spent !== null) await this.setPremium(session, spent);
+    const roll: ItemRoll = spent === null ? rolled : { slot: rolled.slot, broken: false };
     const broken: EquipSlot | null = roll.broken ? roll.slot : null;
     if (broken !== null) {
       this.log(`[morte] ${account.username} perdeu ${before.equipped[broken]?.itemId ?? "?"} (quebrou)`);
@@ -1718,6 +1923,7 @@ export class GameServer {
           equipped,
           pickedSlot: roll.slot,
           broken: roll.broken,
+          protected: spent !== null,
           autoRespawnSeconds: PLAYER_RESPAWN_SECONDS,
         },
       }),
@@ -1977,6 +2183,9 @@ export class GameServer {
         onDeath: (info: DeathInfo): void => {
           void this.handleDeath(session, info);
         },
+        // VIP / poção de XP ([JOGO-27]): lido a cada recompensa (o VIP pode acabar no meio da sessão).
+        rewardMultipliers: (): { readonly xp: number; readonly gold: number } =>
+          session.account === null ? { xp: 1, gold: 1 } : rewardMultipliers(session.account.premium, Date.now()),
         // Configuração → "Convites de grupo: Ocultar" ([SOC-04]): lido a cada convite, então mudar vale na hora.
         hidesGroupInvites: (): boolean => session.account?.social.groupInvites === "hide",
         // Troca ([SOC-05]): "Pedidos de troca: Ocultar", a mochila da conta e o resultado.
