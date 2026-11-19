@@ -1,0 +1,3 @@
+# Scripts de terminal: .sh sempre com LF (bash quebra com CRLF), .bat com CRLF (cmd exige).
+*.sh text eol=lf
+*.bat text eol=crlf

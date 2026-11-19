@@ -3,7 +3,16 @@
 Servidor multiplayer do MMO (Node.js 22 + TypeScript + `ws`, servidor próprio).
 Documentação completa em `../mmo-docs` (comece pelo `INDICE.md`).
 
-Jeito fácil: `comandos/ligar_servidor.sh` (Node 22, dependências, MongoDB no Docker e o servidor, tudo de uma vez).
+Jeito fácil (pasta `comandos/`, versão Linux `.sh` e Windows `.bat` de cada comando — mmo-docs [PAD-05]):
+
+| | Linux | Windows (clique duplo) |
+|---|---|---|
+| Primeira vez (instala tudo) | `comandos/setup-linux.sh` | `comandos\setup-windows.bat` |
+| Rodar o servidor | `comandos/start-server/linux.sh` | `comandos\start-server\windows.bat` |
+| Ligar o banco | `comandos/start-database/linux.sh` | `comandos\start-database\windows.bat` |
+| Desligar o banco | `comandos/stop-database/linux.sh` | `comandos\stop-database\windows.bat` |
+
+No Windows é só dar dois cliques no `.bat`: ele pede permissão de administrador (o MongoDB é um serviço do Windows).
 
 Passo a passo:
 

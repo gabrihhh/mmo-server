@@ -43,8 +43,10 @@ Seções-chave deste repo: [INFRA-02] servidor, [INFRA-03] banco, [INFRA-04] pro
 ## Comandos
 
 ```bash
-comandos/ligar_servidor.sh   # sobe tudo (Node 22, deps, MongoDB) e inicia o servidor
-comandos/ligar_banco.sh      # só o MongoDB (desligar: comandos/desligar_banco.sh)
+# Atalhos por sistema ([PAD-05]): cada pasta tem linux.sh e windows.bat
+comandos/setup-linux.sh             # máquina nova: instala tudo (Windows: comandos\setup-windows.bat)
+comandos/start-server/linux.sh      # sobe tudo (Node 22, deps, MongoDB) e inicia o servidor
+comandos/start-database/linux.sh    # só liga o MongoDB (desligar: comandos/stop-database/linux.sh)
 nvm use            # Node 22 (.nvmrc)
 npm install
 npm run db:up      # MongoDB local via Docker (o servidor não sobe sem ele) — ver [INFRA-03]
