@@ -1,4 +1,5 @@
 import { isAttributeId, type AttributeId } from "../items/attributes.js";
+import { isStarterWeapon } from "../items/catalog.js";
 import { isArenaSet, isColosseumMode, type ArenaBuild, type ColosseumMode } from "../arena/build.js";
 import type { ColosseumOutcome } from "../arena/rewards.js";
 import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type RankingPeriod } from "../progression/ranking.js";
@@ -57,10 +58,11 @@ import { isChatChannel, type ChatChannel } from "../social/chat.js";
  *   `colosseum_point`/`colosseum_leave_match` → `colosseum_info`/`colosseum_found`/`colosseum_accept_status`/
  *   `colosseum_cancelled`/`colosseum_state`/`colosseum_result`; `kind`/`arena` no `welcome` (troca de cena pelo
  *   servidor); categorias `colosseum_1x1/2x2/3x3` no ranking; erros `in_colosseum` e `colosseum_*`.
+ * v42: arma inicial ([CLI-09]): `weapon` no `choose_body` (uma das `STARTER_WEAPONS`; chega vestida).
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 41;
+export const PROTOCOL_VERSION = 42;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -669,6 +671,11 @@ export type NpcBodyType = (typeof NPC_BODY_TYPES)[number];
 /** Payload de `choose_body`. */
 export interface ChooseBodyData {
   readonly body: BodyType;
+  /**
+   * Arma escolhida na mesma tela (v42): uma das `STARTER_WEAPONS` do catálogo; chega vestida. `null` = sem arma
+   * (só testes e `--dev-user` sem `--weapon=`; o cliente de verdade sempre manda).
+   */
+  readonly weapon: string | null;
 }
 
 /** Payload de `join`. */
@@ -2335,8 +2342,10 @@ export function isBodyType(value: unknown): value is BodyType {
 
 export function parseChooseBodyData(data: unknown): ChooseBodyData | null {
   if (!isRecord(data)) return null;
-  const { body } = data;
-  return isBodyType(body) ? { body } : null;
+  const { body, weapon } = data;
+  if (!isBodyType(body)) return null;
+  if (weapon === undefined || weapon === null) return { body, weapon: null };
+  return typeof weapon === "string" && isStarterWeapon(weapon) ? { body, weapon } : null;
 }
 
 export function parseUnequipData(data: unknown): UnequipData | null {

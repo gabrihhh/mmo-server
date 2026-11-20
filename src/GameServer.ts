@@ -122,6 +122,7 @@ import {
   type InventoryFailure,
   type InventoryResult,
   type ItemStack,
+  newItemUid,
 } from "./items/inventory.js";
 import { inventoryView, itemView, lootViews } from "./items/view.js";
 
@@ -662,7 +663,7 @@ export class GameServer {
         // Só mantém o Wi-Fi do celular acordado ([INFRA-12]); nada a fazer.
         return;
       case ClientMessageType.ChooseBody:
-        void this.handleChooseBody(session, message.data.body);
+        void this.handleChooseBody(session, message.data.body, message.data.weapon);
         return;
       case ClientMessageType.Join:
         void this.handleJoin(session, message.data);
@@ -2262,10 +2263,11 @@ export class GameServer {
   }
 
   /**
-   * Escolha do corpo do personagem (uma vez só, antes do primeiro `join`). Salva no banco e responde `body_chosen`;
-   * conta que já escolheu recebe `body_already_chosen`. Ver mmo-docs [INFRA-07].
+   * Escolha do corpo do personagem (uma vez só, antes do primeiro `join`) e da arma inicial (`weapon`, já validada
+   * pelo protocolo: uma das `STARTER_WEAPONS`; chega vestida, [CLI-09]). Salva no banco e responde `body_chosen`;
+   * conta que já escolheu recebe `body_already_chosen` (e não ganha arma). Ver mmo-docs [INFRA-07].
    */
-  private async handleChooseBody(session: Session, body: BodyType): Promise<void> {
+  private async handleChooseBody(session: Session, body: BodyType, weapon: string | null): Promise<void> {
     const account: Account | null = session.account;
     if (account === null) {
       this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
@@ -2275,9 +2277,12 @@ export class GameServer {
       this.sendError(session, ErrorCode.BodyAlreadyChosen, "O personagem já foi escolhido.");
       return;
     }
+    // Mão já ocupada (conta antiga que ainda não tinha corpo): não sobrescreve o item que ela tem.
+    const hand: ItemStack | null =
+      weapon === null || account.inventory.equipped.hand !== null ? null : { uid: newItemUid(), itemId: weapon };
     let saved: boolean;
     try {
-      saved = await this.options.accounts.chooseBody(account.playerId, body);
+      saved = await this.options.accounts.chooseBody(account.playerId, body, hand);
     } catch (error: unknown) {
       console.error(`[${session.connectionId}] falha ao salvar o corpo de ${account.username}:`, error);
       this.reject(session, ErrorCode.ServerError, "erro no servidor");
@@ -2287,11 +2292,13 @@ export class GameServer {
       this.sendError(session, ErrorCode.BodyAlreadyChosen, "O personagem já foi escolhido.");
       return;
     }
-    session.account = { ...account, body };
+    const inventory: Account["inventory"] =
+      hand === null ? account.inventory : { ...account.inventory, equipped: { ...account.inventory.equipped, hand } };
+    session.account = { ...account, body, inventory };
     if (session.socket.readyState === WebSocket.OPEN) {
       session.socket.send(encodeServerMessage({ type: ServerMessageType.BodyChosen, data: { body } }));
     }
-    this.log(`[auth] ${account.username} escolheu o corpo ${body}`);
+    this.log(`[auth] ${account.username} escolheu o corpo ${body} e a arma ${weapon ?? "nenhuma"}`);
   }
 
   private async handleJoin(session: Session, data: JoinData): Promise<void> {

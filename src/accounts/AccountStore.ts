@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { normalizeKey } from "./credentials.js";
-import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
+import { readInventory, starterInventory, type Inventory, type ItemStack } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
 import { EMPTY_PERIODS, readPeriods, type PeriodCounters, type RankingSource } from "../progression/ranking.js";
@@ -132,10 +132,11 @@ export interface AccountStore {
    */
   rankingSources(): Promise<RankingSource[]>;
   /**
-   * Grava o corpo do personagem SE ainda não houver um (a escolha é para sempre). `true` = gravou; `false` = já tinha
-   * (ou conta inexistente).
+   * Grava o corpo do personagem SE ainda não houver um (a escolha é para sempre) e, junto (na mesma escrita), veste
+   * `hand` na mão: a arma inicial escolhida na mesma tela ([CLI-09]; `null` = nenhuma). `true` = gravou; `false` = já
+   * tinha (ou conta inexistente) e nada mudou.
    */
-  chooseBody(playerId: string, body: BodyType): Promise<boolean>;
+  chooseBody(playerId: string, body: BodyType, hand: ItemStack | null): Promise<boolean>;
   /** Grava a amizade de `a` e `b` nas DUAS contas (mútua; repetir não duplica). */
   addFriendship(a: string, b: string): Promise<void>;
   /** Desfaz a amizade de `a` e `b` nas DUAS contas (remoção mútua; ignora quem não era amigo). */
@@ -319,10 +320,11 @@ export class InMemoryAccountStore implements AccountStore {
       .map((r) => ({ id: r.playerId, name: r.username, stats: readStats(r.stats), periods: readPeriods(r.periods), colosseum: readColosseumRecord(r.colosseum) }));
   }
 
-  async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
+  async chooseBody(playerId: string, body: BodyType, hand: ItemStack | null): Promise<boolean> {
     const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
     if (record === undefined || record.body !== null) return false;
     record.body = body;
+    if (hand !== null) record.inventory = { ...record.inventory, equipped: { ...record.inventory.equipped, hand } };
     return true;
   }
 

@@ -1,7 +1,7 @@
 import { MongoClient, MongoServerError, type Collection, type Db } from "mongodb";
 
 import { normalizeKey } from "./credentials.js";
-import { readInventory, starterInventory, type Inventory } from "../items/inventory.js";
+import { readInventory, starterInventory, type Inventory, type ItemStack } from "../items/inventory.js";
 import { STARTING_PROGRESS, readProgress, type Progress } from "../progression/level.js";
 import { STARTING_STATS, readStats, type PlayerStats } from "../progression/stats.js";
 import { EMPTY_PERIODS, readPeriods, type PeriodCounters, type RankingSource } from "../progression/ranking.js";
@@ -225,11 +225,12 @@ export class MongoAccountStore implements AccountStore {
     return result;
   }
 
-  async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
-    // Só grava se ainda não houver corpo: a escolha é para sempre (e duas conexões não brigam).
+  async chooseBody(playerId: string, body: BodyType, hand: ItemStack | null): Promise<boolean> {
+    // Só grava se ainda não houver corpo: a escolha é para sempre (e duas conexões não brigam). A arma inicial vai na
+    // mesma escrita: ou grava as duas, ou nenhuma (não dá para ganhar duas armas escolhendo duas vezes).
     const result = await this.accounts.updateOne(
       { playerId, $or: [{ body: null }, { body: { $exists: false } }] },
-      { $set: { body } },
+      { $set: hand === null ? { body } : { body, "inventory.equipped.hand": hand } },
     );
     return result.modifiedCount === 1;
   }

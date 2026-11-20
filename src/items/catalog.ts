@@ -490,8 +490,21 @@ export const ASSASSIN_SET: readonly string[] = ["assassin_daggers", "assassin_ho
 export const HEALER_SET: readonly string[] = ["healer_tome", "healer_circlet", "healer_robe", "healer_sandals"];
 
 /**
+ * Armas que o jogador pode escolher na primeira entrada (uma só, junto com o corpo; [CLI-09], [JOGO-04]): a arma de
+ * cada conjunto **menos a do Curandeiro** (pedido do dono, 2026-11-19). Chega vestida, +0.
+ * ATENÇÃO: espelho em mmo-client/scripts/ui/character_select.gd (STARTER_CLASSES).
+ */
+export const STARTER_WEAPONS: readonly string[] = ["knight_sword", "arcane_staff", "ranger_crossbow", "assassin_daggers"];
+
+/** `true` se [itemId] é uma das {@link STARTER_WEAPONS}. */
+export function isStarterWeapon(itemId: string): boolean {
+  return STARTER_WEAPONS.includes(itemId);
+}
+
+/**
  * Mochila de uma conta NOVA ([JOGO-04]): **vazia** — nasce sem nenhum item (nada vestido nem na mochila) e consegue
- * os itens nos baús dos acampamentos ([JOGO-19]). Sem arma, bate com o soco.
+ * os itens nos baús dos acampamentos ([JOGO-19]). A única exceção é a arma escolhida na primeira entrada
+ * ({@link STARTER_WEAPONS}), que chega vestida junto com o corpo.
  * > mudança (2026-11-16, pedido do dono): antes nascia com o treino e todos os conjuntos na mochila. Contas que já
  * > existiam ficam com o que têm.
  */

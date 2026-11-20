@@ -206,6 +206,32 @@ describe("GameServer", () => {
       again.send("resume", { version: PROTOCOL_VERSION, sessionToken: authData(ok).sessionToken });
       assert.strictEqual((await again.next("auth_ok")).data["body"], "female", "lembra a escolha");
     });
+
+    it("arma inicial: uma das armas permitidas (não a do Curandeiro), chega vestida e só uma vez", async () => {
+      const c: TestClient = await connect();
+      c.send("register", { version: PROTOCOL_VERSION, username: "ArmaInicial", email: "arma@teste.com", password: PASSWORD });
+      const ok: ReceivedMessage = await c.next("auth_ok");
+      c.send("choose_body", { body: "male", weapon: "healer_tome" });
+      assert.strictEqual((await c.next("error")).data["code"], "bad_message", "livro do Curandeiro não pode");
+      c.send("choose_body", { body: "male", weapon: "knight_helm" });
+      assert.strictEqual((await c.next("error")).data["code"], "bad_message", "só arma");
+      c.send("choose_body", { body: "male", weapon: "knight_sword" });
+      await c.next("body_chosen");
+      c.send("choose_body", { body: "male", weapon: "arcane_staff" });
+      assert.strictEqual((await c.next("error")).data["code"], "body_already_chosen", "não ganha outra");
+      await c.close();
+      await sleep(20);
+
+      const again: TestClient = await connect();
+      again.send("resume", { version: PROTOCOL_VERSION, sessionToken: authData(ok).sessionToken });
+      await again.next("auth_ok");
+      const inventory: ReceivedMessage = await again.next("inventory");
+      const equipped: unknown = inventory.data["equipped"];
+      assert.ok(typeof equipped === "object" && equipped !== null && "hand" in equipped);
+      const hand: unknown = equipped.hand;
+      assert.ok(typeof hand === "object" && hand !== null && "itemId" in hand);
+      assert.strictEqual(hand.itemId, "knight_sword", "a espada escolhida está vestida");
+    });
   });
 
   describe("inventário", () => {
