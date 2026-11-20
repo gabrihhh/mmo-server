@@ -136,6 +136,10 @@ export interface ArenaMatchOptions {
   readonly random?: () => number;
   /** Raio da arena (m). Padrão {@link ARENA_RADIUS}. */
   readonly radius?: number;
+  /** Durações em segundos (os testes pela rede encurtam). Padrão {@link PREP_SECONDS}, {@link ROUND_SECONDS}, {@link ROUND_PAUSE_SECONDS}. */
+  readonly prepSeconds?: number;
+  readonly roundSeconds?: number;
+  readonly pauseSeconds?: number;
 }
 
 /** Ticks de `seconds` segundos. */
@@ -153,6 +157,9 @@ export class ArenaMatch {
   private currentScore: Score = [0, 0];
   private readonly random: () => number;
   private readonly radius: number;
+  private readonly prepSeconds: number;
+  private readonly roundSeconds: number;
+  private readonly pauseSeconds: number;
 
   constructor(
     readonly id: string,
@@ -163,6 +170,9 @@ export class ArenaMatch {
   ) {
     this.random = options.random ?? Math.random;
     this.radius = options.radius ?? ARENA_RADIUS;
+    this.prepSeconds = options.prepSeconds ?? PREP_SECONDS;
+    this.roundSeconds = options.roundSeconds ?? ROUND_SECONDS;
+    this.pauseSeconds = options.pauseSeconds ?? ROUND_PAUSE_SECONDS;
     this.zone = new Zone({
       id: `arena_${id}`,
       halfSize: this.radius + 1,
@@ -182,7 +192,7 @@ export class ArenaMatch {
     }
     for (const player of this.players.values()) this.joinZone(player);
     this.zone.setArenaPhase(true, true);
-    this.phaseEndTick = this.zone.tickNumber + ticks(PREP_SECONDS);
+    this.phaseEndTick = this.zone.tickNumber + ticks(this.prepSeconds);
   }
 
   /** Fase atual. */
@@ -209,6 +219,17 @@ export class ArenaMatch {
   /** Ids de todos os jogadores da partida (inclusive quem abandonou). */
   playerIds(): string[] {
     return [...this.players.keys()];
+  }
+
+  /** Os jogadores da partida (placar): id, nome, time, build e se abandonou. */
+  members(): Array<{ readonly id: string; readonly name: string; readonly team: TeamIndex; readonly build: ArenaBuild; readonly abandoned: boolean }> {
+    return [...this.players.values()].map((player) => ({
+      id: player.participant.id,
+      name: player.participant.name,
+      team: player.participant.team,
+      build: player.participant.build,
+      abandoned: player.abandoned,
+    }));
   }
 
   /** `true` se `id` é desta partida e ainda não abandonou. */
@@ -403,7 +424,7 @@ export class ArenaMatch {
     this.zone.setArenaPhase(false, false);
     this.currentRound++;
     this.currentPhase = "round";
-    this.phaseEndTick = this.zone.tickNumber + ticks(ROUND_SECONDS);
+    this.phaseEndTick = this.zone.tickNumber + ticks(this.roundSeconds);
     this.hooks.onState(this);
   }
 
@@ -418,7 +439,7 @@ export class ArenaMatch {
       return;
     }
     this.currentPhase = "pause";
-    this.phaseEndTick = this.zone.tickNumber + ticks(ROUND_PAUSE_SECONDS);
+    this.phaseEndTick = this.zone.tickNumber + ticks(this.pauseSeconds);
     this.hooks.onState(this);
   }
 

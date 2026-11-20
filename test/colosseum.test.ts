@@ -36,6 +36,8 @@ import {
   rewardsToday,
   type RewardInput,
 } from "../src/arena/rewards.js";
+import { EMPTY_COLOSSEUM_RECORD, applyMatchToRecord, readColosseumRecord, withBan } from "../src/arena/record.js";
+import { colosseumModeOf, colosseumValue } from "../src/progression/ranking.js";
 import { EQUIP_SLOTS, getItem } from "../src/items/catalog.js";
 import { attributeEffectsOf, basicAttackOf, equippedAbilities, lookLevelsOf } from "../src/items/inventory.js";
 import { xpToNextLevel } from "../src/progression/level.js";
@@ -294,5 +296,44 @@ describe("Coliseu — prêmio e ranking", () => {
     assert.strictEqual(applyRating(10, 20), 30);
     const progress = applyRewardToProgress({ level: 0, xp: 90, gold: 5 }, { gold: 100, xp: 20, points: 10, ratingDelta: 20, rewarded: true });
     assert.deepStrictEqual(progress, { level: 1, xp: 10, gold: 105 });
+  });
+});
+
+describe("Coliseu — dados na conta e ranking", () => {
+  const NOW: number = Date.UTC(2026, 10, 19, 15);
+  const win = { gold: 100, xp: 10, points: 10, ratingDelta: 20, rewarded: true };
+  const loss = { gold: 30, xp: 3, points: 3, ratingDelta: -20, rewarded: true };
+
+  it("aplica ranking (piso 0), Pontos, teto diário e o saldo do dia/semana", () => {
+    let record = applyMatchToRecord(EMPTY_COLOSSEUM_RECORD, "2x2", win, NOW);
+    record = applyMatchToRecord(record, "2x2", loss, NOW);
+    record = applyMatchToRecord(record, "2x2", loss, NOW);
+    assert.strictEqual(record.rating["2x2"], 0, "20 − 20 − 20 para no 0");
+    assert.strictEqual(record.dayNet["2x2"], 0, "o saldo é o que o ranking realmente mudou");
+    assert.strictEqual(record.points, 16);
+    assert.strictEqual(record.daily.count, 3);
+    assert.strictEqual(record.rating["1x1"], 0);
+    const unpaid = applyMatchToRecord(record, "1x1", { ...win, points: 0, rewarded: false }, NOW);
+    assert.strictEqual(unpaid.daily.count, 3, "partida sem prêmio não conta no teto");
+  });
+
+  it("ranking do Coliseu: global = atual, diário/semanal = saldo positivo do período", () => {
+    const record = applyMatchToRecord(applyMatchToRecord(EMPTY_COLOSSEUM_RECORD, "1x1", win, NOW), "1x1", win, NOW);
+    assert.strictEqual(colosseumValue(record, "1x1", "global", NOW), 40);
+    assert.strictEqual(colosseumValue(record, "1x1", "daily", NOW), 40);
+    assert.strictEqual(colosseumValue(record, "1x1", "weekly", NOW), 40);
+    assert.strictEqual(colosseumValue(record, "1x1", "daily", NOW + 24 * 3_600_000), 0, "outro dia");
+    assert.strictEqual(colosseumModeOf("colosseum_3x3"), "3x3");
+    assert.strictEqual(colosseumModeOf("pvp"), null);
+  });
+
+  it("bloqueio fica o maior e o dado estragado do banco vira vazio", () => {
+    assert.strictEqual(withBan(withBan(EMPTY_COLOSSEUM_RECORD, 500), 100).banUntil, 500);
+    assert.deepStrictEqual(readColosseumRecord("lixo"), EMPTY_COLOSSEUM_RECORD);
+    const read = readColosseumRecord({ rating: { "1x1": 40, "2x2": -5 }, points: 7, dayNet: { "1x1": -20 }, daily: { day: "2026-11-19", count: 2 } });
+    assert.deepStrictEqual(read.rating, { "1x1": 40, "2x2": 0, "3x3": 0 });
+    assert.strictEqual(read.dayNet["1x1"], -20);
+    assert.strictEqual(read.points, 7);
+    assert.deepStrictEqual(read.daily, { day: "2026-11-19", count: 2 });
   });
 });

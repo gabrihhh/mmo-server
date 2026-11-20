@@ -16,6 +16,7 @@ import {
   type RankingSource,
 } from "../src/progression/ranking.js";
 import { STARTING_STATS } from "../src/progression/stats.js";
+import { EMPTY_COLOSSEUM_RECORD } from "../src/arena/record.js";
 import { TestClient, ZONES_WITH_FAKES } from "./helpers.js";
 
 /** 2026-11-17 (terça) 12:00 em Brasília = 15:00 UTC. */
@@ -23,7 +24,7 @@ const TUESDAY_NOON: number = Date.UTC(2026, 10, 17, 15, 0, 0);
 const HOUR = 3_600_000;
 
 function source(id: string, monsterXp: number, kills: number, periods = EMPTY_PERIODS): RankingSource {
-  return { id, name: id.toUpperCase(), stats: { ...STARTING_STATS, monsterXp, kills }, periods };
+  return { id, name: id.toUpperCase(), stats: { ...STARTING_STATS, monsterXp, kills }, periods, colosseum: EMPTY_COLOSSEUM_RECORD };
 }
 
 describe("rankings ([SOC-07])", () => {

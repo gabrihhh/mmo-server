@@ -1,4 +1,6 @@
 import { isAttributeId, type AttributeId } from "../items/attributes.js";
+import { isArenaSet, isColosseumMode, type ArenaBuild, type ColosseumMode } from "../arena/build.js";
+import type { ColosseumOutcome } from "../arena/rewards.js";
 import { RANKING_CATEGORIES, RANKING_PERIODS, type RankingCategory, type RankingPeriod } from "../progression/ranking.js";
 import { isChatChannel, type ChatChannel } from "../social/chat.js";
 
@@ -51,10 +53,14 @@ import { isChatChannel, type ChatChannel } from "../social/chat.js";
  * v40: Loja premium ([JOGO-27]): `premium_open`/`premium_buy`/`premium_pack`/`premium_history` → `premium`/
  *   `premium_result`/`premium_history_list`; `guaranteed` no `upgrade` (pedra garantida); `protected` no
  *   `death_report`; erros `not_enough_diamonds`, `already_owned`, `purchases_unavailable`, `no_upgrade_stone`.
+ * v41: Coliseu ([JOGO-28]): `colosseum_open`/`colosseum_queue`/`colosseum_leave`/`colosseum_accept`/`colosseum_decline`/
+ *   `colosseum_point`/`colosseum_leave_match` → `colosseum_info`/`colosseum_found`/`colosseum_accept_status`/
+ *   `colosseum_cancelled`/`colosseum_state`/`colosseum_result`; `kind`/`arena` no `welcome` (troca de cena pelo
+ *   servidor); categorias `colosseum_1x1/2x2/3x3` no ranking; erros `in_colosseum` e `colosseum_*`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 40;
+export const PROTOCOL_VERSION = 41;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -230,6 +236,20 @@ export const ClientMessageType = {
   PremiumPack: "premium_pack",
   /** Pede o histórico de compras da Loja. Sem payload. Resposta: `premium_history_list`. */
   PremiumHistory: "premium_history",
+  /** Abre o Menu → Coliseu ([JOGO-28]). Sem payload. Resposta: `colosseum_info`. */
+  ColosseumOpen: "colosseum_open",
+  /** Entra na fila do Coliseu (só nas pedras da praça). Payload: {@link ColosseumQueueData}. Resposta: `colosseum_info`. */
+  ColosseumQueue: "colosseum_queue",
+  /** Sai da fila (na janela de aceite conta como recusa). Sem payload. Resposta: `colosseum_info`. */
+  ColosseumLeave: "colosseum_leave",
+  /** Aceita a partida encontrada (idempotente). Sem payload. */
+  ColosseumAccept: "colosseum_accept",
+  /** Recusa a partida encontrada. Sem payload. */
+  ColosseumDecline: "colosseum_decline",
+  /** Uma das 20 escolhas da preparação. Payload: {@link ColosseumPointData}. Resposta: `colosseum_state`. */
+  ColosseumPoint: "colosseum_point",
+  /** Botão "Sair da partida" (abandono). Sem payload. */
+  ColosseumLeaveMatch: "colosseum_leave_match",
 } as const;
 
 /** Tipos de mensagem servidor → cliente. */
@@ -356,6 +376,18 @@ export const ServerMessageType = {
   PremiumResult: "premium_result",
   /** Histórico de compras da Loja premium. Payload: {@link PremiumHistoryData}. */
   PremiumHistoryList: "premium_history_list",
+  /** Tela do Coliseu ([JOGO-28]): ranking por modo, Pontos, bloqueio, fila. Payload: {@link ColosseumInfoData}. */
+  ColosseumInfo: "colosseum_info",
+  /** "Partida encontrada — Aceitar / Recusar". Payload: {@link ColosseumFoundData}. */
+  ColosseumFound: "colosseum_found",
+  /** Quantos já aceitaram a partida encontrada. Payload: {@link ColosseumAcceptStatusData}. */
+  ColosseumAcceptStatus: "colosseum_accept_status",
+  /** A partida encontrada caiu (alguém recusou/não respondeu). Payload: {@link ColosseumCancelledData}. */
+  ColosseumCancelled: "colosseum_cancelled",
+  /** Fase, round, placar, tempo e escolhas restantes da partida. Payload: {@link ColosseumStateData}. */
+  ColosseumState: "colosseum_state",
+  /** Fim da partida para você: resultado e prêmio. Payload: {@link ColosseumResultData}. */
+  ColosseumResult: "colosseum_result",
 } as const;
 
 /** Códigos enviados em {@link ServerMessageType.Error}. */
@@ -434,6 +466,24 @@ export const ErrorCode = {
   NotEnoughGold: "not_enough_gold",
   /** Ferreiro: atributo que o conjunto do item não aceita. A conexão continua. */
   InvalidAttribute: "invalid_attribute",
+  /** Coliseu ([JOGO-28]): pedido que não vale dentro da arena (inventário, serviços, troca, loja...). */
+  InColosseum: "in_colosseum",
+  /** Coliseu: a fila só se entra vivo, nas pedras da praça da zona 1. */
+  ColosseumNotInSquare: "colosseum_not_in_square",
+  /** Coliseu: fila bloqueada por abandono ou recusas seguidas (a mensagem diz quanto falta). */
+  ColosseumBanned: "colosseum_banned",
+  /** Coliseu: já está numa fila, numa janela de aceite ou numa partida (uma por vez). */
+  ColosseumAlreadyQueued: "colosseum_already_queued",
+  /** Coliseu: o 1x1 não aceita healer (mão Curandeiro). */
+  ColosseumHealerNotAllowed: "colosseum_healer_not_allowed",
+  /** Coliseu: conta de convidado não entra. */
+  ColosseumGuest: "colosseum_guest",
+  /** Coliseu: aceitar/recusar sem partida encontrada. */
+  ColosseumNotPending: "colosseum_not_pending",
+  /** Coliseu: escolha de ponto fora da preparação ou sem partida. */
+  ColosseumNotInPrep: "colosseum_not_in_prep",
+  /** Coliseu: as 20 escolhas já foram usadas. */
+  ColosseumNoChoices: "colosseum_no_choices",
   /** Ferreiro/baú: longe dele (ou morto). A conexão continua. */
   TooFar: "too_far",
   /** Baú ([JOGO-19]) que não existe nesta zona. A conexão continua. */
@@ -1104,6 +1154,13 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.PremiumBuy; readonly data: PremiumBuyData }
   | { readonly type: typeof ClientMessageType.PremiumPack; readonly data: PremiumPackData }
   | { readonly type: typeof ClientMessageType.PremiumHistory; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ColosseumOpen; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ColosseumQueue; readonly data: ColosseumQueueData }
+  | { readonly type: typeof ClientMessageType.ColosseumLeave; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ColosseumAccept; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ColosseumDecline; readonly data: Record<string, never> }
+  | { readonly type: typeof ClientMessageType.ColosseumPoint; readonly data: ColosseumPointData }
+  | { readonly type: typeof ClientMessageType.ColosseumLeaveMatch; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ShopBuy; readonly data: ShopBuyData }
   | { readonly type: typeof ClientMessageType.ShopSell; readonly data: ShopSellData }
   | { readonly type: typeof ClientMessageType.StoragePut; readonly data: ItemDestroyData }
@@ -1796,6 +1853,124 @@ export interface TradeNoticeData {
   readonly message: string;
 }
 
+// --- Coliseu ([JOGO-28]). ATENÇÃO: espelho em mmo-client/scripts/network/protocol.gd e na tela do Coliseu. ---
+
+/** Payload de `colosseum_queue`: modo e build (um conjunto por slot; a mão decide o papel). */
+export interface ColosseumQueueData {
+  readonly mode: ColosseumMode;
+  readonly build: ArenaBuild;
+}
+
+/** Payload de `colosseum_point`: peça → atributo do conjunto dela (+1 novo, +2 repetido). */
+export interface ColosseumPointData {
+  readonly slot: EquipSlotName;
+  readonly attribute: AttributeId;
+}
+
+/** Pontos por modo. */
+export type ColosseumModePoints = Readonly<Record<ColosseumMode, number>>;
+
+/** Payload de `colosseum_info` (tela do Coliseu). */
+export interface ColosseumInfoData {
+  /** Seu ranking em cada modo. */
+  readonly rating: ColosseumModePoints;
+  /** Pontos de Coliseu juntados. */
+  readonly points: number;
+  /** Segundos até poder entrar na fila de novo (0 = livre). */
+  readonly banSeconds: number;
+  /** Modo da fila em que você está esperando; `null` = fora da fila. */
+  readonly queued: ColosseumMode | null;
+  /** Quantos esperam em cada fila. */
+  readonly waiting: ColosseumModePoints;
+  /** Partidas premiadas hoje e o teto do dia. */
+  readonly rewardsToday: number;
+  readonly rewardsLimit: number;
+}
+
+/** Payload de `colosseum_found`: a partida e quantos segundos para aceitar. */
+export interface ColosseumFoundData {
+  readonly mode: ColosseumMode;
+  readonly seconds: number;
+  /** Jogadores na partida (quantos precisam aceitar). */
+  readonly total: number;
+}
+
+/** Payload de `colosseum_accept_status`. */
+export interface ColosseumAcceptStatusData {
+  readonly accepted: number;
+  readonly total: number;
+}
+
+/**
+ * Payload de `colosseum_cancelled`: `you_refused` = você recusou/deixou passar/saiu da praça (saiu da fila);
+ * `other_refused` = outro recusou (você voltou à frente da fila).
+ */
+export interface ColosseumCancelledData {
+  readonly reason: "you_refused" | "other_refused";
+  /** Voltou para a fila. */
+  readonly requeued: boolean;
+  /** Bloqueio novo por recusas seguidas, em segundos (0 = nenhum). */
+  readonly banSeconds: number;
+}
+
+/** Um jogador da partida como aparece no placar. */
+export interface ColosseumMemberView {
+  readonly id: string;
+  readonly name: string;
+  readonly build: ArenaBuild;
+  /** Abandonou (fica morto até o fim). */
+  readonly abandoned: boolean;
+}
+
+/** Payload de `colosseum_state`. */
+export interface ColosseumStateData {
+  readonly mode: ColosseumMode;
+  /** Preparação, round, pausa entre rounds ou fim. */
+  readonly phase: "prep" | "round" | "pause" | "over";
+  /** Round atual (0 na preparação). */
+  readonly round: number;
+  /** Pontos do time 0 e do time 1. */
+  readonly score: readonly [number, number];
+  /** Segundos até a fase acabar. */
+  readonly secondsLeft: number;
+  /** Suas escolhas restantes na preparação. */
+  readonly choicesLeft: number;
+  /** Seu time. */
+  readonly team: 0 | 1;
+  /** Os dois times. */
+  readonly teams: readonly [readonly ColosseumMemberView[], readonly ColosseumMemberView[]];
+}
+
+/** Payload de `colosseum_result`: como acabou para você e o prêmio (já aplicado na conta). */
+export interface ColosseumResultData {
+  readonly mode: ColosseumMode;
+  readonly outcome: ColosseumOutcome;
+  /** Anulada (abandono antes do fim do round 1): sem prêmio nem ranking. */
+  readonly annulled: boolean;
+  /** Time vencedor (`null` = empate/anulada). */
+  readonly winner: 0 | 1 | null;
+  readonly score: readonly [number, number];
+  readonly gold: number;
+  readonly xp: number;
+  /** Pontos de Coliseu ganhos. */
+  readonly points: number;
+  /** Variação do ranking do modo (depois do piso 0). */
+  readonly ratingDelta: number;
+  /** Ranking novo do modo. */
+  readonly rating: number;
+  /** `false` = passou das 10 partidas premiadas do dia (só o ranking contou). */
+  readonly rewarded: boolean;
+  /** Seu nível real depois do prêmio. */
+  readonly level: number;
+}
+
+/** Parte do `welcome` da arena. Metros. */
+export interface ArenaWelcome {
+  readonly radius: number;
+  readonly team: 0 | 1;
+  readonly barrierGap: number;
+}
+
 /** Payload de `ranking_request`. */
 export interface RankingRequestData {
   readonly category: RankingCategory;
@@ -1963,6 +2138,10 @@ export type ServerMessage =
         readonly npcs: readonly NpcSnapshot[];
         /** Baús dos acampamentos ([JOGO-19]). */
         readonly chests: readonly ChestView[];
+        /** `arena` = instância do Coliseu ([JOGO-28]): o cliente troca para a cena da arena. Ausente = zona comum. */
+        readonly kind?: "zone" | "arena";
+        /** Só na arena: raio do muro, o seu time e a folga da barreira (predição, `constrainArena`). */
+        readonly arena?: ArenaWelcome;
       };
     }
   | { readonly type: typeof ServerMessageType.PlayerJoined; readonly data: { readonly player: PlayerInfo } }
@@ -1977,6 +2156,12 @@ export type ServerMessage =
   | { readonly type: typeof ServerMessageType.Premium; readonly data: PremiumData }
   | { readonly type: typeof ServerMessageType.PremiumResult; readonly data: PremiumResultData }
   | { readonly type: typeof ServerMessageType.PremiumHistoryList; readonly data: PremiumHistoryData }
+  | { readonly type: typeof ServerMessageType.ColosseumInfo; readonly data: ColosseumInfoData }
+  | { readonly type: typeof ServerMessageType.ColosseumFound; readonly data: ColosseumFoundData }
+  | { readonly type: typeof ServerMessageType.ColosseumAcceptStatus; readonly data: ColosseumAcceptStatusData }
+  | { readonly type: typeof ServerMessageType.ColosseumCancelled; readonly data: ColosseumCancelledData }
+  | { readonly type: typeof ServerMessageType.ColosseumState; readonly data: ColosseumStateData }
+  | { readonly type: typeof ServerMessageType.ColosseumResult; readonly data: ColosseumResultData }
   | { readonly type: typeof ServerMessageType.Chat; readonly data: ChatData }
   | { readonly type: typeof ServerMessageType.MarketPage; readonly data: MarketPageData }
   | { readonly type: typeof ServerMessageType.MarketMineList; readonly data: MarketMineData }
@@ -2346,6 +2531,25 @@ export function parseTradeOfferData(data: unknown): TradeOfferData | null {
   return { uids: list, gold };
 }
 
+/** Valida o payload de `colosseum_queue`: modo conhecido e um conjunto escolhível em cada slot. */
+export function parseColosseumQueueData(data: unknown): ColosseumQueueData | null {
+  if (!isRecord(data)) return null;
+  const mode: unknown = data["mode"];
+  const build: unknown = data["build"];
+  if (!isColosseumMode(mode) || !isRecord(build)) return null;
+  const { hand, head, chest, feet } = build;
+  if (!isArenaSet(hand) || !isArenaSet(head) || !isArenaSet(chest) || !isArenaSet(feet)) return null;
+  return { mode, build: { hand, head, chest, feet } };
+}
+
+/** Valida o payload de `colosseum_point`. */
+export function parseColosseumPointData(data: unknown): ColosseumPointData | null {
+  if (!isRecord(data)) return null;
+  const { slot, attribute } = data;
+  if (!isSlotName(slot) || !isAttributeId(attribute)) return null;
+  return { slot, attribute };
+}
+
 /** Valida o payload de `ranking_request`. */
 export function parseRankingRequestData(data: unknown): RankingRequestData | null {
   if (!isRecord(data)) return null;
@@ -2638,6 +2842,24 @@ export function parseClientMessage(text: string): ClientMessage | null {
       return { type: ClientMessageType.TradeConfirm, data: {} };
     case ClientMessageType.TradeCancel:
       return { type: ClientMessageType.TradeCancel, data: {} };
+    case ClientMessageType.ColosseumOpen:
+      return { type: ClientMessageType.ColosseumOpen, data: {} };
+    case ClientMessageType.ColosseumQueue: {
+      const data = parseColosseumQueueData(raw);
+      return data === null ? null : { type: ClientMessageType.ColosseumQueue, data };
+    }
+    case ClientMessageType.ColosseumLeave:
+      return { type: ClientMessageType.ColosseumLeave, data: {} };
+    case ClientMessageType.ColosseumAccept:
+      return { type: ClientMessageType.ColosseumAccept, data: {} };
+    case ClientMessageType.ColosseumDecline:
+      return { type: ClientMessageType.ColosseumDecline, data: {} };
+    case ClientMessageType.ColosseumPoint: {
+      const data = parseColosseumPointData(raw);
+      return data === null ? null : { type: ClientMessageType.ColosseumPoint, data };
+    }
+    case ClientMessageType.ColosseumLeaveMatch:
+      return { type: ClientMessageType.ColosseumLeaveMatch, data: {} };
     default:
       return null;
   }

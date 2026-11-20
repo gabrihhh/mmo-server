@@ -10,15 +10,18 @@ import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
 import { readListing, type Listing } from "../items/market.js";
 import { readPremium, type PremiumState } from "../premium/premium.js";
+import { readColosseumRecord, type ColosseumRecord } from "../arena/record.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   MAX_SESSIONS_PER_ACCOUNT,
   generatePlayerId,
   generateSessionToken,
   hashSessionToken,
+  isGuestEmail,
   type Account,
   type AccountStore,
   type AuthSuccess,
+  type ColosseumTarget,
   type PasswordResetRecord,
   type RegisterResult,
   type ResetTarget,
@@ -63,6 +66,8 @@ interface AccountDocument {
   guildLeftAt?: number | null;
   /** Loja premium ([JOGO-27]): Diamantes, VIP, histórico. Pode faltar (= nada). Lido sempre por readPremium. */
   premium?: PremiumState;
+  /** Coliseu ([JOGO-28]): ranking por modo, Pontos, bloqueio, teto diário. Pode faltar (= nada). Lido por readColosseumRecord. */
+  colosseum?: ColosseumRecord;
   /** Código de recuperar senha pendente ([INFRA-13]); falta/null = nenhum. */
   passwordReset?: PasswordResetRecord | null;
 }
@@ -208,11 +213,14 @@ export class MongoAccountStore implements AccountStore {
   async rankingSources(): Promise<RankingSource[]> {
     const result: RankingSource[] = [];
     const docs = this.accounts.find(
-      { $or: [{ "stats.monsterXp": { $gt: 0 } }, { "stats.kills": { $gt: 0 } }], emailKey: { $not: /@convidado\.local$/ } },
-      { projection: { playerId: 1, username: 1, stats: 1, periods: 1 } },
+      {
+        $or: [{ "stats.monsterXp": { $gt: 0 } }, { "stats.kills": { $gt: 0 } }, { colosseum: { $exists: true } }],
+        emailKey: { $not: /@convidado\.local$/ },
+      },
+      { projection: { playerId: 1, username: 1, stats: 1, periods: 1, colosseum: 1 } },
     );
     for await (const doc of docs) {
-      result.push({ id: doc.playerId, name: doc.username, stats: readStats(doc.stats), periods: readPeriods(doc.periods) });
+      result.push({ id: doc.playerId, name: doc.username, stats: readStats(doc.stats), periods: readPeriods(doc.periods), colosseum: readColosseumRecord(doc.colosseum) });
     }
     return result;
   }
@@ -255,6 +263,15 @@ export class MongoAccountStore implements AccountStore {
 
   async savePremium(playerId: string, premium: PremiumState): Promise<void> {
     await this.accounts.updateOne({ playerId }, { $set: { premium } });
+  }
+
+  async saveColosseum(playerId: string, colosseum: ColosseumRecord): Promise<void> {
+    await this.accounts.updateOne({ playerId }, { $set: { colosseum } });
+  }
+
+  async loadColosseumTarget(playerId: string): Promise<ColosseumTarget | null> {
+    const doc = await this.accounts.findOne({ playerId }, { projection: { progress: 1, colosseum: 1, premium: 1 } });
+    return doc === null ? null : { progress: readProgress(doc.progress), colosseum: readColosseumRecord(doc.colosseum), premium: readPremium(doc.premium) };
   }
 
   async loadGuilds(): Promise<GuildRecord[]> {
@@ -340,6 +357,8 @@ export class MongoAccountStore implements AccountStore {
       social: readSocialSettings(doc.social),
       guildLeftAt: typeof doc.guildLeftAt === "number" ? doc.guildLeftAt : null,
       premium: readPremium(doc.premium),
+      colosseum: readColosseumRecord(doc.colosseum),
+      guest: isGuestEmail(doc.emailKey),
     };
   }
 }

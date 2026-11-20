@@ -2,6 +2,8 @@
  * Rankings (mmo-docs [SOC-07]): contadores do dia e da semana e o cálculo das tabelas. Regras puras (sem banco nem
  * rede); o `GameServer` guarda os contadores na conta e o {@link RankingBoards} monta as tabelas a partir das contas.
  *
+ * - **Coliseu** ([JOGO-28]): um ranking por modo (1x1, 2x2, 3x3); global = pontos atuais, diário/semanal = saldo
+ *   positivo do período.
  * - **Monstros** = XP ganha matando monstros; **PvP** = jogadores mortos. **Guilda** = soma dos membros ATUAIS (quem
  *   sai leva os números consigo e passa a somar na guilda nova).
  * - Períodos: **diário** (vira à meia-noite de Brasília), **semanal** (vira segunda-feira à meia-noite de Brasília) e
@@ -9,6 +11,8 @@
  * - Brasília = UTC−3 fixo (o Brasil não tem horário de verão desde 2019).
  */
 
+import type { ColosseumMode } from "../arena/build.js";
+import type { ColosseumRecord } from "../arena/record.js";
 import type { PlayerStats } from "./stats.js";
 
 /** Fuso de Brasília em relação ao UTC (horas). */
@@ -16,8 +20,11 @@ export const BRASILIA_OFFSET_HOURS = -3;
 const OFFSET_MS: number = BRASILIA_OFFSET_HOURS * 3_600_000;
 const DAY_MS = 86_400_000;
 
-/** Categorias de ranking. ATENÇÃO: mmo-client/scripts/network/ranking_data.gd (CATEGORY_*). */
-export const RANKING_CATEGORIES = ["monsters", "pvp", "guild_monsters", "guild_pvp"] as const;
+/**
+ * Categorias de ranking. `colosseum_<modo>` = pontos de ranking do Coliseu naquele modo ([JOGO-28]).
+ * ATENÇÃO: mmo-client/scripts/network/ranking_data.gd (CATEGORY_*).
+ */
+export const RANKING_CATEGORIES = ["monsters", "pvp", "guild_monsters", "guild_pvp", "colosseum_1x1", "colosseum_2x2", "colosseum_3x3"] as const;
 export type RankingCategory = (typeof RANKING_CATEGORIES)[number];
 /** Períodos. ATENÇÃO: mmo-client/scripts/network/ranking_data.gd (PERIOD_*). */
 export const RANKING_PERIODS = ["daily", "weekly", "global"] as const;
@@ -123,6 +130,32 @@ export interface RankingSource {
   readonly name: string;
   readonly stats: PlayerStats;
   readonly periods: PeriodCounters;
+  /** Coliseu ([JOGO-28]): ranking por modo e saldo do dia/semana. */
+  readonly colosseum: ColosseumRecord;
+}
+
+/** Modo do Coliseu de uma categoria `colosseum_<modo>`; `null` nas outras. */
+export function colosseumModeOf(category: RankingCategory): ColosseumMode | null {
+  switch (category) {
+    case "colosseum_1x1":
+      return "1x1";
+    case "colosseum_2x2":
+      return "2x2";
+    case "colosseum_3x3":
+      return "3x3";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Valor de [record] no ranking do Coliseu do modo [mode] ([JOGO-28]): global = ranking atual; diário/semanal = saldo
+ * positivo do período (negativo ou de outro período = 0).
+ */
+export function colosseumValue(record: ColosseumRecord, mode: ColosseumMode, period: RankingPeriod, nowMs: number): number {
+  if (period === "global") return record.rating[mode];
+  if (period === "daily") return record.day === dayKey(nowMs) ? Math.max(0, record.dayNet[mode]) : 0;
+  return record.week === weekKey(nowMs) ? Math.max(0, record.weekNet[mode]) : 0;
 }
 
 /** Valor de [source] no ranking de jogador [category] ("monsters"/"pvp") e [period], no instante [nowMs]. */
@@ -187,6 +220,11 @@ export class RankingBoards {
             }, 0),
           }))),
         );
+      }
+      for (const category of RANKING_CATEGORIES) {
+        const mode: ColosseumMode | null = colosseumModeOf(category);
+        if (mode === null) continue;
+        this.boards.set(RankingBoards.key(category, period), rankRows(sources.map((s) => ({ id: s.id, name: s.name, value: colosseumValue(s.colosseum, mode, period, builtAtMs) }))));
       }
     }
   }

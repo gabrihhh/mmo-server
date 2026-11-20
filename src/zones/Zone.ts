@@ -2936,6 +2936,11 @@ export class Zone {
     return this.lastActionTick.get(id);
   }
 
+  /** Todos os jogadores da zona como vão no `welcome` (o da arena, [JOGO-28], monta a lista por aqui). */
+  playersInfo(): PlayerInfo[] {
+    return Array.from(this.players.values(), (player) => Zone.info(player));
+  }
+
   /** `true` se `id` está na zona e vivo. */
   isAlive(id: string): boolean {
     const player: ZonePlayer | undefined = this.players.get(id);

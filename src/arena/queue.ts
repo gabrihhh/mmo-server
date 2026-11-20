@@ -138,6 +138,11 @@ export class ColosseumQueue {
     return { kind: "none" };
   }
 
+  /** Ids de quem espera em alguma fila ou está numa janela de aceite. */
+  players(): string[] {
+    return [...[...this.queues.values()].flat().map((entry) => entry.playerId), ...this.pendingOf.keys()];
+  }
+
   /** Quantos esperam na fila do `mode` (tela do Coliseu). */
   waiting(mode: ColosseumMode): number {
     return this.queueOf(mode).length;

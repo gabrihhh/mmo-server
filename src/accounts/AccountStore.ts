@@ -11,6 +11,7 @@ import { readFriendIds } from "../social/friends.js";
 import { readGuildRecord, type GuildRecord } from "../social/guilds.js";
 import { readListing, type Listing } from "../items/market.js";
 import { EMPTY_PREMIUM, readPremium, type PremiumState } from "../premium/premium.js";
+import { EMPTY_COLOSSEUM_RECORD, readColosseumRecord, type ColosseumRecord } from "../arena/record.js";
 
 /**
  * Contas de jogador: cadastro com username + e-mail + senha, login por username OU e-mail,
@@ -57,9 +58,21 @@ export interface Account {
   readonly guildLeftAt: number | null;
   /** Diamantes, VIP e o que foi comprado na Loja premium ([JOGO-27]). Conta nova/antiga: nada. */
   readonly premium: PremiumState;
+  /** Coliseu ([JOGO-28]): ranking por modo, Pontos, bloqueio da fila, teto diário. Conta nova/antiga: nada. */
+  readonly colosseum: ColosseumRecord;
+  /** Conta de convidado (e-mail `@convidado.local`, [CLI-05]): fora dos rankings e do Coliseu. */
+  readonly guest: boolean;
 }
 
 /** Login aceito: a conta e o token de sessão que o aparelho deve guardar. */
+/** O que o prêmio do Coliseu precisa de uma conta offline ([JOGO-28]). */
+export interface ColosseumTarget {
+  readonly progress: Progress;
+  readonly colosseum: ColosseumRecord;
+  /** VIP/poção de XP multiplicam moedas e XP. */
+  readonly premium: PremiumState;
+}
+
 export interface AuthSuccess {
   readonly ok: true;
   readonly account: Account;
@@ -135,6 +148,13 @@ export interface AccountStore {
   saveGuildLeftAt(playerId: string, atMs: number): Promise<void>;
   /** Salva o estado da Loja premium da conta ([JOGO-27]): saldo de Diamantes, VIP, histórico. */
   savePremium(playerId: string, premium: PremiumState): Promise<void>;
+  /** Salva os dados do Coliseu da conta ([JOGO-28]). */
+  saveColosseum(playerId: string, colosseum: ColosseumRecord): Promise<void>;
+  /**
+   * Progresso e dados do Coliseu de uma conta lidos do banco (prêmio de quem terminou a partida offline, [JOGO-28]);
+   * `null` se a conta não existe.
+   */
+  loadColosseumTarget(playerId: string): Promise<ColosseumTarget | null>;
   /** Todas as guildas (coleção `guilds`), para carregar ao ligar o servidor ([SOC-06]). */
   loadGuilds(): Promise<GuildRecord[]>;
   /** Grava (cria ou substitui) uma guilda. */
@@ -206,6 +226,7 @@ interface MemoryRecord {
   social: SocialSettings;
   guildLeftAt: number | null;
   premium: PremiumState;
+  colosseum: ColosseumRecord;
   passwordReset: PasswordResetRecord | null;
 }
 
@@ -245,6 +266,7 @@ export class InMemoryAccountStore implements AccountStore {
       social: DEFAULT_SOCIAL_SETTINGS,
       guildLeftAt: null,
       premium: EMPTY_PREMIUM,
+      colosseum: EMPTY_COLOSSEUM_RECORD,
       passwordReset: null,
     };
     this.records.push(record);
@@ -293,8 +315,8 @@ export class InMemoryAccountStore implements AccountStore {
 
   async rankingSources(): Promise<RankingSource[]> {
     return this.records
-      .filter((r) => !isGuestEmail(r.emailKey) && (r.stats.monsterXp > 0 || r.stats.kills > 0))
-      .map((r) => ({ id: r.playerId, name: r.username, stats: readStats(r.stats), periods: readPeriods(r.periods) }));
+      .filter((r) => !isGuestEmail(r.emailKey) && (r.stats.monsterXp > 0 || r.stats.kills > 0 || r.colosseum !== EMPTY_COLOSSEUM_RECORD))
+      .map((r) => ({ id: r.playerId, name: r.username, stats: readStats(r.stats), periods: readPeriods(r.periods), colosseum: readColosseumRecord(r.colosseum) }));
   }
 
   async chooseBody(playerId: string, body: BodyType): Promise<boolean> {
@@ -337,6 +359,18 @@ export class InMemoryAccountStore implements AccountStore {
   async savePremium(playerId: string, premium: PremiumState): Promise<void> {
     const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
     if (record !== undefined) record.premium = premium;
+  }
+
+  async saveColosseum(playerId: string, colosseum: ColosseumRecord): Promise<void> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    if (record !== undefined) record.colosseum = colosseum;
+  }
+
+  async loadColosseumTarget(playerId: string): Promise<ColosseumTarget | null> {
+    const record: MemoryRecord | undefined = this.records.find((r) => r.playerId === playerId);
+    return record === undefined
+      ? null
+      : { progress: readProgress(record.progress), colosseum: readColosseumRecord(record.colosseum), premium: readPremium(record.premium) };
   }
 
   async loadGuilds(): Promise<GuildRecord[]> {
@@ -411,6 +445,8 @@ export class InMemoryAccountStore implements AccountStore {
       social: readSocialSettings(record.social),
       guildLeftAt: record.guildLeftAt,
       premium: readPremium(record.premium),
+      colosseum: readColosseumRecord(record.colosseum),
+      guest: isGuestEmail(record.emailKey),
     };
   }
 }

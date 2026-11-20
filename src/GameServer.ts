@@ -1,4 +1,16 @@
 import type { Progress } from "./progression/level.js";
+import { Colosseum, type ColosseumOptions } from "./arena/colosseum.js";
+import type { AbandonReason, ArenaMatch, ArenaMatchResult } from "./arena/match.js";
+import { teamSize, type ArenaBuild, type ColosseumMode } from "./arena/build.js";
+import { ABANDON_BAN_MS, applyMatchToRecord, withBan, type ColosseumRecord } from "./arena/record.js";
+import {
+  DAILY_REWARD_LIMIT,
+  applyRewardToProgress,
+  colosseumReward,
+  rewardsToday,
+  type ColosseumReward,
+} from "./arena/rewards.js";
+import { inSafeZone } from "./combat/pvp.js";
 import type { PlayerStats } from "./progression/stats.js";
 import { RankingBoards, addToPeriods, secondsUntilReset, type PeriodCounters, type RankRow, type RankingCategory, type RankingPeriod } from "./progression/ranking.js";
 import type { AttributeId } from "./items/attributes.js";
@@ -62,9 +74,22 @@ import {
   type MarketListingView,
   type MarketResultData,
   type ChatRefusedReason,
+  type ColosseumInfoData,
 } from "./net/protocol.js";
 import { FriendRequests, type FriendFailure, type FriendResult } from "./social/friends.js";
-import { Zone, type CastFailure, type CastResult, type ChestFailure, type DeathInfo, type JoinResult, type NetStats, type SpawnPoint, type TakenLoot, type ZoneConfig } from "./zones/Zone.js";
+import {
+  ARENA_BARRIER_GAP,
+  Zone,
+  type CastFailure,
+  type CastResult,
+  type ChestFailure,
+  type DeathInfo,
+  type JoinResult,
+  type NetStats,
+  type SpawnPoint,
+  type TakenLoot,
+  type ZoneConfig,
+} from "./zones/Zone.js";
 import type { LootEntry } from "./items/loot.js";
 import { levelXp, type FusionFailure } from "./items/fusion.js";
 import { breakEquipped, rollDeathItem, type ItemRoll } from "./combat/death.js";
@@ -124,6 +149,8 @@ export interface GameServerOptions {
    * em produção. Padrão: `false` (o `index.ts` liga com `PREMIUM_TEST_PURCHASES=1`).
    */
   readonly testPurchases?: boolean;
+  /** Tempos/sorteio do Coliseu ([JOGO-28]); os testes encurtam. Padrão: os do jogo. */
+  readonly colosseum?: ColosseumOptions;
 }
 
 /** Tamanho máximo de uma mensagem do cliente, em bytes. Maior que isso, o `ws` fecha a conexão (1009). */
@@ -172,7 +199,53 @@ interface Session {
   closing: boolean;
   /** Ping de verdade (ms) medido pelo ping/pong do WebSocket desde o último resumo de rede ([INFRA-12]). */
   readonly rttSamples: number[];
+  /**
+   * Partida do Coliseu em que está ([JOGO-28]); `null` = fora. Com partida, `zone` é a arena dela: input, ataque,
+   * cartas e inspecionar vão para lá; o resto do que mexe na conta é recusado com `in_colosseum`.
+   */
+  arena: ArenaMatch | null;
 }
+
+/** Resultado vazio do Coliseu (partida anulada para quem não abandonou). */
+const NO_COLOSSEUM_REWARD: ColosseumReward = { gold: 0, xp: 0, points: 0, ratingDelta: 0, rewarded: false };
+
+/** Mensagens recusadas com `in_colosseum` dentro da arena ([JOGO-28]): nada da conta muda lá dentro. */
+const BLOCKED_IN_ARENA: ReadonlySet<string> = new Set<string>([
+  ClientMessageType.Equip,
+  ClientMessageType.Unequip,
+  ClientMessageType.Upgrade,
+  ClientMessageType.Fuse,
+  ClientMessageType.ChestOpen,
+  ClientMessageType.ChestTake,
+  ClientMessageType.BagMove,
+  ClientMessageType.ItemDestroy,
+  ClientMessageType.ShopOpen,
+  ClientMessageType.ShopBuy,
+  ClientMessageType.ShopSell,
+  ClientMessageType.PremiumOpen,
+  ClientMessageType.PremiumBuy,
+  ClientMessageType.PremiumPack,
+  ClientMessageType.StoragePut,
+  ClientMessageType.StorageTake,
+  ClientMessageType.StorageBuyTab,
+  ClientMessageType.MarketList,
+  ClientMessageType.MarketMine,
+  ClientMessageType.MarketSell,
+  ClientMessageType.MarketBuy,
+  ClientMessageType.MarketCancel,
+  ClientMessageType.TradeRequest,
+  ClientMessageType.TradeAnswer,
+  ClientMessageType.TradeOffer,
+  ClientMessageType.TradeConfirm,
+  ClientMessageType.TradeCancel,
+  ClientMessageType.GroupInvite,
+  ClientMessageType.GroupAnswer,
+  ClientMessageType.GroupKick,
+  ClientMessageType.GroupLeave,
+  ClientMessageType.GuildCreate,
+  ClientMessageType.Respawn,
+  ClientMessageType.ColosseumQueue,
+]);
 
 /** A cada quantos ms o servidor mede o ping de cada um (ping/pong do WebSocket com a hora dentro). */
 const RTT_PROBE_MS = 1000;
@@ -241,8 +314,12 @@ export class GameServer {
   /** Atraso do laço de eventos do Node (servidor travado) e tick mais lento desde o último resumo ([INFRA-12]). */
   private readonly loopDelay: IntervalHistogram = monitorEventLoopDelay({ resolution: 10 });
   private slowestTickMs: number = 0;
+  /** Ticks contados para conferir a praça da fila do Coliseu uma vez por segundo. */
+  private colosseumTicks: number = 0;
   /** Versões publicadas do pacote do jogo por plataforma; versão nova → manda atualizar quem está na velha. */
   private readonly updates: UpdateWatcher;
+  /** Coliseu ([JOGO-28]): fila e partidas (as arenas não ficam em {@link zones}). */
+  private readonly colosseum: Colosseum;
 
   constructor(options: GameServerOptions) {
     this.options = {
@@ -254,6 +331,7 @@ export class GameServer {
       updatePollIntervalMs: options.updatePollIntervalMs ?? DEFAULT_UPDATE_POLL_MS,
       mailer: options.mailer ?? new LogMailer(),
       testPurchases: options.testPurchases ?? false,
+      colosseum: options.colosseum ?? {},
     };
     this.passwordReset = new PasswordReset(this.options.accounts, this.options.mailer);
     this.updates = new UpdateWatcher({
@@ -262,6 +340,21 @@ export class GameServer {
       onVersion: (platform, version): void => this.onPackPublished(platform, version),
     });
     for (const config of this.options.zones) this.zones.set(config.id, new Zone(config));
+    this.colosseum = new Colosseum(
+      {
+        send: (playerId, message): void => this.sendTo(playerId, message),
+        participantInfo: (playerId) => this.arenaParticipant(playerId),
+        enterArena: (playerId, match): void => this.enterArena(playerId, match),
+        abandoned: (playerId, match, reason): void => this.onArenaAbandon(playerId, match, reason),
+        finished: (match, result): void => {
+          void this.settleColosseum(match, result);
+        },
+        banned: (playerId, untilMs): void => {
+          void this.updateColosseumRecord(playerId, (record) => withBan(record, untilMs));
+        },
+      },
+      this.options.colosseum,
+    );
     this.friendRequests = new FriendRequests({
       send: (playerId, message): void => this.sendTo(playerId, message),
       nameOf: (playerId): string | undefined => this.online.get(playerId)?.account?.username ?? this.fakeNameOf(playerId),
@@ -376,6 +469,10 @@ export class GameServer {
       while (now >= nextAt && ran < MAX_TICK_CATCHUP) {
         const started: number = performance.now();
         for (const zone of this.zones.values()) zone.tick();
+        // Coliseu ([JOGO-28]): aceites vencidos, partidas novas, ticks das arenas; uma vez por segundo, a praça da fila.
+        this.colosseum.tick(Date.now());
+        this.colosseumTicks++;
+        if (this.colosseumTicks % TICK_RATE_HZ === 0) this.checkColosseumSquare();
         this.slowestTickMs = Math.max(this.slowestTickMs, performance.now() - started);
         this.friendRequests.expire(Date.now());
         this.guilds.expire(Date.now());
@@ -479,6 +576,7 @@ export class GameServer {
       client: null,
       rttSamples: [],
       closing: false,
+      arena: null,
     };
     this.sessions.add(session);
 
@@ -507,6 +605,13 @@ export class GameServer {
         // Convites de guilda somem e os guildeiros online o veem offline ([SOC-06]).
         this.guilds.removePlayer(account.playerId);
         this.guilds.refreshMember(account.playerId);
+        // Coliseu ([JOGO-28]): sai da fila; na partida a entidade fica e corre o prazo de volta.
+        this.colosseum.disconnect(account.playerId, Date.now());
+      }
+      // A arena não é salva como posição: o corpo fica lá e a posição da praça continua a da conta.
+      if (session.arena !== null) {
+        session.arena = null;
+        session.zone = null;
       }
       const zoneId: string | undefined = session.zone?.config.id;
       void this.leaveZone(session).then(() => {
@@ -528,6 +633,11 @@ export class GameServer {
 
   private handleMessage(session: Session, message: ClientMessage): void {
     if (session.closing) return;
+    // Dentro da arena nada da conta muda ([JOGO-28]).
+    if (session.arena !== null && BLOCKED_IN_ARENA.has(message.type)) {
+      this.sendError(session, ErrorCode.InColosseum, "Isso não vale dentro do Coliseu.");
+      return;
+    }
     switch (message.type) {
       case ClientMessageType.Register:
         void this.handleRegister(session, message.data);
@@ -752,6 +862,42 @@ export class GameServer {
       case ClientMessageType.RankingRequest:
         void this.sendRanking(session, message.data.category, message.data.period);
         return;
+      // Coliseu ([JOGO-28]): regras em src/arena/; aqui só confere a sessão e devolve a recusa.
+      case ClientMessageType.ColosseumOpen:
+        this.sendColosseumInfo(session);
+        return;
+      case ClientMessageType.ColosseumQueue:
+        this.handleColosseumQueue(session, message.data.mode, message.data.build);
+        return;
+      case ClientMessageType.ColosseumLeave:
+        if (session.account !== null) this.colosseum.leaveQueue(session.account.playerId, Date.now());
+        this.sendColosseumInfo(session);
+        return;
+      case ClientMessageType.ColosseumAccept:
+        if (session.account === null || !this.colosseum.accept(session.account.playerId)) {
+          this.sendError(session, ErrorCode.ColosseumNotPending, "Nenhuma partida esperando resposta.");
+        }
+        return;
+      case ClientMessageType.ColosseumDecline:
+        if (session.account === null || !this.colosseum.decline(session.account.playerId, Date.now())) {
+          this.sendError(session, ErrorCode.ColosseumNotPending, "Nenhuma partida esperando resposta.");
+        }
+        this.sendColosseumInfo(session);
+        return;
+      case ClientMessageType.ColosseumPoint: {
+        if (session.account === null) return;
+        const result = this.colosseum.choosePoint(session.account.playerId, message.data.slot, message.data.attribute);
+        if (result.ok) return;
+        if (result.reason === "invalid_attribute") this.sendError(session, ErrorCode.InvalidAttribute, "Esse atributo não é do conjunto dessa peça.");
+        else if (result.reason === "no_choices_left") this.sendError(session, ErrorCode.ColosseumNoChoices, "Você já usou as 20 escolhas.");
+        else this.sendError(session, ErrorCode.ColosseumNotInPrep, "As escolhas são só na preparação.");
+        return;
+      }
+      case ClientMessageType.ColosseumLeaveMatch:
+        if (session.account === null || !this.colosseum.leaveMatch(session.account.playerId, "left")) {
+          this.sendError(session, ErrorCode.ColosseumNotInPrep, "Você não está numa partida.");
+        }
+        return;
     }
   }
 
@@ -862,7 +1008,10 @@ export class GameServer {
 
   /** A zona em que o jogador (ou fake de teste) está agora, ou `undefined`. */
   private zoneOfPlayer(playerId: string): Zone | undefined {
-    const zone: Zone | null | undefined = this.online.get(playerId)?.zone;
+    const session: Session | undefined = this.online.get(playerId);
+    // Na arena o progresso é de mentira ([JOGO-28]): moedas e nível vêm da conta, não da zona.
+    if (session?.arena !== null && session?.arena !== undefined) return undefined;
+    const zone: Zone | null | undefined = session?.zone;
     if (zone !== null && zone !== undefined) return zone;
     for (const candidate of this.zones.values()) if (candidate.fakeName(playerId) !== undefined) return candidate;
     return undefined;
@@ -1256,6 +1405,12 @@ export class GameServer {
   private authenticated(session: Session, account: Account, sessionToken: string, kind: AuthKind): void {
     const previous: Session | undefined = this.online.get(account.playerId);
     if (previous !== undefined && previous !== session) {
+      // Na arena ([JOGO-28]): a antiga solta a partida (vira queda; a nova volta no `join`), sem salvar posição.
+      if (previous.arena !== null) {
+        this.colosseum.disconnect(account.playerId, Date.now());
+        previous.arena = null;
+        previous.zone = null;
+      }
       // A antiga sai da zona (salvando a posição) e é fechada; a nova assume.
       void this.leaveZone(previous);
       previous.socket.close(CloseCode.Replaced, "entrou em outra conexão");
@@ -1708,8 +1863,11 @@ export class GameServer {
       this.sendMarketSold(sold.sellerId, sold);
       const sellerSession: Session | undefined = this.online.get(sold.sellerId);
       if (sellerSession !== undefined) this.sendMarketMine(sellerSession);
-    } else {
+    } else if (!this.creditOnlineAccount(sold.sellerId, sold.price)) {
       this.options.accounts.addGold(sold.sellerId, sold.price).catch((error: unknown) => console.error(`[mercado] falha ao pagar ${sold.sellerId}:`, error));
+    } else {
+      this.market.takeUnnotifiedSales(sold.sellerId);
+      this.sendMarketSold(sold.sellerId, sold);
     }
     const fresh: Account = session.account ?? account;
     await this.saveBag(session, { ...fresh.inventory, bag: [...fresh.inventory.bag, sold.item] }, zone);
@@ -1762,7 +1920,11 @@ export class GameServer {
         recipients = [...this.online.values()].filter((other) => other.zone === zone && other.account !== null).map((other) => other.account?.playerId ?? "");
         break;
       case "group":
-        recipients = [...zone.groupMembersOf(me)];
+        // Na arena o Grupo é o canal do time ([JOGO-28]).
+        recipients =
+          session.arena !== null
+            ? session.arena.members().filter((m) => m.team === session.arena?.teamOf(me) && !m.abandoned).map((m) => m.id)
+            : [...zone.groupMembersOf(me)];
         if (recipients.length === 0) return refuse("not_in_group");
         break;
       case "guild": {
@@ -1802,7 +1964,8 @@ export class GameServer {
     if (!check.ok) return refuse(check.reason, check.seconds);
     const message: ServerMessage = {
       type: ServerMessageType.Chat,
-      data: { channel: data.channel, fromId: me, from: account.username, level: zone.levelOf(me) ?? 0, guildTag: this.guilds.guildOf(me)?.tag ?? null, text, to },
+      // Nível real (na arena todos estão no 20, [JOGO-28]).
+      data: { channel: data.channel, fromId: me, from: account.username, level: session.arena !== null ? account.progress.level : (zone.levelOf(me) ?? 0), guildTag: this.guilds.guildOf(me)?.tag ?? null, text, to },
     };
     for (const id of new Set([me, ...recipients])) this.sendTo(id, message);
     if (fakeEcho !== null) {
@@ -2084,6 +2247,8 @@ export class GameServer {
 
   /** Encerra a sessão deste aparelho (o token deixa de valer) e fecha a conexão normalmente. */
   private async handleLogout(session: Session): Promise<void> {
+    // Sair da conta no meio da partida = abandono ([JOGO-28]).
+    if (session.account !== null) this.colosseum.leaveMatch(session.account.playerId, "logout");
     const token: string | null = session.sessionToken;
     if (token !== null) {
       try {
@@ -2138,17 +2303,29 @@ export class GameServer {
       this.sendError(session, ErrorCode.BodyNotChosen, "Escolha seu personagem antes de entrar.");
       return;
     }
-    const body: BodyType = account.body;
     if (session.zone !== null) {
       this.sendError(session, ErrorCode.AlreadyJoined, "já está numa zona");
       return;
     }
+    // No meio de uma partida do Coliseu ([JOGO-28]): o `join` volta para a arena dele (reconexão).
+    const match: ArenaMatch | undefined = this.colosseum.reconnect(account.playerId, GameServer.senderOf(session));
+    if (match !== undefined) {
+      this.attachArena(session, match);
+      return;
+    }
+    // As arenas não estão na lista de zonas: o `join` comum nunca entra numa.
     const zone: Zone | undefined = this.zones.get(data.zone);
     if (zone === undefined) {
       this.reject(session, ErrorCode.UnknownZone, `zona "${data.zone}" não existe`);
       return;
     }
+    this.enterZone(session, account, zone);
+  }
 
+  /** Põe a sessão na zona comum `zone` (com a posição salva, se for dela) e manda o `welcome`. */
+  private enterZone(session: Session, account: Account, zone: Zone): void {
+    if (account.body === null) return;
+    const body: BodyType = account.body;
     const socket: WebSocket = session.socket;
     const result: JoinResult = zone.join(
       {
@@ -2233,6 +2410,249 @@ export class GameServer {
     // Mercado ([JOGO-25]): o que vendeu enquanto estava fora (as moedas já entraram na conta).
     for (const sale of this.market.takeUnnotifiedSales(account.playerId)) this.sendMarketSold(account.playerId, sale);
     this.log(`[${zone.config.id}] ${account.username} entrou (${zone.size} online)`);
+  }
+
+  // --- Coliseu ([JOGO-28]) ---
+
+  /** Envia pelo socket desta sessão (se aberto): o `send` de quem entra/volta para uma arena. */
+  private static senderOf(session: Session): (text: string) => void {
+    return (text: string): void => {
+      if (session.socket.readyState === WebSocket.OPEN) session.socket.send(text);
+    };
+  }
+
+  /** `true` se `playerId` está vivo nas pedras da praça de uma zona comum (onde se entra na fila do Coliseu). */
+  private inColosseumSquare(session: Session, playerId: string): boolean {
+    const zone: Zone | null = session.zone;
+    if (zone === null || session.arena !== null || zone.config.arena !== undefined) return false;
+    const half: number = zone.config.safeZoneHalf ?? 0;
+    const snapshot: PlayerSnapshot | undefined = zone.getSnapshot(playerId);
+    return half > 0 && snapshot !== undefined && !snapshot.dead && inSafeZone(snapshot.x, snapshot.z, half);
+  }
+
+  /** Tela do Coliseu: ranking por modo, Pontos, bloqueio, fila e teto diário. */
+  private sendColosseumInfo(session: Session): void {
+    const account: Account | null = session.account;
+    if (account === null) return;
+    const now: number = Date.now();
+    const record: ColosseumRecord = account.colosseum;
+    const data: ColosseumInfoData = {
+      rating: record.rating,
+      points: record.points,
+      banSeconds: Math.max(0, Math.ceil((record.banUntil - now) / 1000)),
+      queued: this.colosseum.queuedMode(account.playerId),
+      waiting: this.colosseum.waiting(),
+      rewardsToday: rewardsToday(record.daily, now),
+      rewardsLimit: DAILY_REWARD_LIMIT,
+    };
+    this.sendTo(account.playerId, { type: ServerMessageType.ColosseumInfo, data });
+  }
+
+  /** Entrar na fila: conta registrada, vivo nas pedras da praça, sem bloqueio, uma fila por vez, healer fora do 1x1. */
+  private handleColosseumQueue(session: Session, mode: ColosseumMode, build: ArenaBuild): void {
+    const account: Account | null = session.account;
+    if (account === null) {
+      this.sendError(session, ErrorCode.NotAuthenticated, "entre na conta antes");
+      return;
+    }
+    if (account.guest) {
+      this.sendError(session, ErrorCode.ColosseumGuest, "Crie uma conta para jogar o Coliseu.");
+      return;
+    }
+    if (!this.inColosseumSquare(session, account.playerId)) {
+      this.sendError(session, ErrorCode.ColosseumNotInSquare, "Entre na fila do Coliseu nas pedras da praça.");
+      return;
+    }
+    const now: number = Date.now();
+    const result = this.colosseum.join(account.playerId, mode, build, now, account.colosseum.banUntil);
+    if (!result.ok) {
+      if (result.reason === "queue_banned") {
+        const minutes: number = Math.max(1, Math.ceil((account.colosseum.banUntil - now) / 60_000));
+        this.sendError(session, ErrorCode.ColosseumBanned, `Coliseu bloqueado por mais ${minutes} min.`);
+      } else if (result.reason === "healer_not_allowed") {
+        this.sendError(session, ErrorCode.ColosseumHealerNotAllowed, "O 1x1 não aceita Curandeiro na mão.");
+      } else {
+        this.sendError(session, ErrorCode.ColosseumAlreadyQueued, "Você já está numa fila ou partida.");
+      }
+      return;
+    }
+    this.sendColosseumInfo(session);
+  }
+
+  /** Uma vez por segundo: quem saiu da praça (ou morreu, ou caiu) sai da fila, com aviso. */
+  private checkColosseumSquare(): void {
+    const now: number = Date.now();
+    for (const playerId of this.colosseum.queuedPlayers()) {
+      const session: Session | undefined = this.online.get(playerId);
+      if (session !== undefined && this.inColosseumSquare(session, playerId)) continue;
+      this.colosseum.leaveQueue(playerId, now);
+      if (session === undefined) continue;
+      this.sendError(session, ErrorCode.ColosseumNotInSquare, "Você saiu da praça e saiu da fila do Coliseu.");
+      this.sendColosseumInfo(session);
+    }
+  }
+
+  /** Nome, corpo e envio de quem vai entrar numa partida; `null` = offline. */
+  private arenaParticipant(playerId: string): { readonly name: string; readonly body: BodyType; readonly send: (text: string) => void } | null {
+    const session: Session | undefined = this.online.get(playerId);
+    const account: Account | null | undefined = session?.account;
+    if (session === undefined || account === null || account === undefined || session.socket.readyState !== WebSocket.OPEN) return null;
+    return { name: account.username, body: account.body ?? "male", send: GameServer.senderOf(session) };
+  }
+
+  /**
+   * A partida começou: sai da zona comum (salva a posição da praça, sai do grupo e da troca) e entra na arena. A
+   * posição salva não muda até voltar (a da arena nunca é gravada).
+   */
+  private enterArena(playerId: string, match: ArenaMatch): void {
+    const session: Session | undefined = this.online.get(playerId);
+    if (session === undefined) return;
+    void this.leaveZone(session);
+    this.attachArena(session, match);
+  }
+
+  /** Liga a sessão à arena (entrada ou reconexão) e manda o `welcome` da arena e o placar. */
+  private attachArena(session: Session, match: ArenaMatch): void {
+    const account: Account | null = session.account;
+    if (account === null) return;
+    session.arena = match;
+    session.zone = match.zone;
+    const zone: Zone = match.zone;
+    const team: 0 | 1 = match.teamOf(account.playerId) ?? 0;
+    const radius: number = zone.config.arena?.radius ?? 0;
+    this.sendTo(account.playerId, {
+      type: ServerMessageType.Welcome,
+      data: {
+        playerId: account.playerId,
+        zone: zone.config.id,
+        tick: zone.tickNumber,
+        sim: zone.simParams,
+        pvp: true,
+        players: zone.playersInfo(),
+        npcs: [],
+        chests: [],
+        kind: "arena",
+        arena: { radius, team, barrierGap: ARENA_BARRIER_GAP },
+      },
+    });
+    this.sendTo(account.playerId, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(match, account.playerId) });
+    this.log(`[coliseu] ${account.username} na arena ${zone.config.id} (time ${team})`);
+  }
+
+  /** Sai da arena e volta para a zona da posição salva (a praça de onde saiu). Socket fechado: só solta. */
+  private returnFromArena(session: Session): void {
+    session.arena = null;
+    session.zone = null;
+    const account: Account | null = session.account;
+    if (account === null || session.socket.readyState !== WebSocket.OPEN) return;
+    const home: Zone | undefined = this.zones.get(account.lastPosition?.zone ?? "") ?? this.zones.values().next().value;
+    if (home !== undefined) this.enterZone(session, account, home);
+  }
+
+  /** Abandonou: 10 min sem fila agora; volta à praça se ainda está na arena (a perda de ranking vem no fim). */
+  private onArenaAbandon(playerId: string, match: ArenaMatch, reason: AbandonReason): void {
+    void this.updateColosseumRecord(playerId, (record) => withBan(record, Date.now() + ABANDON_BAN_MS));
+    const session: Session | undefined = this.online.get(playerId);
+    if (session !== undefined && session.arena === match) this.returnFromArena(session);
+    this.log(`[coliseu] ${session?.account?.username ?? playerId} abandonou (${reason})`);
+  }
+
+  /**
+   * Muda os dados do Coliseu de `playerId`: online, na sessão e no banco; offline, lendo do banco.
+   */
+  private async updateColosseumRecord(playerId: string, change: (record: ColosseumRecord) => ColosseumRecord): Promise<void> {
+    try {
+      const session: Session | undefined = this.online.get(playerId);
+      const account: Account | null | undefined = session?.account;
+      if (session !== undefined && account !== null && account !== undefined) {
+        const colosseum: ColosseumRecord = change(account.colosseum);
+        session.account = { ...account, colosseum };
+        await this.options.accounts.saveColosseum(playerId, colosseum);
+        return;
+      }
+      const target = await this.options.accounts.loadColosseumTarget(playerId);
+      if (target !== null) await this.options.accounts.saveColosseum(playerId, change(target.colosseum));
+    } catch (error: unknown) {
+      console.error(`[coliseu] falha ao salvar os dados de ${playerId}:`, error);
+    }
+  }
+
+  /**
+   * Fim da partida: prêmio e ranking de cada jogador (tabela de `src/arena/rewards.ts`; anulada = só a punição de quem
+   * abandonou), aplicados na conta ANTES de voltar à praça (a zona já recebe o progresso novo); depois `colosseum_result`.
+   * Quem está offline recebe o mesmo, lido e gravado no banco.
+   */
+  private async settleColosseum(match: ArenaMatch, result: ArenaMatchResult): Promise<void> {
+    const now: number = Date.now();
+    const size: number = teamSize(match.mode);
+    this.log(`[coliseu] partida ${match.id} (${match.mode}) acabou: ${result.annulled ? "anulada" : `vencedor ${result.winner ?? "empate"}`}, ${result.score[0]}x${result.score[1]}`);
+    for (const player of result.players) {
+      const unpaid: boolean = result.annulled && player.outcome !== "abandon";
+      const rewardFor = (level: number, premium: Account["premium"], record: ColosseumRecord): ColosseumReward =>
+        unpaid
+          ? NO_COLOSSEUM_REWARD
+          : colosseumReward({
+              outcome: player.outcome,
+              level,
+              teamSize: size,
+              teammateAbandoned: player.teammateAbandoned,
+              multipliers: rewardMultipliers(premium, now),
+              rewardedToday: rewardsToday(record.daily, now),
+            });
+      try {
+        const session: Session | undefined = this.online.get(player.id);
+        const account: Account | null | undefined = session?.account;
+        if (session !== undefined && account !== null && account !== undefined) {
+          const reward: ColosseumReward = rewardFor(account.progress.level, account.premium, account.colosseum);
+          const progress: Progress = applyRewardToProgress(account.progress, reward);
+          const colosseum: ColosseumRecord = unpaid ? account.colosseum : applyMatchToRecord(account.colosseum, match.mode, reward, now);
+          session.account = { ...account, progress, colosseum };
+          if (session.arena === match) this.returnFromArena(session);
+          if (progress.level !== account.progress.level) this.guilds.refreshMember(player.id);
+          this.sendTo(player.id, {
+            type: ServerMessageType.ColosseumResult,
+            data: {
+              mode: match.mode,
+              outcome: player.outcome,
+              annulled: result.annulled,
+              winner: result.winner,
+              score: result.score,
+              gold: reward.gold,
+              xp: reward.xp,
+              points: reward.points,
+              ratingDelta: colosseum.rating[match.mode] - account.colosseum.rating[match.mode],
+              rating: colosseum.rating[match.mode],
+              rewarded: reward.rewarded,
+              level: progress.level,
+            },
+          });
+          await this.options.accounts.saveProgress(player.id, progress);
+          await this.options.accounts.saveColosseum(player.id, colosseum);
+          continue;
+        }
+        const target = await this.options.accounts.loadColosseumTarget(player.id);
+        if (target === null) continue;
+        const reward: ColosseumReward = rewardFor(target.progress.level, target.premium, target.colosseum);
+        await this.options.accounts.saveProgress(player.id, applyRewardToProgress(target.progress, reward));
+        if (!unpaid) await this.options.accounts.saveColosseum(player.id, applyMatchToRecord(target.colosseum, match.mode, reward, now));
+      } catch (error: unknown) {
+        console.error(`[coliseu] falha ao dar o prêmio de ${player.id}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Moedas para uma conta online que não está numa zona comum (na arena, [JOGO-28]): soma no progresso da sessão (a
+   * verdade da conta) e salva. `false` = não está online assim (quem chama soma direto no banco).
+   */
+  private creditOnlineAccount(playerId: string, amount: number): boolean {
+    const session: Session | undefined = this.online.get(playerId);
+    const account: Account | null | undefined = session?.account;
+    if (session === undefined || account === null || account === undefined || session.arena === null) return false;
+    const progress: Progress = { ...account.progress, gold: account.progress.gold + amount };
+    session.account = { ...account, progress };
+    this.options.accounts.saveProgress(playerId, progress).catch((error: unknown) => console.error(`[mercado] falha ao pagar ${playerId}:`, error));
+    return true;
   }
 
   /** Tira a sessão da zona e salva a posição. Pode ser chamada mais de uma vez. */
