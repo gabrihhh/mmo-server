@@ -407,11 +407,13 @@ export const MAX_INPUTS_PER_TICK = 4;
 
 /**
  * Crédito de comandos (anti-speedhack sem punir rede ruim, [INFRA-09]): cada tick dá 1 crédito ao jogador, guardado
- * até este máximo (meio segundo de ticks: 15 a 30 Hz); cada PASSO aplicado gasta 1 (habilidade na fila não gasta: tem recarga). Assim, depois de a rede segurar os pacotes por
- * até meio segundo, a rajada é aplicada inteira (sem o "puxão para trás"), mas na média ninguém passa de 1 comando por
- * tick: só dá para gastar o que acumulou parado/travado.
+ * até este máximo (1,5 s de ticks: 45 a 30 Hz); cada PASSO aplicado gasta 1 (habilidade na fila não gasta: tem
+ * recarga). Assim, depois de a rede segurar os pacotes por até 1,5 s, a rajada é aplicada inteira em poucos ticks (sem o
+ * "puxão para trás"), mas na média ninguém passa de 1 comando por tick: só dá para gastar o que acumulou parado/travado.
+ * > mudança (2026-11-20): era 0,5 s; no Wi-Fi do celular foram medidos buracos de 1,6 s (o resto da rajada andava a 1
+ * > passo por tick e a fila estourava, jogando passos fora: puxão).
  */
-export const MAX_INPUT_CREDIT: number = Math.round(0.5 * TICK_RATE_HZ);
+export const MAX_INPUT_CREDIT: number = Math.round(1.5 * TICK_RATE_HZ);
 
 /**
  * Estoque de passos ([INFRA-12]): o celular manda os passos no relógio dele e o servidor aplica no dele; sem estoque,
@@ -510,11 +512,12 @@ export const GROUP_XP_RADIUS = VIEW_RADIUS;
 export const GROUP_POSITIONS_EVERY_TICKS: number = Math.max(1, Math.round(TICK_RATE_HZ / GROUP_POSITIONS_HZ));
 
 /**
- * Tamanho máximo da fila de comandos por jogador (1 s de comandos: 30 a 30 Hz). Excesso descarta os mais antigos (flood).
+ * Tamanho máximo da fila de comandos por jogador (2 s de comandos: 60 a 30 Hz). Excesso descarta os mais antigos (flood).
  * > mudança (2026-11-15): era 4 — qualquer travada de rede de mais de 200 ms jogava passos fora e o jogador era
  * > puxado para trás ([INFRA-09]).
+ * > mudança (2026-11-20): era 1 s; um buraco de 1,6 s no Wi-Fi do celular jogou 7 passos fora (puxão).
  */
-export const MAX_INPUT_QUEUE: number = TICK_RATE_HZ;
+export const MAX_INPUT_QUEUE: number = 2 * TICK_RATE_HZ;
 
 /** Converte segundos em ticks (arredonda para cima: nunca antes da hora). */
 const secondsToTicks = (seconds: number): number => Math.max(1, Math.ceil(seconds * TICK_RATE_HZ));
