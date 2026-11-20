@@ -887,7 +887,7 @@ export class GameServer {
         return;
       case ClientMessageType.ColosseumPoint: {
         if (session.account === null) return;
-        const result = this.colosseum.choosePoint(session.account.playerId, message.data.slot, message.data.attribute);
+        const result = this.colosseum.choosePoint(session.account.playerId, message.data.slot, message.data.attribute, message.data.count);
         if (result.ok) return;
         if (result.reason === "invalid_attribute") this.sendError(session, ErrorCode.InvalidAttribute, "Esse atributo não é do conjunto dessa peça.");
         else if (result.reason === "no_choices_left") this.sendError(session, ErrorCode.ColosseumNoChoices, "Você já usou as 20 escolhas.");

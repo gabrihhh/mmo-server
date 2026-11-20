@@ -257,14 +257,27 @@ export class ArenaMatch {
 
   /**
    * Uma escolha da preparação: peça `slot` → `attribute` (+1 novo, +2 repetido). Só na preparação, só de quem é da
-   * partida, até 20, só atributo do conjunto da peça. Aceita: a zona passa a usar os atributos novos na hora.
+   * partida, até 20, só atributo do conjunto da peça. `count` = quantas escolhas de uma vez no mesmo atributo (cada
+   * uma pela regra +1 novo / +2 repetido); mais do que falta = usa só o que falta. Aceita: a zona passa a usar os
+   * atributos novos na hora.
    */
-  choosePoint(id: string, slot: EquipSlot, attribute: AttributeId): { readonly ok: true } | { readonly ok: false; readonly reason: PrepPointFailure | "not_in_prep" } {
+  choosePoint(
+    id: string,
+    slot: EquipSlot,
+    attribute: AttributeId,
+    count: number = 1,
+  ): { readonly ok: true } | { readonly ok: false; readonly reason: PrepPointFailure | "not_in_prep" } {
     const player: MatchPlayer | undefined = this.players.get(id);
     if (player === undefined || player.abandoned || this.currentPhase !== "prep") return { ok: false, reason: "not_in_prep" };
-    const result = applyPrepPoint(player.points, player.participant.build, slot, attribute);
-    if (!result.ok) return result;
-    player.points = result.points;
+    const first = applyPrepPoint(player.points, player.participant.build, slot, attribute);
+    if (!first.ok) return first;
+    let points: ArenaPoints = first.points;
+    for (let i = 1; i < count; i++) {
+      const next = applyPrepPoint(points, player.participant.build, slot, attribute);
+      if (!next.ok) break;
+      points = next.points;
+    }
+    player.points = points;
     this.applyLoadout(player);
     return { ok: true };
   }

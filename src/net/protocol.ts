@@ -1861,10 +1861,15 @@ export interface ColosseumQueueData {
   readonly build: ArenaBuild;
 }
 
-/** Payload de `colosseum_point`: peça → atributo do conjunto dela (+1 novo, +2 repetido). */
+/**
+ * Payload de `colosseum_point`: peça → atributo do conjunto dela, `count` escolhas de uma vez (cada uma pela regra:
+ * novo +1, repetido +2; passa do que falta = usa só o que falta).
+ */
 export interface ColosseumPointData {
   readonly slot: EquipSlotName;
   readonly attribute: AttributeId;
+  /** Quantas escolhas de uma vez (1 a 20; ausente = 1). */
+  readonly count: number;
 }
 
 /** Pontos por modo. */
@@ -2561,7 +2566,9 @@ export function parseColosseumPointData(data: unknown): ColosseumPointData | nul
   if (!isRecord(data)) return null;
   const { slot, attribute } = data;
   if (!isSlotName(slot) || !isAttributeId(attribute)) return null;
-  return { slot, attribute };
+  const count: unknown = data["count"] ?? 1;
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 20) return null;
+  return { slot, attribute, count };
 }
 
 /** Valida o payload de `ranking_request`. */

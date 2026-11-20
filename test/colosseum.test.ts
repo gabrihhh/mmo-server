@@ -39,6 +39,7 @@ import {
 import { EMPTY_COLOSSEUM_RECORD, applyMatchToRecord, readColosseumRecord, withBan } from "../src/arena/record.js";
 import { colosseumModeOf, colosseumValue } from "../src/progression/ranking.js";
 import { EQUIP_SLOTS, getItem } from "../src/items/catalog.js";
+import { parseColosseumPointData } from "../src/net/protocol.js";
 import { attributeEffectsOf, basicAttackOf, equippedAbilities, lookLevelsOf } from "../src/items/inventory.js";
 import { xpToNextLevel } from "../src/progression/level.js";
 
@@ -335,5 +336,16 @@ describe("Coliseu — dados na conta e ranking", () => {
     assert.strictEqual(read.dayNet["1x1"], -20);
     assert.strictEqual(read.points, 7);
     assert.deepStrictEqual(read.daily, { day: "2026-11-19", count: 2 });
+  });
+});
+
+describe("Coliseu — protocolo", () => {
+  it("colosseum_point: count opcional (padrão 1), inteiro de 1 a 20", () => {
+    assert.deepStrictEqual(parseColosseumPointData({ slot: "hand", attribute: "damage" }), { slot: "hand", attribute: "damage", count: 1 });
+    assert.deepStrictEqual(parseColosseumPointData({ slot: "hand", attribute: "damage", count: 5 }), { slot: "hand", attribute: "damage", count: 5 });
+    assert.strictEqual(parseColosseumPointData({ slot: "hand", attribute: "damage", count: 0 }), null);
+    assert.strictEqual(parseColosseumPointData({ slot: "hand", attribute: "damage", count: 21 }), null);
+    assert.strictEqual(parseColosseumPointData({ slot: "hand", attribute: "damage", count: 2.5 }), null);
+    assert.strictEqual(parseColosseumPointData({ slot: "mochila", attribute: "damage" }), null);
   });
 });

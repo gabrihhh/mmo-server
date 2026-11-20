@@ -123,12 +123,19 @@ describe("Coliseu — partida", () => {
     assert.deepStrictEqual(match.choosePoint("a", "chest", "defense"), { ok: true });
     assert.deepStrictEqual(match.choosePoint("a", "hand", "defense"), { ok: false, reason: "invalid_attribute" });
     assert.strictEqual(match.choicesLeft("a"), PREP_CHOICES - 1);
+    // Várias de uma vez: 5 em Vida no peito (Cavaleiro) = +1 e +2 × 4 = 9; pedir mais do que falta usa só o que falta.
+    assert.deepStrictEqual(match.choosePoint("a", "chest", "health", 5), { ok: true });
+    assert.strictEqual(match.inventoryOf("a")?.equipped.chest?.attrs?.health, 9);
+    assert.strictEqual(match.choicesLeft("a"), PREP_CHOICES - 6);
+    assert.deepStrictEqual(match.choosePoint("a", "head", "damage", 99), { ok: true });
+    assert.strictEqual(match.choicesLeft("a"), 0);
+    assert.deepStrictEqual(match.choosePoint("a", "head", "damage"), { ok: false, reason: "no_choices_left" });
     run(match, PREP_SECONDS + 0.1, ["a", "b"]);
     assert.strictEqual(match.phase, "round");
     assert.strictEqual(match.round, 1);
     assert.strictEqual(match.choicesLeft("a"), 0);
-    assert.strictEqual(match.choicesLeft("b"), 0);
     assert.deepStrictEqual(match.choosePoint("a", "chest", "defense"), { ok: false, reason: "not_in_prep" });
+    assert.strictEqual(match.choicesLeft("b"), 0, "a sobra do b foi sorteada");
     assert.strictEqual(match.inventoryOf("a")?.equipped.chest?.attrs?.defense !== undefined, true);
   });
 

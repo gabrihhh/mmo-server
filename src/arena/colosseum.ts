@@ -122,11 +122,11 @@ export class Colosseum {
     return true;
   }
 
-  /** Uma escolha da preparação de quem está numa partida. */
-  choosePoint(playerId: string, slot: EquipSlot, attribute: AttributeId): PointResult {
+  /** `count` escolhas da preparação (mesma peça e atributo) de quem está numa partida. */
+  choosePoint(playerId: string, slot: EquipSlot, attribute: AttributeId, count: number = 1): PointResult {
     const match: ArenaMatch | undefined = this.matchOf(playerId);
     if (match === undefined) return { ok: false, reason: "not_in_prep" };
-    const result: PointResult = match.choosePoint(playerId, slot, attribute);
+    const result: PointResult = match.choosePoint(playerId, slot, attribute, count);
     if (result.ok) {
       this.host.arenaInventoryChanged(playerId, match);
       this.host.send(playerId, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(match, playerId) });
