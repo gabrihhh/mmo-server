@@ -352,6 +352,7 @@ export class GameServer {
         banned: (playerId, untilMs): void => {
           void this.updateColosseumRecord(playerId, (record) => withBan(record, untilMs));
         },
+        arenaInventoryChanged: (playerId, match): void => this.sendArenaInventory(playerId, match),
       },
       this.options.colosseum,
     );
@@ -2535,8 +2536,17 @@ export class GameServer {
         arena: { radius, team, barrierGap: ARENA_BARRIER_GAP },
       },
     });
+    // As cartas, o ataque e a ficha dos itens do cliente saem do `inventory`: na arena vai o inventário da build
+    // (itens +0 com os pontos da preparação); o real volta ao sair ({@link returnFromArena}).
+    this.sendArenaInventory(account.playerId, match);
     this.sendTo(account.playerId, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(match, account.playerId) });
     this.log(`[coliseu] ${account.username} na arena ${zone.config.id} (time ${team})`);
+  }
+
+  /** Manda a `playerId` o inventário de arena dele (build + pontos da preparação) como `inventory`. */
+  private sendArenaInventory(playerId: string, match: ArenaMatch): void {
+    const inventory = match.inventoryOf(playerId);
+    if (inventory !== undefined) this.sendTo(playerId, { type: ServerMessageType.Inventory, data: inventoryView(inventory) });
   }
 
   /** Sai da arena e volta para a zona da posição salva (a praça de onde saiu). Socket fechado: só solta. */
@@ -2547,6 +2557,8 @@ export class GameServer {
     if (account === null || session.socket.readyState !== WebSocket.OPEN) return;
     const home: Zone | undefined = this.zones.get(account.lastPosition?.zone ?? "") ?? this.zones.values().next().value;
     if (home !== undefined) this.enterZone(session, account, home);
+    // O cliente estava com o inventário da arena: volta o da conta (cartas e ataque de verdade).
+    this.sendInventory(session);
   }
 
   /** Abandonou: 10 min sem fila agora; volta à praça se ainda está na arena (a perda de ranking vem no fim). */

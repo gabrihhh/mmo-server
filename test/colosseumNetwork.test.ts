@@ -94,6 +94,13 @@ describe("Coliseu pela rede (colosseum_*)", () => {
     const before: Account = await saved(a);
     await startMatch("1x1", [{ player: a, build: DPS_BUILD }, { player: b, build: DPS_BUILD }]);
 
+    // Na arena o cliente recebe o inventário da build (as cartas saem dele): Mago na mão, Atirador nos pés.
+    const arenaInventory: ReceivedMessage = await a.client.nextMatching("inventory", (m) => {
+      const hand: unknown = Reflect.get(Reflect.get(m.data, "equipped") ?? {}, "hand");
+      return typeof hand === "object" && hand !== null && Reflect.get(hand, "itemId") === "arcane_staff";
+    });
+    const feet: unknown = Reflect.get(Reflect.get(arenaInventory.data, "equipped") ?? {}, "feet");
+    assert.strictEqual(typeof feet === "object" && feet !== null ? Reflect.get(feet, "itemId") : null, "ranger_boots");
     // Dentro da arena: inventário e serviços recusados; a escolha da preparação vale.
     a.client.send("equip", { uid: "qualquer" });
     assert.strictEqual((await a.client.next("error")).data["code"], "in_colosseum");
@@ -116,6 +123,9 @@ describe("Coliseu pela rede (colosseum_*)", () => {
     assert.strictEqual(result.data["points"], 3);
     const back: ReceivedMessage = await a.client.nextMatching("welcome", (m) => m.data["kind"] === undefined, 3000);
     assert.strictEqual(back.data["zone"], "zone_1");
+    // De volta: o inventário real (conta nova = nada vestido).
+    const realInventory: ReceivedMessage = await a.client.nextMatching("inventory", (m) => Reflect.get(Reflect.get(m.data, "equipped") ?? {}, "hand") === null, 3000);
+    assert.ok(realInventory !== undefined);
     await sleep(100);
     const after: Account = await saved(a);
     assert.strictEqual(after.progress.gold, before.progress.gold + 30);

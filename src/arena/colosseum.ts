@@ -37,6 +37,8 @@ export interface ColosseumHost {
   finished(match: ArenaMatch, result: ArenaMatchResult): void;
   /** Bloqueio novo por recusas seguidas (salvar na conta). */
   banned(playerId: string, untilMs: number): void;
+  /** Os pontos de arena de `playerId` mudaram (escolha ou sorteio do fim da preparação): manda o `inventory` da arena. */
+  arenaInventoryChanged(playerId: string, match: ArenaMatch): void;
 }
 
 /** Opções (os testes encurtam a janela de aceite e fixam o sorteio). */
@@ -125,7 +127,10 @@ export class Colosseum {
     const match: ArenaMatch | undefined = this.matchOf(playerId);
     if (match === undefined) return { ok: false, reason: "not_in_prep" };
     const result: PointResult = match.choosePoint(playerId, slot, attribute);
-    if (result.ok) this.host.send(playerId, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(match, playerId) });
+    if (result.ok) {
+      this.host.arenaInventoryChanged(playerId, match);
+      this.host.send(playerId, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(match, playerId) });
+    }
     return result;
   }
 
@@ -241,8 +246,12 @@ export class Colosseum {
       participants,
       {
         onState: (current): void => {
+          // Começo do round 1: a sobra da preparação acabou de ser sorteada (pontos novos nos itens).
+          const prepEnded: boolean = current.phase === "round" && current.round === 1;
           for (const member of current.members()) {
-            if (!member.abandoned) this.host.send(member.id, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(current, member.id) });
+            if (member.abandoned) continue;
+            if (prepEnded) this.host.arenaInventoryChanged(member.id, current);
+            this.host.send(member.id, { type: ServerMessageType.ColosseumState, data: Colosseum.stateFor(current, member.id) });
           }
         },
         onAbandon: (playerId, reason): void => this.host.abandoned(playerId, match, reason),
