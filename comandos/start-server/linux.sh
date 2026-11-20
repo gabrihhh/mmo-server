@@ -9,6 +9,8 @@
 #   5. mostra o endereço na rede local e roda `npm start` (recarrega sozinho ao mudar o código)
 # Ctrl+C para parar o servidor (o MongoDB continua rodando; desligar: comandos/stop-database/linux.sh).
 # Primeira vez na máquina: comandos/setup-linux.sh
+# Chamado com `sh` (dash, sem pipefail)? Relança no bash.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

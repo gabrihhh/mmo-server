@@ -2298,6 +2298,8 @@ export class GameServer {
     if (session.socket.readyState === WebSocket.OPEN) {
       session.socket.send(encodeServerMessage({ type: ServerMessageType.BodyChosen, data: { body } }));
     }
+    // O inventário mandado no auth_ok ainda vinha sem a arma: manda o novo (Inventário e cartas da HUD).
+    if (hand !== null) this.sendInventory(session);
     this.log(`[auth] ${account.username} escolheu o corpo ${body} e a arma ${weapon ?? "nenhuma"}`);
   }
 

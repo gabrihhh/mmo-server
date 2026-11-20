@@ -4,6 +4,8 @@
 #   - Com Docker: sobe o container mmo-mongo (docker-compose.yml); dados no volume mongo-data.
 #   - Sem Docker: liga o serviço nativo `mongod` (systemd), se existir.
 # Ligar/desligar não apaga nada. Desligar: comandos/stop-database/linux.sh
+# Chamado com `sh` (dash, sem pipefail)? Relança no bash.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

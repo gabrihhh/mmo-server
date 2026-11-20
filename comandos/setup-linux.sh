@@ -9,6 +9,8 @@
 #   4. Docker + Docker Compose (MongoDB roda no container mmo-mongo)
 #   5. liga o MongoDB e confere que responde
 # Depois: comandos/start-server/linux.sh
+# Chamado com `sh` (dash, sem pipefail)? Relança no bash.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -217,6 +217,12 @@ describe("GameServer", () => {
       assert.strictEqual((await c.next("error")).data["code"], "bad_message", "só arma");
       c.send("choose_body", { body: "male", weapon: "knight_sword" });
       await c.next("body_chosen");
+      // Na mesma conexão já chega o inventário novo (o do auth_ok vinha sem a arma).
+      await c.next("inventory");
+      const fresh: unknown = (await c.next("inventory")).data["equipped"];
+      assert.ok(typeof fresh === "object" && fresh !== null && "hand" in fresh);
+      assert.ok(typeof fresh.hand === "object" && fresh.hand !== null && "itemId" in fresh.hand);
+      assert.strictEqual(fresh.hand.itemId, "knight_sword", "inventário atualizado logo após escolher");
       c.send("choose_body", { body: "male", weapon: "arcane_staff" });
       assert.strictEqual((await c.next("error")).data["code"], "body_already_chosen", "não ganha outra");
       await c.close();

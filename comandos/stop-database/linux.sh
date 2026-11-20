@@ -4,6 +4,8 @@
 #   - Com Docker: para o container mmo-mongo (dados continuam no volume mongo-data).
 #   - Sem Docker: para o serviço nativo `mongod` (systemd).
 # Nada é apagado. Com o banco desligado o servidor do jogo não funciona.
+# Chamado com `sh` (dash, sem pipefail)? Relança no bash.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
