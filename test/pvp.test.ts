@@ -4,6 +4,7 @@ import { PVP_MAX_LEVEL_GAP, SAFE_ZONE_HALF, inSafeZone, pvpKill, pvpLevelsAllowe
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import type { Progress } from "../src/progression/level.js";
 import { Zone, type DeathInfo, type ZoneMember } from "../src/zones/Zone.js";
+import { keepAttacking, canHit } from "./helpers.js";
 
 /** Membro que guarda o progresso salvo e as mortes avisadas. */
 class Member implements ZoneMember {
@@ -51,7 +52,7 @@ describe("PvP", () => {
     const b = new Member("b");
     zone.join(a, { x: 30, y: 0, z: 30, rotY: 0 }, LETHAL, new Map(), undefined, 0, { level: 3, xp: 0, gold: 10 });
     zone.join(b, { x: 31, y: 0, z: 30, rotY: 0 }, UNARMED_ATTACK, new Map(), undefined, 0, { level: 5, xp: 0, gold: 300 });
-    assert.strictEqual(zone.setAttackTarget("a", "b"), "ok");
+    keepAttacking(zone, "a", "b");
     for (let i = 0; i < 10 && b.deaths.length === 0; i++) zone.tick();
     assert.deepStrictEqual(b.deaths[0], { goldLost: 30, xpLost: 0, levelsLost: 1, killer: "a" });
     assert.deepStrictEqual([b.saved?.level, b.saved?.gold], [4, 270]);
@@ -63,7 +64,7 @@ describe("PvP", () => {
     const zone = pvpZone();
     zone.join(new Member("a"), { x: 30, y: 0, z: 30, rotY: 0 }, LETHAL, new Map(), undefined, 0, { level: 0, xp: 0, gold: 0 });
     zone.join(new Member("b"), { x: 31, y: 0, z: 30, rotY: 0 }, UNARMED_ATTACK, new Map(), undefined, 0, { level: 11, xp: 0, gold: 0 });
-    assert.strictEqual(zone.setAttackTarget("a", "b"), "invalid_target");
+    assert.ok(!canHit(zone, "a", "b"), "mais de 10 níveis: não acerta");
   });
 
   it("praça segura: ninguém em cima das pedras ataca nem é atacado por jogador", () => {
@@ -72,9 +73,8 @@ describe("PvP", () => {
     const b = new Member("b");
     zone.join(a, { x: 11, y: 0, z: 0, rotY: 0 }, LETHAL);
     zone.join(b, { x: 9.5, y: 0, z: 0, rotY: 0 });
-    assert.strictEqual(zone.setAttackTarget("a", "b"), "invalid_target", "b está na praça");
-    assert.strictEqual(zone.setAttackTarget("b", "a"), "invalid_target", "b atacando de dentro da praça");
-    for (let i = 0; i < 10; i++) zone.tick();
+    assert.ok(!canHit(zone, "a", "b"), "b está na praça");
+    assert.ok(!canHit(zone, "b", "a"), "b atacando de dentro da praça");
     assert.strictEqual(b.deaths.length, 0);
   });
 });

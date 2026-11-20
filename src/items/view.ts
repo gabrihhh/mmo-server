@@ -33,6 +33,8 @@ function abilityView(def: AbilityDef): AbilityView {
     shield: def.shield,
     shieldSeconds: def.shieldSeconds,
     projectileSpeed: def.projectileSpeed,
+    arc: def.arc,
+    maxTargets: def.maxTargets,
     damageReduction: def.damageReduction,
     reductionSeconds: def.reductionSeconds,
     tauntSeconds: def.tauntSeconds,

@@ -4,7 +4,7 @@ import { Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, DUMMY_RESPAWN_SECONDS } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
-import { SnapshotView } from "./helpers.js";
+import { SnapshotView, keepAttacking, strike } from "./helpers.js";
 
 /** NPCs de teste ([JOGO-11]): atirador invulnerável, saco de pancadas que não morre e brigão. */
 
@@ -100,7 +100,7 @@ describe("NPCs de teste", () => {
     const z = zone([BAG, SHOOTER]);
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: -15, rotY: 0 }, SWORD);
-    assert.strictEqual(z.setAttackTarget("a", "shooter"), "invalid_target");
+    strike(z, "a", "shooter");
     ticks(z, 1);
     assert.strictEqual(a.field("shooter", "hp"), DUMMY_MAX_HP);
   });
@@ -111,7 +111,7 @@ describe("NPCs de teste", () => {
     const heal: AbilityDef | undefined = ITEMS["healer_tome"]?.abilities.find((x) => x.id === "greater_heal");
     assert.ok(heal);
     z.join(a, { x: 0, y: 0, z: -3, rotY: 0 }, SWORD, new Map([[heal.id, heal]]));
-    assert.strictEqual(z.setAttackTarget("a", "bag"), "invalid_target", "jogador não ataca o aliado");
+    strike(z, "a", "bag"); // aliado: o golpe passa sem dano
     assert.strictEqual(a.field("bag", "hp"), undefined, "sem snapshot ainda");
     ticks(z, 60);
     assert.ok(!a.allEvents.some((e) => e["type"] === "death" && e["id"] === "bag"), "nunca morre");
@@ -180,7 +180,7 @@ describe("NPCs de teste", () => {
     assert.ok(near.allEvents.some((e) => e["type"] === "damage" && e["source"] === "brawler" && e["target"] === "near"), "bateu em quem está perto");
     assert.ok(!near.allEvents.some((e) => e["type"] === "damage" && e["source"] === "brawler" && e["target"] === "far"), "não bate longe");
     // Jogador perto mata o brigão (tem vida e morre como o boneco).
-    assert.strictEqual(z.setAttackTarget("near", "brawler"), "ok");
+    keepAttacking(z, "near", "brawler");
     ticks(z, (DUMMY_MAX_HP / SWORD.damage + 2) * SWORD.castTime);
     assert.ok(near.allEvents.some((e) => e["type"] === "death" && e["id"] === "brawler"), "morreu");
     ticks(z, DUMMY_RESPAWN_SECONDS + 0.5);

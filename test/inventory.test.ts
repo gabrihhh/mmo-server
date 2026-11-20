@@ -153,7 +153,8 @@ describe("catálogo e inventário", () => {
     assert.strictEqual(view.equipped.feet?.abilities[0]?.id, "blink");
     assert.strictEqual(view.unarmedAttack.id, "punch");
     assert.strictEqual(view.equipped.feet?.abilities[0]?.cooldown, 10, "recarga vai para o cliente");
-    assert.strictEqual(view.equipped.hand?.basicAttack?.castTime, 1.3, "lançamento vai para o cliente");
+    assert.strictEqual(view.equipped.hand?.basicAttack?.castTime, 0.65, "tempo de execução vai para o cliente");
+    assert.ok(Math.abs((view.equipped.hand?.basicAttack?.arc ?? 0) - Math.PI / 2) < 1e-9, "leque de 90° vai para a prévia");
     assert.strictEqual(view.equipped.hand?.abilities[0]?.damage, 14, "dano vai para a ficha do item");
     assert.strictEqual(view.equipped.hand?.set, "Cavaleiro");
     assert.ok(view.equipped.head?.description);

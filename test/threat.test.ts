@@ -15,6 +15,7 @@ import {
 import { goldReward, groupXp, xpReward, type Progress } from "../src/progression/level.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
+import { keepAttacking } from "./helpers.js";
 
 /** Membro falso: guarda os eventos de todos os snapshots e o progresso salvo. */
 class Member implements ZoneMember {
@@ -268,7 +269,7 @@ describe("ameaça (aggro) dos monstros", () => {
     assert.notStrictEqual(zone.npcTargetOf("z3"), "k", "fora dos 6 m: não provocado");
     assert.ok(!zone.threatOf("z3")?.has("k"));
     // a bate no z1 muito acima de 130% durante a provocação: continua no cavaleiro.
-    zone.setAttackTarget("a", "z1");
+    keepAttacking(zone, "a", "z1");
     ticks(zone, Math.round(3 * TICK_RATE_HZ));
     assert.ok(threat(zone, "z1", "a") > threat(zone, "z1", "k") * THREAT_SWITCH_RANGED, "a passou de longe");
     assert.strictEqual(zone.npcTargetOf("z1"), "k", "preso no cavaleiro durante os 4 s");

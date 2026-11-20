@@ -6,6 +6,7 @@ import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js"
 import { BAG_CAPACITY, type ItemStack } from "../src/items/inventory.js";
 import { TRADE_RANGE, TRADE_REQUEST_SECONDS } from "../src/net/protocol.js";
 import type { Progress } from "../src/progression/level.js";
+import { keepAttacking } from "./helpers.js";
 
 /** Troca entre jogadores ([SOC-05]): pedido, ofertas, confirmação, contagem, aplicação e cancelamentos. */
 
@@ -249,7 +250,7 @@ describe("troca ([SOC-05])", () => {
     const c = player(z, "c", 0, 0, 0);
     const d = player(z, "d", 0.8, 0, 0);
     openTrade(z, c, d);
-    z.setAttackTarget("d", "c");
+    keepAttacking(z, "d", "c");
     ticks(z, 60);
     assert.strictEqual(c.notices().pop(), "damaged");
 

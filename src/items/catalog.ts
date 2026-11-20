@@ -63,8 +63,10 @@ export interface AbilityDef {
   readonly cooldown: number;
   /**
    * Tempo de lançamento em segundos: do início da ação até o efeito ([JOGO-05]). Durante ele o personagem fica
-   * virado para o alvo/direção; no fim, o alvo precisa estar no alcance, senão erra. No ataque simples é
-   * igual ao intervalo entre golpes (espada: 1 golpe por segundo).
+   * virado para o alvo/direção; no fim, o alvo precisa estar no alcance, senão erra.
+   * Ataque simples do JOGADOR ([JOGO-05]): não tem carregamento — o golpe sai na hora e isto é o **tempo de
+   * execução** (não sai outro golpe antes de acabar; igual ao `cooldown`). Golpe dos monstros: carregamento normal
+   * (com aviso no chão), e o `cooldown` é o intervalo entre o início de um golpe e o do próximo.
    */
   readonly castTime: number;
   /** Mana gasta ao começar o lançamento (0 no ataque simples). */
@@ -88,6 +90,17 @@ export interface AbilityDef {
    * 0: acerta na hora, no fim do lançamento, o primeiro inimigo na linha.
    */
   readonly projectileSpeed: number;
+  /**
+   * Golpe em leque (mira "direction", sem projétil), em radianos: abertura TOTAL do leque centrado na direção mirada
+   * ([JOGO-05]): acerta quem está a até `range` (+ corpo) dentro dele. Ex.: espada do Cavaleiro = 90° (π/2).
+   * 0 = linha reta (meia-largura `radius`).
+   * ATENÇÃO: o cliente desenha a prévia e o aviso do leque com isto (mmo-client/scripts/combat/aim_preview.gd).
+   */
+  readonly arc: number;
+  /**
+   * Quantos alvos o golpe em leque acerta, os mais perto primeiro (0 = todos dentro do leque). Ex.: adagas e soco = 1.
+   */
+  readonly maxTargets: number;
   /**
    * Mira "alvo" com projétil só visual (ataque do cajado, Raio): quantos segundos ANTES do fim do lançamento o tiro
    * sai da mão ([JOGO-08]). Depois disso andar não cancela mais e o alcance é conferido nesse momento (o tiro que saiu
@@ -155,6 +168,8 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   damageReduction: 0,
   reductionSeconds: 0,
   projectileSpeed: 0,
+  arc: 0,
+  maxTargets: 0,
   releaseTime: 0,
   dashDistance: 0,
   dashSeconds: 0,
@@ -165,9 +180,16 @@ const ability = (spec: AbilitySpec): AbilityDef => ({
   ...spec,
 });
 
-/** Ataque sem arma na mão. */
+/** Graus → radianos (abertura dos golpes em leque, {@link AbilityDef.arc}). */
+const degrees = (value: number): number => (value * Math.PI) / 180;
+
+/**
+ * Ataque sem arma na mão ([JOGO-05]): soco em leque curto de 60°, um alvo (o mais perto). Como todo ataque simples de
+ * jogador: mira "direction" livre, sai na hora e `castTime` = tempo de execução.
+ */
 export const UNARMED_ATTACK: AbilityDef = ability({
-  id: "punch", title: "Soco", description: "Soco de mão vazia.", aim: "target", range: 1.5, cooldown: 0.8, castTime: 0.8, damage: 4,
+  id: "punch", title: "Soco", description: "Soco rápido à frente (um alvo).", aim: "direction", range: 1.5, arc: degrees(60), maxTargets: 1,
+  cooldown: 0.4, castTime: 0.4, damage: 2,
 });
 
 /**
@@ -178,13 +200,14 @@ export const UNARMED_ATTACK: AbilityDef = ability({
  */
 export const MONSTER_ABILITIES: Readonly<Record<string, AbilityDef>> = {
   // Zumbi lutador: soco com as mãos e uma pancada larga à frente.
-  zombie_punch: ability({ id: "zombie_punch", title: "Soco de zumbi", description: "Pancada com as mãos podres.", aim: "target", range: 1.7, cooldown: 1.3, castTime: 1.3, damage: 8 }),
+  // Golpe simples dos monstros ([JOGO-05]): na direção do alvo, com carregamento e aviso no chão (dá para sair).
+  zombie_punch: ability({ id: "zombie_punch", title: "Soco de zumbi", description: "Pancada à frente com as mãos podres.", aim: "direction", range: 1.7, arc: degrees(90), cooldown: 1.3, castTime: 0.6, damage: 8 }),
   zombie_bash: ability({ id: "zombie_bash", title: "Pancadão", description: "Golpe largo com os dois braços à frente.", aim: "direction", range: 3.2, radius: 1.2, cooldown: 7, castTime: 0.7, damage: 14 }),
   // Zumbi cuspidor (ranged): cospe de longe e, de vez em quando, uma bola de gosma que dá para desviar.
-  zombie_spit: ability({ id: "zombie_spit", title: "Cuspe", description: "Cusparada de gosma.", aim: "target", range: 9, cooldown: 1.6, castTime: 1.2, damage: 9, releaseTime: 0.35 }),
+  zombie_spit: ability({ id: "zombie_spit", title: "Cuspe", description: "Cusparada de gosma que voa reto (dá para desviar).", aim: "direction", range: 9, radius: 0.4, cooldown: 1.6, castTime: 0.6, damage: 9, projectileSpeed: 14 }),
   acid_glob: ability({ id: "acid_glob", title: "Bola de gosma", description: "Bola de gosma que voa reto e acerta o primeiro.", aim: "direction", range: 14, radius: 0.6, cooldown: 6, castTime: 0.8, damage: 20, projectileSpeed: 13 }),
   // Chefe (zumbi gigante): murro pesado e o pisão em volta (aviso no chão: dá para sair).
-  boss_smash: ability({ id: "boss_smash", title: "Murro gigante", description: "Murro pesado do chefe.", aim: "target", range: 2.2, cooldown: 1.8, castTime: 1.4, damage: 16 }),
+  boss_smash: ability({ id: "boss_smash", title: "Murro gigante", description: "Murro pesado do chefe em leque à frente.", aim: "direction", range: 2.2, arc: degrees(120), cooldown: 1.8, castTime: 0.8, damage: 16 }),
   boss_stomp: ability({ id: "boss_stomp", title: "Pisão", description: "Pisão que acerta todos em volta.", aim: "area_self", radius: 5, cooldown: 9, castTime: 1.4, damage: 30 }),
 };
 
@@ -198,7 +221,8 @@ export const SET_PROFILES: Readonly<Record<string, SetProfile>> = {
   Cavaleiro: { damage: "low", health: "high", healing: "low", cooldown: "medium" },
   Atirador: { damage: "medium", health: "low", healing: "low", cooldown: "medium" },
   Assassino: { damage: "high", health: "low", healing: "zero", cooldown: "high" },
-  Curandeiro: { damage: "zero", health: "low", healing: "medium", cooldown: "medium" },
+  // Dano baixo: só o raio de luz do ataque simples fere (2 por golpe, [JOGO-05]); as cartas não dão dano.
+  Curandeiro: { damage: "low", health: "low", healing: "medium", cooldown: "medium" },
 };
 
 /**
@@ -217,7 +241,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     set: "Mago",
     slot: "hand",
     bonusHp: 0,
-    basicAttack: ability({ id: "arcane_attack", title: "Ataque", description: "Faísca arcana no alvo.", aim: "target", range: 9, cooldown: 1.1, castTime: 1.1, damage: 9, releaseTime: 0.3 }),
+    basicAttack: ability({ id: "arcane_attack", title: "Ataque", description: "Faísca arcana que voa reto e acerta o primeiro inimigo.", aim: "direction", range: 9, radius: 0.35, projectileSpeed: 18, cooldown: 0.55, castTime: 0.55, damage: 4.5 }),
     abilities: [
       ability({ id: "ice_lance", title: "Lança de gelo", description: "Lança de gelo rápida que acerta o primeiro no caminho.", aim: "direction", range: 14, radius: 0.4, cooldown: 4, castTime: 0.5, manaCost: 15, damage: 20, projectileSpeed: 20 }),
       ability({ id: "arcane_nova", title: "Nova arcana", description: "Explosão arcana que acerta todos ao seu redor.", aim: "area_self", radius: 4, cooldown: 8, castTime: 0.6, manaCost: 20, damage: 18 }),
@@ -270,7 +294,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     set: "Cavaleiro",
     slot: "hand",
     bonusHp: 0,
-    basicAttack: ability({ id: "knight_attack", title: "Ataque", description: "Golpe de espada longa no alvo.", aim: "target", range: 2.8, cooldown: 1.3, castTime: 1.3, damage: 8 }),
+    basicAttack: ability({ id: "knight_attack", title: "Ataque", description: "Espada longa em leque de 90° à frente: acerta todos dentro.", aim: "direction", range: 2.8, arc: degrees(90), cooldown: 0.65, castTime: 0.65, damage: 4 }),
     abilities: [
       // Sem projétil: acerta na hora o primeiro inimigo na faixa larga à frente.
       ability({ id: "line_cleave", title: "Corte em linha", description: "Corte largo à frente que acerta o primeiro inimigo.", aim: "direction", range: 4, radius: 1.2, cooldown: 7, castTime: 0.5, manaCost: 12, damage: 14 }),
@@ -325,7 +349,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     set: "Atirador",
     slot: "hand",
     bonusHp: 0,
-    basicAttack: ability({ id: "crossbow_attack", title: "Ataque", description: "Virote no alvo.", aim: "target", range: 11, cooldown: 1.2, castTime: 1.2, damage: 10, releaseTime: 0.25 }),
+    basicAttack: ability({ id: "crossbow_attack", title: "Ataque", description: "Virote que voa reto e acerta o primeiro inimigo.", aim: "direction", range: 11, radius: 0.3, projectileSpeed: 24, cooldown: 0.6, castTime: 0.6, damage: 5 }),
     abilities: [
       ability({ id: "piercing_bolt", title: "Virote certeiro", description: "Virote muito rápido que acerta o primeiro no caminho.", aim: "direction", range: 16, radius: 0.4, cooldown: 5, castTime: 0.6, manaCost: 15, damage: 22, projectileSpeed: 26 }),
       ability({ id: "bolt_rain", title: "Chuva de virotes", description: "Dispara para o alto e os virotes caem numa área.", aim: "area", range: 13, radius: 2.5, cooldown: 10, castTime: 1, manaCost: 25, damage: 22 }),
@@ -378,7 +402,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     set: "Assassino",
     slot: "hand",
     bonusHp: 0,
-    basicAttack: ability({ id: "dagger_attack", title: "Ataque", description: "Golpe rápido de adaga no alvo.", aim: "target", range: 2.2, cooldown: 0.7, castTime: 0.7, damage: 8 }),
+    basicAttack: ability({ id: "dagger_attack", title: "Ataque", description: "Estocada com um passo à frente (um alvo).", aim: "direction", range: 2.2, arc: degrees(45), maxTargets: 1, dashDistance: 1, dashSeconds: 0.15, cooldown: 0.35, castTime: 0.35, damage: 4 }),
     abilities: [
       // Aproximação: Investida longa e curtíssima (toque = na direção do alvo fixo, [JOGO-07]).
       ability({ id: "shadow_leap", title: "Salto sombrio", description: "Salta até o inimigo num instante.", aim: "direction", range: 9, radius: 0.6, cooldown: 14, castTime: 0, manaCost: 10, dashDistance: 9, dashSeconds: 0.2 }),
@@ -432,7 +456,7 @@ export const ITEMS: Readonly<Record<string, ItemDef>> = {
     slot: "hand",
     bonusHp: 0,
     // Ataque simples de cura: alvo fixo é um aliado, cura a cada lançamento ([JOGO-09]).
-    basicAttack: ability({ id: "tome_attack", title: "Toque de luz", description: "Cura constante no aliado escolhido.", aim: "ally", range: 9, cooldown: 1.2, castTime: 1.2, heal: 8 }),
+    basicAttack: ability({ id: "tome_attack", title: "Toque de luz", description: "Raio de luz que voa reto: cura o primeiro aliado ou fere o primeiro inimigo.", aim: "direction", range: 9, radius: 0.35, projectileSpeed: 16, cooldown: 0.6, castTime: 0.6, heal: 4, damage: 2 }),
     abilities: [
       ability({ id: "greater_heal", title: "Cura maior", description: "Cura forte no aliado (sem alvo: em você).", aim: "ally", range: 10, cooldown: 8, castTime: 1, manaCost: 20, heal: 35 }),
       ability({ id: "healing_circle", title: "Círculo de cura", description: "Cura você e os aliados em volta.", aim: "area_self", radius: 5, cooldown: 12, castTime: 0.8, manaCost: 25, heal: 25 }),

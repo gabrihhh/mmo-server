@@ -4,6 +4,7 @@ import { SAFE_ZONE_HALF } from "../src/combat/pvp.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { STARTING_STATS, addDeath, addKill, addMonsterXp, readStats, type PlayerStats } from "../src/progression/stats.js";
 import { Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
+import { keepAttacking } from "./helpers.js";
 
 /** Membro que guarda os contadores salvos (onStats) e quantas mortes viu. */
 class Member implements ZoneMember {
@@ -58,7 +59,7 @@ describe("contadores do perfil (stats)", () => {
     const zone = zoneWith([zombie(1)]);
     const a = new Member("a");
     zone.join(a, { x: 30, y: 0, z: 30, rotY: 0 }, LETHAL, new Map(), undefined, 0, undefined, undefined, undefined, { monsterXp: 5, kills: 2, deaths: 1 });
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     for (let i = 0; i < 30 && a.stats === null; i++) zone.tick();
     assert.deepStrictEqual(a.stats, { monsterXp: 25, kills: 2, deaths: 1 }, "20 de XP do zumbi nível 1 em cima do que já tinha");
     assert.deepStrictEqual(zone.attributes("a")?.stats, { monsterXp: 25, kills: 2, deaths: 1 });
@@ -70,7 +71,7 @@ describe("contadores do perfil (stats)", () => {
     const b = new Member("b");
     zone.join(a, { x: 30, y: 0, z: 30, rotY: 0 }, LETHAL, new Map(), undefined, 0, { level: 3, xp: 0, gold: 0 });
     zone.join(b, { x: 31, y: 0, z: 30, rotY: 0 }, UNARMED_ATTACK, new Map(), undefined, 0, { level: 3, xp: 0, gold: 0 });
-    zone.setAttackTarget("a", "b");
+    keepAttacking(zone, "a", "b");
     for (let i = 0; i < 10 && b.died === 0; i++) zone.tick();
     assert.deepStrictEqual(a.stats, { monsterXp: 0, kills: 1, deaths: 0 });
     assert.deepStrictEqual(b.stats, { monsterXp: 0, kills: 0, deaths: 1 });

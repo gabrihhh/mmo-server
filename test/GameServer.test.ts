@@ -420,17 +420,18 @@ describe("GameServer", () => {
       assert.strictEqual((await a.client.next("error")).data["code"], "chest_not_found");
     });
 
-    it("attack fixa o alvo (aparece em snapshot.me.target) e recusa alvo inexistente", async () => {
+    it("ataque simples livre ([JOGO-05]): cast com o id do soco vira cast_start instant; o antigo attack é recusado", async () => {
       const a: Player = await registered();
-      const players: unknown[] = await join(a);
-      assert.ok(players.length >= 1);
-      a.client.send("attack", { targetId: "nao-existe" });
-      assert.strictEqual((await a.client.next("error")).data["code"], "invalid_target");
+      await join(a);
       a.client.send("attack", { targetId: "dummy_2" });
+      assert.strictEqual((await a.client.next("error")).data["code"], "bad_message", "alvo fixo saiu (v43)");
+      a.client.send("cast", { abilityId: "punch", x: 0, z: -1 });
       const snap: ReceivedMessage = await a.client.nextMatching("snapshot", (m) => {
-        const me: unknown = m.data["me"];
-        return typeof me === "object" && me !== null && "target" in me && me.target === "dummy_2";
+        const events: unknown = m.data["events"];
+        return Array.isArray(events) && events.some((e) => typeof e === "object" && e !== null && "type" in e && e.type === "cast_start" && "instant" in e && e.instant === true);
       });
+      const me: unknown = snap.data["me"];
+      assert.ok(typeof me !== "object" || me === null || !("target" in me), "me sem alvo fixo");
       const npcs: unknown = snap.data["npcs"];
       // Só os NPCs perto (área de interesse, VIEW_RADIUS) vêm no snapshot.
       const near: number = (ZONE_CONFIGS[0]?.dummies ?? []).filter((d) => Math.hypot(d.x, d.z) <= VIEW_RADIUS + 4).length;

@@ -7,6 +7,7 @@ import { inventoryView } from "../src/items/view.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import type { Progress } from "../src/progression/level.js";
+import { keepAttacking, attackFor } from "./helpers.js";
 
 /** Membro falso: guarda o progresso salvo e os eventos do último snapshot. */
 class Member implements ZoneMember {
@@ -164,8 +165,7 @@ describe("ferreiro na zona e atributos no combate ([JOGO-16])", () => {
     const z = zone([blacksmith]);
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 1.5, rotY: 0 }, SWORD);
-    assert.strictEqual(z.setAttackTarget("a", "blacksmith"), "invalid_target");
-    for (let i = 0; i < 40; i++) z.tick();
+    attackFor(z, "a", "blacksmith", 40);
     assert.ok(!a.events.some((e) => e["type"] === "damage" && e["target"] === "blacksmith"));
   });
 
@@ -173,7 +173,7 @@ describe("ferreiro na zona e atributos no combate ([JOGO-16])", () => {
     const plain = zone([bag]);
     const a = new Member("a");
     plain.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
-    plain.setAttackTarget("a", "bag");
+    keepAttacking(plain, "a", "bag");
     for (let i = 0; i < 40 && !a.events.some((e) => e["type"] === "damage"); i++) plain.tick();
     const base: unknown = a.events.find((e) => e["type"] === "damage")?.["amount"];
     assert.ok(typeof base === "number" && base > 0);
@@ -187,7 +187,7 @@ describe("ferreiro na zona e atributos no combate ([JOGO-16])", () => {
       crit: 0.5,
       lifesteal: 0.5,
     });
-    strong.setAttackTarget("b", "bag");
+    keepAttacking(strong, "b", "bag");
     for (let i = 0; i < 40 && !b.events.some((e) => e["type"] === "damage"); i++) strong.tick();
     const hit = b.events.find((e) => e["type"] === "damage");
     assert.ok(hit !== undefined);

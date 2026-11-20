@@ -13,7 +13,8 @@ import {
 } from "../src/arena/match.js";
 import { PREP_SECONDS, ROUND_PAUSE_SECONDS, ROUND_SECONDS, type TeamIndex } from "../src/arena/rounds.js";
 import { TICK_RATE_HZ, constrainArena } from "../src/sim/movement.js";
-import { ARENA_BARRIER_GAP, Zone, type DeathInfo, type ZoneMember } from "../src/zones/Zone.js";
+import { ARENA_BARRIER_GAP, Zone, type DeathInfo, type SpawnPoint, type ZoneMember } from "../src/zones/Zone.js";
+import { canHit, strike } from "./helpers.js";
 
 const MAGE: ArenaBuild = { hand: "Mago", head: "Mago", chest: "Cavaleiro", feet: "Cavaleiro" };
 const HEALER: ArenaBuild = { hand: "Curandeiro", head: "Curandeiro", chest: "Curandeiro", feet: "Curandeiro" };
@@ -52,7 +53,7 @@ function run(match: ArenaMatch, seconds: number, keepAlive: readonly string[] = 
     if (i % (10 * TICK_RATE_HZ) === 0) {
       for (const id of keepAlive) {
         const enemy: string | undefined = match.playerIds().find((other) => match.teamOf(other) !== match.teamOf(id));
-        if (enemy !== undefined) match.zone.setAttackTarget(id, enemy);
+        if (enemy !== undefined) strike(match.zone, id, enemy);
       }
     }
     match.tick();
@@ -93,11 +94,20 @@ describe("Coliseu — arena na Zone", () => {
 
   it("aliado/inimigo só pelo time: o mesmo time não é alvo, o outro é", () => {
     const match = new ArenaMatch("t3", "2x2", [participant("a", 0), participant("h", 0, HEALER), participant("b", 1), participant("k", 1, HEALER)], new Hooks());
-    assert.strictEqual(match.zone.setAttackTarget("a", "h"), "invalid_target");
-    assert.strictEqual(match.zone.setAttackTarget("a", "b"), "ok");
-    // Ataque de cura do healer: só no próprio time.
-    assert.strictEqual(match.zone.setAttackTarget("h", "a"), "ok");
-    assert.strictEqual(match.zone.setAttackTarget("h", "b"), "invalid_target");
+    // Todos juntos no meio, sem barreira, round valendo (sem ninguém na linha de outro golpe).
+    const spawns: Map<string, SpawnPoint> = new Map([
+      ["a", { x: 0, y: 0, z: 0, rotY: 0 }],
+      ["h", { x: 0, y: 0, z: -2, rotY: 0 }],
+      ["b", { x: 2, y: 0, z: 0, rotY: 0 }],
+      ["k", { x: -2, y: 0, z: 3, rotY: 0 }],
+    ]);
+    match.zone.resetArenaRound(spawns);
+    match.zone.setArenaPhase(false, false);
+    assert.ok(!canHit(match.zone, "a", "h"), "mesmo time não é atingido");
+    assert.ok(canHit(match.zone, "a", "b"), "o outro time é");
+    // Raio de luz do healer: fere o outro time; no próprio time, cura (não tira vida).
+    assert.ok(canHit(match.zone, "h", "b"), "fere o inimigo");
+    assert.ok(!canHit(match.zone, "h", "a"), "não fere o aliado");
   });
 
   it("morrer na arena não tira nada nem chama a tela de morte, e não renasce sozinho", () => {

@@ -747,15 +747,6 @@ export class GameServer {
         // Item numa troca aberta: changeInventory avisa a troca (tradeBelongingsChanged), que tira ele da oferta.
         void this.changeInventory(session, (inventory) => destroyItem(inventory, message.data.uid));
         return;
-      case ClientMessageType.Attack:
-        if (session.zone === null || session.account === null) {
-          this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");
-          return;
-        }
-        if (session.zone.setAttackTarget(session.account.playerId, message.data.targetId) !== "ok") {
-          this.sendError(session, ErrorCode.InvalidTarget, "Esse alvo não pode ser atacado.");
-        }
-        return;
       case ClientMessageType.Cast: {
         if (session.zone === null || session.account === null) {
           this.sendError(session, ErrorCode.NotAuthenticated, "entre na zona antes");

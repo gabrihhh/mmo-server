@@ -15,6 +15,7 @@ import {
 import { SAFE_ZONE_HALF } from "../src/combat/pvp.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { Zone, type ZoneMember } from "../src/zones/Zone.js";
+import { canHit } from "./helpers.js";
 
 /** Host em memória: jogadores online com moedas; guarda mensagens, gravações e a tag que a zona recebeu. */
 function setup(online: string[] = ["a", "b", "c", "d"]): {
@@ -270,9 +271,9 @@ describe("guilda ([SOC-06])", () => {
     zone.setGuild("a", { id: "g", tag: "ORD" });
     zone.setGuild("b", { id: "g", tag: "ORD" });
     assert.ok(texts.some((t) => t.includes('"type":"player_guild"') && t.includes('"guildTag":"ORD"')));
-    assert.notStrictEqual(zone.setAttackTarget("a", "b"), "ok", "mesma guilda não é alvo");
+    assert.ok(!canHit(zone, "a", "b"), "mesma guilda não é atingida");
     zone.setGuild("b", null);
-    assert.strictEqual(zone.setAttackTarget("a", "b"), "ok", "saiu da guilda: PvP volta");
+    assert.ok(canHit(zone, "a", "b"), "saiu da guilda: PvP volta");
     texts.length = 0;
     zone.join(member("c"), { x: 0, y: 0, z: 0, rotY: 0 });
     assert.ok(texts.some((t) => t.includes('"type":"welcome"') === false && t.includes('"player_joined"')));

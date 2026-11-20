@@ -86,10 +86,22 @@ import {
  * A zona não conhece WebSocket, o que permite testá-la sem rede.
  */
 /**
- * Ticks depois do último passo em que o ataque simples ainda não começa um golpe (0,1 s; a 30 Hz, 3 ticks): o input
- * do joystick pode chegar com buracos de 1 tick sem o jogador ter parado de verdade.
+ * Ticks depois do último passo em que o NPC ainda não começa um golpe do ataque simples (0,1 s; a 30 Hz, 3 ticks):
+ * o zumbi que acabou de chegar ao alcance para antes de bater.
  */
 const ATTACK_MOVE_GRACE_TICKS: number = Math.max(2, Math.round(0.1 * TICK_RATE_HZ));
+
+/**
+ * Chave do ataque simples em {@link Combatant.readyTick}: tick em que o próximo golpe pode sair ([JOGO-05]). Jogador:
+ * fim do tempo de execução do golpe anterior. Monstro: intervalo (`cooldown`) entre o início de um golpe e o próximo.
+ */
+const ATTACK_SLOT = "attack";
+
+/**
+ * Folga (ticks) para aceitar o golpe do jogador um pouco antes do fim do anterior: o pedido pode chegar adiantado pela
+ * oscilação da rede (o cliente só manda quando o relógio dele acabou). Sem isso, toques no ritmo certo seriam recusados.
+ */
+const ATTACK_EARLY_TICKS: number = 2;
 
 /**
  * `ability` do evento `heal` do roubo de vida ([JOGO-16]): não é uma carta, o cliente só mostra o número verde.
@@ -532,9 +544,12 @@ interface Combatant {
   /** Redução de dano (0..1) e o tick em que acaba ([JOGO-09]); 0 = sem redução. */
   reduction: number;
   reductionUntilTick: number;
-  /** Ataque simples (jogador: da arma vestida; NPC brigão: da arma dele; os outros não atacam). */
+  /** Ataque simples (jogador: da arma vestida; NPC brigão: da arma dele; zumbi: golpe de monstro). */
   basicAttack: AbilityDef;
-  /** Alvo fixo do ataque simples (`null` = nenhum). */
+  /**
+   * NPC: quem ele está atacando agora (`null` = ninguém); o golpe sai na direção dele ({@link Zone.applyAttack}).
+   * Jogador: sempre `null` — o ataque simples é livre, por direção, sem alvo fixo ([JOGO-05]).
+   */
   attackTarget: string | null;
   /** Último tick em que andou de verdade (input ≥ {@link MIN_INPUT_LENGTH}); -Infinity = nunca (NPCs). */
   lastMoveTick: number;
@@ -637,7 +652,10 @@ interface DashMove {
   readonly untilTick: number;
 }
 
-/** Um lançamento em andamento ([JOGO-05], [JOGO-06]): golpe do ataque simples ou habilidade. */
+/**
+ * Um lançamento em andamento ([JOGO-05], [JOGO-06]): habilidade, ou golpe do ataque simples de MONSTRO (carregamento
+ * com aviso no chão). O golpe do jogador não é lançamento: sai na hora ({@link Zone.startBasicAttack}).
+ */
 interface Cast {
   readonly kind: "attack" | "ability";
   readonly ability: AbilityDef;
@@ -671,6 +689,9 @@ interface Projectile {
   /** Metros já percorridos (acaba em `ability.range`). */
   traveled: number;
 }
+
+/** Saída de {@link Zone.swingHits}: quem o golpe em leque acerta. */
+type SwingTargets = Entity[];
 
 /** Motivo de recusa de um `cast` (mesmos nomes dos códigos de erro do protocolo). */
 export type CastFailure =
@@ -734,9 +755,6 @@ interface ZoneDummy extends Combatant {
 
 type Entity = ZonePlayer | ZoneDummy;
 
-/** Resultado de {@link Zone.setAttackTarget}. */
-export type TargetResult = "ok" | "invalid_target";
-
 /** Limita `value` ao intervalo fechado [min, max]. */
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
@@ -746,7 +764,7 @@ const round1 = (value: number): number => Math.round(value * 10) / 10;
 /**
  * Uma zona do mundo: jogadores, bonecos e a simulação autoritativa deles ([INFRA-09], [JOGO-05]).
  *
- * O cliente NÃO diz onde está nem quanto dano deu: manda `input` (direção) e `attack` (alvo). A cada
+ * O cliente NÃO diz onde está nem quanto dano deu: manda `input` (direção) e `cast` (golpe livre ou carta). A cada
  * {@link tick} ({@link TICK_RATE_HZ} Hz) a zona: renasce quem já pode, aplica os inputs, executa os ataques em alcance,
  * regenera vida/mana e manda a cada jogador um `snapshot` com todos os estados, os eventos do tick
  * e os dados só dele (`me`, `ack`).
@@ -1320,7 +1338,6 @@ export class Zone {
    * Troca o ataque simples, as cartas, a aparência, a vida extra e os atributos de melhoria ([JOGO-16]) dos itens (o inventário mudou). A recarga de cada
    * POSIÇÃO de carta é mantida ({@link Combatant.readyTick}): a carta nova espera o que faltava da anterior. Aparência diferente vira o evento `look` no próximo snapshot (todos da zona veem a troca).
    * Vida máxima nova: a vida atual acompanha na MESMA proporção (tirar e vestir de novo não cura).
-   * Se o alvo fixo não serve mais para o ataque novo (ex.: aliado e agora é uma espada), ele é solto.
    */
   setLoadout(
     id: string,
@@ -1338,11 +1355,6 @@ export class Zone {
     player.bonusHp = bonusHp;
     player.effects = effects;
     this.applyPlayerStats(player);
-    const target: Entity | undefined = player.attackTarget === null ? undefined : this.entity(player.attackTarget);
-    if (target !== undefined && !this.validAttackTarget(player, basicAttack, target)) {
-      player.attackTarget = null;
-      if (player.cast?.kind === "attack") player.cast = null;
-    }
     if (look !== undefined && (!Zone.sameLook(player.look, look) || !Zone.sameLevels(player.lookLevels, lookLevels))) {
       player.look = look;
       player.lookLevels = lookLevels;
@@ -1351,14 +1363,17 @@ export class Zone {
   }
 
   /**
-   * Começa a lançar uma habilidade vestida ([JOGO-06]). Confere: vivo e sem outra habilidade em andamento,
+   * Começa a lançar uma habilidade vestida ([JOGO-06]) — ou, com o id do ataque simples da arma, dá um golpe livre
+   * ({@link startBasicAttack}, [JOGO-05]). Habilidade: confere vivo e sem outra habilidade em andamento,
    * vestida, disponível, recarga, mana e — mira "target" — alvo válido no alcance. Aceita: gasta a mana,
-   * começa a recarga, interrompe o golpe do ataque simples (o alvo fixo continua) e manda `cast_start`.
-   * O efeito sai no fim do lançamento ({@link tick}), se ainda couber no alcance.
+   * começa a recarga e manda `cast_start`. O efeito sai no fim do lançamento ({@link tick}), se ainda couber no alcance.
    */
   castAbility(id: string, request: CastData): CastResult {
-    // Investida/Disparada com seq: entram na fila de movimento e são validadas na vez delas ([JOGO-07]).
-    const queued: AbilityDef | undefined = this.players.get(id)?.abilities.get(request.abilityId);
+    // Investida/Disparada (e o golpe com passo das adagas) com seq: entram na fila de movimento e são validadas na vez
+    // delas ([JOGO-07]).
+    const player: ZonePlayer | undefined = this.players.get(id);
+    const queued: AbilityDef | undefined =
+      player === undefined ? undefined : request.abilityId === player.basicAttack.id ? player.basicAttack : player.abilities.get(request.abilityId);
     if (request.seq !== null && queued !== undefined && isMovementAbility(queued)) {
       this.enqueue(id, { kind: "cast", seq: request.seq, request });
       return { ok: true };
@@ -1372,6 +1387,7 @@ export class Zone {
     if (player === undefined || player.dead) return Zone.refuse("busy", "Você não pode agir agora.");
     // Arena na preparação/pausa ([JOGO-28]): cartas travadas.
     if (this.arenaLocked) return Zone.refuse("busy", "Espere o round começar.");
+    if (request.abilityId === player.basicAttack.id) return this.startBasicAttack(player, request);
     if (player.cast !== null && player.cast.kind === "ability") return Zone.refuse("busy", "Já está lançando uma habilidade.");
     const ability: AbilityDef | undefined = player.abilities.get(request.abilityId);
     if (ability === undefined) return Zone.refuse("ability_not_equipped", "Essa habilidade não está vestida.");
@@ -1444,17 +1460,24 @@ export class Zone {
    * mira e manda `cast_start` com o visual (ponto, raio e mira do aviso no chão; soltura do tiro). Mira "target"/"ally":
    * `targetId`; "direction": (aimX, aimZ) unitário; "area": ponto no chão; outras: posição de quem lança.
    */
-  private beginAbilityCast(caster: Entity, ability: AbilityDef, targetId: string | null, aimX: number, aimZ: number): Cast {
+  private beginAbilityCast(
+    caster: Entity,
+    ability: AbilityDef,
+    targetId: string | null,
+    aimX: number,
+    aimZ: number,
+    kind: Cast["kind"] = "ability",
+  ): Cast {
     const castTicks: number = ability.castTime > 0 ? secondsToTicks(ability.castTime) : 0;
     const endTick: number = this.currentTick + castTicks;
-    const cast: Cast = { kind: "ability", ability, targetId, aimX, aimZ, endTick, releaseTick: Zone.releaseTick(ability, endTick), inRangeAtRelease: null };
+    const cast: Cast = { kind, ability, targetId, aimX, aimZ, endTick, releaseTick: Zone.releaseTick(ability, endTick), inRangeAtRelease: null };
     caster.cast = cast;
     this.faceCast(caster, cast);
-    const visual: { x?: number; z?: number; radius?: number; aim?: string } =
+    const visual: { x?: number; z?: number; radius?: number; aim?: string; arc?: number } =
       ability.aim === "area"
         ? { x: aimX, z: aimZ, radius: ability.radius }
         : ability.aim === "direction"
-          ? { x: caster.state.x + aimX * ability.range, z: caster.state.z + aimZ * ability.range, radius: ability.radius }
+          ? Zone.directionVisual(caster, ability, aimX, aimZ)
           : ability.aim === "area_self"
             ? { radius: ability.radius }
             : {};
@@ -1480,19 +1503,10 @@ export class Zone {
     const visual: { x?: number; z?: number } = {};
     let duration: number = 0;
     if (ability.dashDistance > 0) {
-      const steps: number = dashSteps(ability);
-      player.dash = {
-        dirX,
-        dirZ,
-        stepDistance: ability.dashDistance / steps,
-        stepsLeft: steps,
-        untilTick: this.currentTick + steps + TICK_RATE_HZ,
-      };
-      // Onde a Investida termina (se nada mudar): só para efeitos visuais.
-      const end: MoveState = dashMovement(player.state, dirX, dirZ, ability.dashDistance, this.config.halfSize);
+      const end: MoveState = this.startDash(player, ability, dirX, dirZ);
       visual.x = end.x;
       visual.z = end.z;
-      duration = steps * TICK_SECONDS;
+      duration = dashSteps(ability) * TICK_SECONDS;
     }
     if (ability.speedMultiplier > 0) {
       player.boost = {
@@ -1505,25 +1519,112 @@ export class Zone {
   }
 
   /**
-   * Fixa o alvo do ataque simples de `id` (ou limpa com `null`). Recusa alvo inexistente, morto,
-   * ele mesmo, ou outro jogador numa zona sem PvP. Ataque de cura (mira "ally", [JOGO-09]): o alvo é outro jogador
-   * vivo. O ataque acontece nos ticks, quando em alcance.
+   * Começa o deslocamento da Investida (ou do passo das adagas): os próximos `round(dashSeconds × tick)` passos
+   * percorrem `dashDistance` na direção unitária (dirX, dirZ) ([JOGO-07]). Devolve onde termina, se nada mudar.
    */
-  setAttackTarget(id: string, targetId: string | null): TargetResult {
-    const player: ZonePlayer | undefined = this.players.get(id);
-    if (player === undefined) return "invalid_target";
-    if (targetId === null) {
-      player.attackTarget = null;
-      if (player.cast?.kind === "attack") player.cast = null;
-      return "ok";
-    }
-    const target: Entity | undefined = this.entity(targetId);
-    if (target === undefined || player.dead || !this.validAttackTarget(player, player.basicAttack, target)) return "invalid_target";
-    // Trocar de alvo cancela o golpe do ataque simples em andamento (habilidade não).
-    if (player.cast !== null && player.cast.kind === "attack" && player.cast.targetId !== targetId) player.cast = null;
-    player.attackTarget = targetId;
+  private startDash(player: ZonePlayer, ability: AbilityDef, dirX: number, dirZ: number): MoveState {
+    const steps: number = dashSteps(ability);
+    player.dash = {
+      dirX,
+      dirZ,
+      stepDistance: ability.dashDistance / steps,
+      stepsLeft: steps,
+      untilTick: this.currentTick + steps + TICK_RATE_HZ,
+    };
+    return this.constrain(player, dashMovement(player.state, dirX, dirZ, ability.dashDistance, this.config.halfSize));
+  }
+
+  /**
+   * Golpe do ataque simples do jogador ([JOGO-05]): livre, na direção pedida (sem direção: para a frente), SEM
+   * carregamento — o efeito sai na hora ({@link swing}) e o resto é o tempo de execução (`castTime`, encurtado pelo
+   * atributo Velocidade de ataque, [JOGO-16]). Recusa (`busy`) se o golpe anterior ainda está sendo executado (com
+   * {@link ATTACK_EARLY_TICKS} de folga) ou se há uma habilidade carregando. Dá para andar durante a execução; uma
+   * carta pode ser lançada durante ela. Golpe com passo (adagas): anda `dashDistance` e o golpe vale de onde o passo
+   * termina. Manda `cast_start` com `instant` (o cliente anima e mostra o clarão; sem aviso no chão).
+   */
+  private startBasicAttack(player: ZonePlayer, request: CastData): CastResult {
+    const attack: AbilityDef = player.basicAttack;
+    if (player.cast !== null && player.cast.kind === "ability") return Zone.refuse("busy", "Termine a habilidade antes de atacar.");
+    const ready: number = player.readyTick.get(ATTACK_SLOT) ?? 0;
+    if (this.currentTick + ATTACK_EARLY_TICKS < ready) return Zone.refuse("busy", "O golpe anterior ainda não acabou.");
+    const length: number = Math.sqrt((request.x ?? 0) ** 2 + (request.z ?? 0) ** 2);
+    const dirX: number = length > 1e-6 ? (request.x ?? 0) / length : -Math.sin(player.state.rotY);
+    const dirZ: number = length > 1e-6 ? (request.z ?? 0) / length : -Math.cos(player.state.rotY);
+    const ticks: number = Math.max(1, secondsToTicks(attack.castTime / (1 + player.effects.attackSpeed)));
+    // Aceito adiantado (folga): o próximo conta do fim do anterior, para a folga não encurtar o ritmo de quem toca sem
+    // parar (o dano por segundo fica o do catálogo).
+    player.readyTick.set(ATTACK_SLOT, Math.max(this.currentTick, ready) + ticks);
     this.lastActionTick.set(player.id, this.currentTick);
-    return "ok";
+    player.state = { ...player.state, rotY: Math.atan2(-dirX, -dirZ) };
+    const origin: MoveState = attack.dashDistance > 0 ? this.startDash(player, attack, dirX, dirZ) : player.state;
+    this.events.push({
+      type: "cast_start",
+      source: player.id,
+      ability: attack.id,
+      target: "",
+      duration: ticks * TICK_SECONDS,
+      instant: true,
+      ...Zone.directionVisual(player, attack, dirX, dirZ),
+    });
+    this.swing(player, attack, origin.x, origin.z, dirX, dirZ);
+    return { ok: true };
+  }
+
+  /**
+   * Efeito de um golpe por direção (ataque simples do jogador e do NPC brigão, na hora; golpe de monstro, no fim do
+   * carregamento): projétil → sai de quem bate; leque (`arc`) → dano em quem está dentro ({@link swingHits}), a partir de
+   * (originX, originZ); linha → primeiro inimigo na faixa (via {@link resolveAbility}). Leque sem ninguém: nada (o golpe
+   * no ar não é "Errou", só o monstro avisa `miss`).
+   */
+  private swing(source: Entity, ability: AbilityDef, originX: number, originZ: number, dirX: number, dirZ: number): void {
+    if (ability.projectileSpeed > 0) {
+      this.launchProjectile(source, ability, dirX, dirZ);
+      return;
+    }
+    const hits: SwingTargets = this.swingHits(source, ability, originX, originZ, dirX, dirZ);
+    for (const target of hits) this.damage(source, target, ability.damage, ability.id);
+    if (hits.length === 0 && source.kind === "dummy") this.events.push({ type: "miss", source: source.id, target: "", ability: ability.id });
+  }
+
+  /**
+   * Inimigos de `source` dentro do leque de `ability` ([JOGO-05]): a até `range` + corpo do alvo (+ o quanto o corpo de
+   * quem bate passa do normal: chefe) de (originX, originZ) e com o corpo encostando no ângulo de `arc` (total)
+   * centrado em (dirX, dirZ). Do mais perto ao mais longe, no máximo `maxTargets` (0 = todos).
+   */
+  private swingHits(source: Entity, ability: AbilityDef, originX: number, originZ: number, dirX: number, dirZ: number): SwingTargets {
+    const found: { entity: Entity; distance: number }[] = [];
+    const half: number = ability.arc / 2;
+    for (const enemy of this.enemiesOf(source)) {
+      const ex: number = enemy.state.x - originX;
+      const ez: number = enemy.state.z - originZ;
+      const distance: number = Math.sqrt(ex * ex + ez * ez);
+      const body: number = Zone.bodyRadius(enemy);
+      if (distance > ability.range + body + Zone.extraBody(source)) continue;
+      if (distance > body) {
+        // Ângulo até o centro do alvo, menos o "pedaço" que o corpo dele ocupa visto de quem bate.
+        const angle: number = Math.acos(clamp((ex * dirX + ez * dirZ) / distance, -1, 1));
+        if (angle - Math.asin(Math.min(1, body / distance)) > half) continue;
+      }
+      found.push({ entity: enemy, distance });
+    }
+    found.sort((a, b) => a.distance - b.distance);
+    const limit: number = ability.maxTargets > 0 ? ability.maxTargets : found.length;
+    return found.slice(0, limit).map((entry) => entry.entity);
+  }
+
+  /**
+   * Campos visuais do `cast_start` de uma mira "direction" com direção unitária (dirX, dirZ): ponto no fim do alcance
+   * e o raio do aviso — meia-largura da faixa, ou, no leque, o alcance (com `arc`).
+   */
+  private static directionVisual(caster: Entity, ability: AbilityDef, dirX: number, dirZ: number): { x: number; z: number; radius: number; aim: string; arc?: number } {
+    const reach: number = ability.range + Zone.extraBody(caster);
+    return {
+      x: caster.state.x + dirX * reach,
+      z: caster.state.z + dirZ * reach,
+      radius: ability.arc > 0 ? reach : ability.radius,
+      aim: "direction",
+      ...(ability.arc > 0 ? { arc: ability.arc } : {}),
+    };
   }
 
   /**
@@ -1532,6 +1633,17 @@ export class Zone {
    */
   threatOf(npcId: string): ReadonlyMap<string, number> | undefined {
     return this.dummies.get(npcId)?.threat.snapshot();
+  }
+
+  /** Id do ataque simples vestido por `playerId` (o `abilityId` do golpe no `cast`), ou `undefined`. Testes/depuração. */
+  basicAttackId(playerId: string): string | undefined {
+    return this.players.get(playerId)?.basicAttack.id;
+  }
+
+  /** Posição (x, z) em metros de um jogador ou NPC da zona, ou `undefined`. Testes/depuração. */
+  positionOf(id: string): { readonly x: number; readonly z: number } | undefined {
+    const entity: Entity | undefined = this.entity(id);
+    return entity === undefined ? undefined : { x: entity.state.x, z: entity.state.z };
   }
 
   /** Alvo atual do NPC `npcId` (`null` = nenhum; `undefined` = NPC não existe). Testes/depuração ([JOGO-14]). */
@@ -1646,7 +1758,8 @@ export class Zone {
    * Um passo de movimento:
    * - Investida em andamento: anda o trecho dela na direção dela (o joystick é ignorado; não gasta Disparada);
    * - senão, anda pelo input (com Disparada, velocidade multiplicada e gasta um passo do bônus). Andar de verdade
-   *   CANCELA o que estiver em lançamento ({@link cancelCast}): habilidade ou golpe do ataque simples.
+   *   CANCELA a habilidade em lançamento ({@link cancelCast}). O ataque simples não é cancelado: dá para andar e bater
+   *   ([JOGO-05]).
    */
   private step(player: ZonePlayer, input: InputData): void {
     const dash: DashMove | null = player.dash;
@@ -1683,9 +1796,8 @@ export class Zone {
   }
 
   /**
-   * Cancela o lançamento em andamento (o jogador andou, [JOGO-05]/[JOGO-06]) e avisa todos com `cast_cancel` (param a
-   * animação, o brilho e o aviso no chão). Habilidade: sem efeito, devolve a mana e zera a recarga (pode lançar de
-   * novo na hora). Golpe do ataque simples: sem dano; o alvo fixo continua e o golpe recomeça quando parar.
+   * Cancela a habilidade em lançamento (o jogador andou, [JOGO-06]) e avisa todos com `cast_cancel` (param a
+   * animação, o brilho e o aviso no chão): sem efeito, devolve a mana e zera a recarga (pode lançar de novo na hora).
    */
   private cancelCast(player: ZonePlayer, cast: Cast): void {
     player.cast = null;
@@ -1714,17 +1826,16 @@ export class Zone {
   }
 
   /**
-   * Lançamentos, por jogador:
-   * - habilidade em andamento: fica virado; no fim, resolve o efeito ({@link resolveAbility});
-   * - ataque simples ([JOGO-05]): sem lançamento em andamento e com o alvo fixo no alcance (+ folga),
-   *   começa um golpe (`cast_start`); no fim acerta se o alvo ainda estiver vivo e no alcance, senão erra.
-   *   O golpe seguinte pode começar no mesmo tick: com lançamento de 1 s, bate 1 vez por segundo.
+   * Lançamentos, por jogador e NPC:
+   * - em andamento (habilidade ou golpe de monstro): fica virado; no fim, resolve o efeito ({@link resolveAbility});
+   * - ataque simples dos NPCs ({@link applyAttack}). O do jogador não passa por aqui: sai na hora do pedido
+   *   ({@link startBasicAttack}).
    */
   private applyCasts(): void {
     for (const caster of this.entities()) {
       if (caster.dead) continue;
       const cast: Cast | null = caster.cast;
-      if (cast !== null && cast.kind === "ability") {
+      if (cast !== null) {
         this.faceCast(caster, cast);
         this.markRelease(caster, cast);
         if (this.currentTick < cast.endTick) continue;
@@ -1859,16 +1970,10 @@ export class Zone {
   }
 
   /**
-   * Troca o alvo do NPC. Mudou de alvo: o golpe do ataque simples em andamento contra o anterior é cancelado
-   * (`cast_cancel`), como quando o jogador troca de alvo; habilidade em andamento continua.
+   * Troca o alvo do NPC. O golpe que já está carregando continua: ele é por direção (aviso no chão), não segue o alvo.
    */
   private setNpcTarget(npc: ZoneDummy, targetId: string | null): void {
-    if (npc.attackTarget === targetId) return;
     npc.attackTarget = targetId;
-    if (npc.cast !== null && npc.cast.kind === "attack" && npc.cast.targetId !== targetId) {
-      this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
-      npc.cast = null;
-    }
   }
 
   /** Esvazia a tabela de ameaça e solta a provocação do monstro ([JOGO-14]). */
@@ -2157,63 +2262,59 @@ export class Zone {
         nearestDistance = distance;
       }
     }
-    if (nearest === null && npc.cast?.kind === "attack") {
-      // Ficou sem ninguém no meio do golpe: cancela (o cliente para a animação), como quando o jogador anda.
-      this.events.push({ type: "cast_cancel", source: npc.id, ability: npc.cast.ability.id });
-      npc.cast = null;
-    }
     npc.attackTarget = nearest?.id ?? null;
   }
 
-  private applyAttack(player: Entity): void {
-    // Arena na preparação/pausa ([JOGO-28]): ataque simples travado (o alvo fica; o golpe começa quando destravar).
-    if (this.arenaLocked) {
-      if (player.cast?.kind === "attack") player.cast = null;
+  /**
+   * Ataque simples dos NPCs ([JOGO-05]), a cada tick: com alvo vivo e inimigo no alcance, parado há pelo menos
+   * {@link ATTACK_MOVE_GRACE_TICKS}, sem nada carregando e com o golpe pronto ({@link ATTACK_SLOT}), bate NA DIREÇÃO do
+   * alvo. Golpe de monstro (`MONSTER_ABILITIES`): carrega `castTime` com aviso no chão (dá para sair) e resolve no fim;
+   * o próximo pode começar `cooldown` depois do início. NPC brigão (arma de jogador): sai na hora, como o do jogador.
+   * Jogador não passa por aqui: o golpe dele é pedido ({@link startBasicAttack}).
+   */
+  private applyAttack(entity: Entity): void {
+    if (entity.kind !== "dummy" || entity.dead || this.arenaLocked) return;
+    const npc: ZoneDummy = entity;
+    const targetId: string | null = npc.attackTarget;
+    if (targetId === null) return;
+    const target: Entity | undefined = this.entity(targetId);
+    if (target === undefined || !this.isEnemy(npc, target)) {
+      npc.attackTarget = null;
       return;
     }
-    if (player.dead || player.attackTarget === null) {
-      // Golpe órfão (o alvo saiu/morreu e já foi solto): não fica "golpeando" o nada.
-      if (player.cast?.kind === "attack") player.cast = null;
+    if (npc.cast !== null || this.currentTick - npc.lastMoveTick <= ATTACK_MOVE_GRACE_TICKS) return;
+    const attack: AbilityDef = npc.basicAttack;
+    if (!Zone.inRange(npc, target, attack.range) || this.currentTick < (npc.readyTick.get(ATTACK_SLOT) ?? 0)) return;
+    const dx: number = target.state.x - npc.state.x;
+    const dz: number = target.state.z - npc.state.z;
+    const length: number = Math.sqrt(dx * dx + dz * dz);
+    const dirX: number = length > 1e-6 ? dx / length : -Math.sin(npc.state.rotY);
+    const dirZ: number = length > 1e-6 ? dz / length : -Math.cos(npc.state.rotY);
+    if (MONSTER_ABILITIES[attack.id] === attack) {
+      npc.readyTick.set(ATTACK_SLOT, this.currentTick + secondsToTicks(Math.max(attack.cooldown, attack.castTime)));
+      this.beginAbilityCast(npc, attack, null, dirX, dirZ, "attack");
       return;
     }
-    const target: Entity | undefined = this.entity(player.attackTarget);
-    if (target === undefined || target.dead || !this.validAttackTarget(player, player.basicAttack, target)) {
-      player.attackTarget = null;
-      if (player.cast?.kind === "attack") player.cast = null;
-      return;
-    }
-    const cast: Cast | null = player.cast;
-    if (cast !== null && cast.kind === "attack") {
-      Zone.face(player, target);
-      this.markRelease(player, cast);
-      if (this.currentTick < cast.endTick) return;
-      player.cast = null;
-      if (cast.inRangeAtRelease ?? Zone.inRange(player, target, cast.ability.range)) {
-        if (cast.ability.aim === "ally") this.support(player, target, cast.ability);
-        else this.damage(player, target, cast.ability.damage, cast.ability.id);
-      }
-      else this.events.push({ type: "miss", source: player.id, target: target.id, ability: cast.ability.id });
-    }
-    // O golpe que acabou de acertar pode ter matado o alvo (a morte solta o alvo de todos): sem golpe novo no corpo.
-    if (player.cast !== null || target.dead || player.attackTarget === null) return;
-    // Andando (ou acabou de andar) não começa golpe: senão cada passo cancelaria e recomeçaria o ataque.
-    if (this.currentTick - player.lastMoveTick <= ATTACK_MOVE_GRACE_TICKS) return;
-    const attack: AbilityDef = player.basicAttack;
-    if (!Zone.inRange(player, target, attack.range)) return;
-    // Atributo Velocidade de ataque ([JOGO-16], só jogador): o golpe (e a soltura do tiro) fica mais curto.
-    const speed: number = 1 + (player.kind === "player" ? player.effects.attackSpeed : 0);
-    const duration: number = secondsToTicks(attack.castTime / speed);
-    const endTick: number = this.currentTick + duration;
-    const releaseTick: number = attack.releaseTime > 0 ? endTick - secondsToTicks(attack.releaseTime / speed) : endTick;
-    player.cast = { kind: "attack", ability: attack, targetId: target.id, aimX: 0, aimZ: 0, endTick, releaseTick, inRangeAtRelease: null };
-    Zone.face(player, target);
-    this.events.push({ type: "cast_start", source: player.id, ability: attack.id, target: target.id, duration: duration * TICK_SECONDS, ...Zone.releaseField(player.cast) });
+    const ticks: number = Math.max(1, secondsToTicks(attack.castTime));
+    npc.readyTick.set(ATTACK_SLOT, this.currentTick + ticks);
+    npc.state = { ...npc.state, rotY: Math.atan2(-dirX, -dirZ) };
+    this.events.push({
+      type: "cast_start",
+      source: npc.id,
+      ability: attack.id,
+      target: "",
+      duration: ticks * TICK_SECONDS,
+      instant: true,
+      ...Zone.directionVisual(npc, attack, dirX, dirZ),
+    });
+    this.swing(npc, attack, npc.state.x, npc.state.z, dirX, dirZ);
   }
 
   /**
    * Efeito de uma habilidade no fim do lançamento ([JOGO-06]), com a posição de quem lançou AGORA:
    * - target: dano se o alvo ainda estiver vivo e no alcance; senão erra;
-   * - direction: dano no PRIMEIRO inimigo na linha (alcance × largura); ninguém = erra;
+   * - direction: projétil; leque (`arc`, golpe de monstro: dano em todos dentro, {@link swing}); ou dano no PRIMEIRO
+   *   inimigo na linha (alcance × largura); ninguém = erra;
    * - area: dano em todos no círculo do ponto; ponto fora do alcance (você se afastou) = erra;
    * - area_self: dano em todos ao redor (e provoca os monstros em volta, se `tauntSeconds`);
    * - self: cura e/ou escudo em quem lançou.
@@ -2231,8 +2332,8 @@ export class Zone {
         return;
       }
       case "direction": {
-        if (ability.projectileSpeed > 0) {
-          this.launchProjectile(player, ability, cast.aimX, cast.aimZ);
+        if (ability.projectileSpeed > 0 || ability.arc > 0) {
+          this.swing(player, ability, player.state.x, player.state.z, cast.aimX, cast.aimZ);
           return;
         }
         let best: Entity | null = null;
@@ -2330,7 +2431,9 @@ export class Zone {
 
   /**
    * Anda cada projétil `speed × tick` (sem passar do alcance) e confere quem ele cruzou NESTE trecho: acerta o
-   * primeiro inimigo cujo corpo (+ raio do projétil) encosta no caminho. Acertou ou chegou ao fim: some.
+   * primeiro inimigo cujo corpo (+ raio do projétil) encosta no caminho. Projétil que cura (`heal` > 0, raio de luz
+   * do Curandeiro, [JOGO-05]): também para no primeiro ALIADO (não inimigo, nunca quem lançou) e cura ele; no
+   * inimigo, dá o dano. Acertou ou chegou ao fim: some.
    */
   private moveProjectiles(): void {
     const flying: Projectile[] = [];
@@ -2339,7 +2442,7 @@ export class Zone {
       const step: number = Math.min(ability.projectileSpeed * TICK_SECONDS, ability.range - projectile.traveled);
       let hit: Entity | null = null;
       let hitAlong: number = Infinity;
-      for (const enemy of this.enemiesOf(projectile.source)) {
+      for (const enemy of this.projectileTargets(projectile.source, ability)) {
         const reach: number = ability.radius + Zone.bodyRadius(enemy);
         const ex: number = enemy.state.x - projectile.x;
         const ez: number = enemy.state.z - projectile.z;
@@ -2361,7 +2464,8 @@ export class Zone {
         const z: number = projectile.z + projectile.dirZ * hitAlong;
         this.events.push({ type: "projectile_end", id: projectile.id, x, z });
         this.events.push({ type: "impact", source: projectile.source.id, ability: ability.id, x, z, radius: ability.radius });
-        this.damage(projectile.source, hit, ability.damage, ability.id);
+        if (this.isEnemy(projectile.source, hit)) this.damage(projectile.source, hit, ability.damage, ability.id);
+        else this.support(projectile.source, hit, ability);
         continue;
       }
       projectile.x += projectile.dirX * step;
@@ -2477,13 +2581,10 @@ export class Zone {
     return target.kind === "player" || target.behavior.kind === "punchingBag";
   }
 
-  /**
-   * `true` se `target` serve de alvo fixo para o ataque simples `attack`: inimigo (dano) ou, no ataque de cura
-   * (mira "ally"), outro jogador vivo (você mesmo não: o alvo fixo é sempre outro).
-   */
-  private validAttackTarget(player: Entity, attack: AbilityDef, target: Entity): boolean {
-    if (attack.aim === "ally") return target.id !== player.id && this.isAlly(player, target);
-    return this.isEnemy(player, target);
+  /** Quem o projétil de `ability` pode atingir: inimigos e, se ele cura, os aliados (menos quem lançou). */
+  private projectileTargets(source: Entity, ability: AbilityDef): Entity[] {
+    if (ability.heal <= 0) return this.enemiesOf(source);
+    return this.entities().filter((entity) => entity.id !== source.id && (this.isEnemy(source, entity) || this.isAlly(source, entity)));
   }
 
   private enemiesOf(player: Entity): Entity[] {
@@ -2673,14 +2774,9 @@ export class Zone {
     } else {
       Zone.resetThreat(target);
     }
-    // Quem atacava o morto solta o alvo, e o golpe do ataque simples em andamento contra ele é cancelado (senão o
-    // personagem ficava virado para o corpo, "golpeando", e o ataque travava até trocar de alvo).
+    // NPCs que atacavam o morto soltam o alvo (o golpe que já carregava é por direção e termina sozinho).
     for (const entity of this.entities()) {
       if (entity.attackTarget === target.id) entity.attackTarget = null;
-      if (entity.cast?.kind === "attack" && entity.cast.targetId === target.id) {
-        this.events.push({ type: "cast_cancel", source: entity.id, ability: entity.cast.ability.id });
-        entity.cast = null;
-      }
     }
     this.events.push({ type: "death", id: target.id, killer: source.id });
     // Monstro morto: XP inteira + bônus de grupo (+10% por jogador a mais) para cada jogador que participou da luta
@@ -3209,7 +3305,6 @@ export class Zone {
       maxMana: player.maxMana,
       // Arena ([JOGO-28]): morto não renasce no round (tick infinito) → 0, não Infinity (vira null no JSON).
       respawnIn: player.dead && Number.isFinite(player.respawnTick) ? round1(Math.max(0, player.respawnTick - this.currentTick) * TICK_SECONDS) : 0,
-      target: player.attackTarget,
       casting:
         player.cast === null
           ? null
@@ -3238,9 +3333,10 @@ export class Zone {
   }
 
   /**
-   * Quem [viewer] vê neste tick ([INFRA-11]): ele mesmo, o alvo dele e quem está a até {@link VIEW_RADIUS} (procurado
+   * Quem [viewer] vê neste tick ([INFRA-11]): ele mesmo e quem está a até {@link VIEW_RADIUS} (procurado
    * só nas 9 células da [grid] em volta); na multidão, os {@link MAX_VIEW_PLAYERS} jogadores e {@link MAX_VIEW_NPCS}
-   * NPCs mais perto (ele, o alvo e os membros do grupo no raio entram sempre, sem contar no limite).
+   * NPCs mais perto (ele e os membros do grupo no raio entram sempre, sem contar no limite). Não há mais alvo fixo
+   * para trazer de longe: o ataque simples é por direção ([JOGO-05]).
    */
   private selectView(viewer: ZonePlayer, grid: SpatialGrid): { players: Entity[]; npcs: Entity[] } {
     const group: readonly string[] = this.groups.membersOf(viewer.id);
@@ -3259,7 +3355,7 @@ export class Zone {
           const cell: GridCell | undefined = grid.get(Zone.cellKey(cx + dx, cz + dz));
           if (cell === undefined) continue;
           for (const entity of cell[kind]) {
-            if (entity.id === viewer.id || entity.id === viewer.attackTarget) continue;
+            if (entity.id === viewer.id) continue;
             const ex: number = entity.state.x - vx;
             const ez: number = entity.state.z - vz;
             const distanceSq: number = ex * ex + ez * ez;
@@ -3272,12 +3368,8 @@ export class Zone {
           }
         }
       }
-      // Ele mesmo e o alvo entram sempre, mesmo longe (o alvo pode estar fora das 9 células).
-      for (const id of [viewer.id, viewer.attackTarget]) {
-        if (id === null) continue;
-        const entity: Entity | undefined = kind === "players" ? this.players.get(id) : this.dummies.get(id);
-        if (entity !== undefined && !always.includes(entity)) always.push(entity);
-      }
+      // Ele mesmo entra sempre.
+      if (kind === "players" && !always.includes(viewer)) always.push(viewer);
       if (near.length <= max) {
         for (const entity of near) always.push(entity);
         return always;

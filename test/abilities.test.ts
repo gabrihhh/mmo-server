@@ -16,7 +16,7 @@ import {
 import { DUMMY_MAX_HP, PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import { TICK_RATE_HZ, quantize } from "../src/sim/movement.js";
 import type { CastData } from "../src/net/protocol.js";
-import { SnapshotView } from "./helpers.js";
+import { SnapshotView, attackFor, strike } from "./helpers.js";
 
 /** Membro falso que guarda os eventos e o último snapshot. */
 class Member implements ZoneMember {
@@ -160,22 +160,26 @@ describe("habilidades (cast)", () => {
     assert.deepStrictEqual(z.castAbility("a", cast("starfall", { x: 0, z: -5 })), { ok: true }, "sem recarga");
   });
 
-  it("andar cancela o golpe do ataque simples (sem dano) e não começa outro andando; parado, volta a atacar", () => {
+  it("andar NÃO cancela o ataque simples ([JOGO-05]): golpes saem e acertam andando", () => {
     const { z, a } = setup({ x: 0, z: -1 });
-    assert.strictEqual(z.setAttackTarget("a", "dummy"), "ok");
-    z.tick();
-    assert.ok(a.events.some((e) => e["type"] === "cast_start"), "golpe começou");
     let seq = 1;
     for (let i = 0; i < 30; i++) {
       z.queueInput("a", { seq: seq++, x: i % 2 === 0 ? 0.05 : -0.05, z: 0 }); // vai e volta: continua no alcance
+      strike(z, "a", "dummy");
       z.tick();
     }
-    assert.ok(a.events.some((e) => e["type"] === "cast_cancel"), "cancelou ao andar");
-    const startsWhileWalking: number = a.events.filter((e) => e["type"] === "cast_start").length;
-    assert.strictEqual(startsWhileWalking, 1, "andando não recomeça o golpe");
-    assert.ok(!a.events.some((e) => e["type"] === "damage"), "golpe cancelado não dá dano");
-    for (let i = 0; i < 40; i++) z.tick();
-    assert.ok(a.events.filter((e) => e["type"] === "cast_start").length > 1, "parado, voltou a atacar");
+    assert.ok(!a.events.some((e) => e["type"] === "cast_cancel"), "nada cancelado");
+    assert.ok(a.events.filter((e) => e["type"] === "damage" && e["ability"] === UNARMED_ATTACK.id).length > 1, "acertou andando");
+  });
+
+  it("habilidade carregando impede o golpe; o golpe não impede lançar uma carta", () => {
+    const { z } = setup({ x: 0, z: -1 });
+    assert.deepStrictEqual(z.castAbility("a", cast("starfall", { x: 0, z: -5 })), { ok: true });
+    const refused = strike(z, "a", "dummy");
+    assert.ok(!refused.ok && refused.reason === "busy", "carregando a carta: golpe recusado");
+    const other = setup({ x: 0, z: -1 });
+    assert.deepStrictEqual(strike(other.z, "a", "dummy"), { ok: true });
+    assert.deepStrictEqual(other.z.castAbility("a", cast("starfall", { x: 0, z: -5 })), { ok: true }, "carta durante a execução");
   });
 
   it("recusas: não vestida, alvo inválido, fora de alcance, sem mana", () => {
@@ -266,14 +270,12 @@ describe("habilidades (cast)", () => {
     finish(zone, shield);
     assert.strictEqual(zone.getSnapshot("a")?.shield, shield.shield);
 
-    zone.setAttackTarget("b", "a");
-    // Golpe de 0,05 s: sai em poucos ticks (quantos depende da taxa de ticks).
-    for (let i = 0; i < 5 && !a.events.some((e) => e["type"] === "damage" && e["target"] === "a"); i++) zone.tick();
+    strike(zone, "b", "a");
+    zone.tick();
     const hit = a.events.find((e) => e["type"] === "damage" && e["target"] === "a");
     assert.ok(hit, "levou o golpe");
     assert.strictEqual(hit["absorbed"], shield.shield);
     assert.strictEqual(hit["amount"], 50 - shield.shield);
-    zone.setAttackTarget("b", null);
 
     const heal: AbilityDef = def("ranger_hood", "bandage");
     const before: number = zone.getSnapshot("a")?.hp ?? NaN;
@@ -371,9 +373,7 @@ describe("habilidades (cast)", () => {
     const { z, a } = pair({ x: 0, z: -1 });
     const heal: AbilityDef = def("healer_tome", "greater_heal");
     // b apanha de a (PvP) para ter vida a recuperar.
-    z.setAttackTarget("a", "b");
-    for (let i = 0; i < 40; i++) z.tick();
-    z.setAttackTarget("a", null);
+    attackFor(z, "a", "b", 40);
     const hurt: number = playerHp(a, "b");
     assert.ok(hurt < PLAYER_MAX_HP, "b apanhou");
     assert.deepStrictEqual(z.castAbility("a", cast(heal.id, { targetId: "b" })), { ok: true });
@@ -414,12 +414,12 @@ describe("habilidades (cast)", () => {
     z.setLoadout("b", UNARMED_ATTACK, new Map());
     assert.deepStrictEqual(z.castAbility("a", cast(stance.id)), { ok: true });
     z.tick();
-    z.setAttackTarget("b", "a");
-    for (let i = 0; i < 40; i++) z.tick();
+    attackFor(z, "b", "a", 40);
     const reduced = a.events.filter((e) => e["type"] === "damage" && e["target"] === "a");
     assert.ok(reduced.length > 0);
     assert.ok(reduced.every((e) => e["amount"] === Math.round(UNARMED_ATTACK.damage * (1 - stance.damageReduction))), "metade");
     for (let i = 0; i < stance.reductionSeconds * TICK_RATE_HZ; i++) z.tick();
+    attackFor(z, "b", "a", 1);
     const later = a.events.filter((e) => e["type"] === "damage" && e["target"] === "a").at(-1);
     assert.strictEqual(later?.["amount"], UNARMED_ATTACK.damage, "acabou: dano cheio");
   });
@@ -436,24 +436,24 @@ describe("habilidades (cast)", () => {
     assert.strictEqual(z.getSnapshot("a")?.hp, PLAYER_MAX_HP, "cheia continua cheia");
   });
 
-  it("ataque simples de cura (Livro): alvo fixo é outro jogador e recebe cura a cada lançamento; boneco recusado", () => {
-    const tome = ITEMS["healer_tome"];
-    assert.ok(tome?.basicAttack);
-    const { z, a } = pair({ x: 0, z: -1 });
-    z.setLoadout("a", tome.basicAttack, ALL);
-    // b apanha antes, de a com o soco.
-    z.setLoadout("a", UNARMED_ATTACK, ALL);
-    z.setAttackTarget("a", "b");
-    for (let i = 0; i < 2 * TICK_RATE_HZ; i++) z.tick();
-    z.setLoadout("a", tome.basicAttack, ALL);
-    assert.strictEqual(z.setAttackTarget("a", "b"), "ok");
-    assert.strictEqual(z.setAttackTarget("a", "a"), "invalid_target", "você mesmo não");
-    z.setAttackTarget("a", "b");
-    for (let i = 0; i < 2 * TICK_RATE_HZ; i++) z.tick();
-    assert.ok(a.events.some((e) => e["type"] === "heal" && e["target"] === "b" && e["ability"] === tome.basicAttack?.id));
-
-    const withDummy = setup();
-    withDummy.z.setLoadout("a", tome.basicAttack, ALL);
-    assert.strictEqual(withDummy.z.setAttackTarget("a", "dummy"), "invalid_target");
+  it("ataque simples do Livro: raio em linha cura o primeiro aliado e fere o primeiro inimigo", () => {
+    const tome = ITEMS["healer_tome"]?.basicAttack;
+    assert.ok(tome);
+    // Sem PvP: o outro jogador é aliado (cura). O boneco é inimigo (dano).
+    const z = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: false, dummies: [{ id: "dummy", name: "B", x: 3, z: 0 }] });
+    const a = new Member("a");
+    const b = new Member("b");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, tome, ALL);
+    z.join(b, { x: 0, y: 0, z: -3, rotY: 0 }, UNARMED_ATTACK, new Map());
+    z.tick();
+    const flight: number = Math.ceil((3 / tome.projectileSpeed) * TICK_RATE_HZ) + 2;
+    assert.deepStrictEqual(strike(z, "a", "b"), { ok: true });
+    for (let i = 0; i < flight; i++) z.tick();
+    assert.ok(a.events.some((e) => e["type"] === "heal" && e["target"] === "b" && e["ability"] === tome.id), "curou o aliado");
+    assert.ok(!a.events.some((e) => e["type"] === "damage" && e["target"] === "b"), "aliado não toma dano");
+    for (let i = 0; i < tome.castTime * TICK_RATE_HZ; i++) z.tick();
+    assert.deepStrictEqual(strike(z, "a", "dummy"), { ok: true });
+    for (let i = 0; i < flight; i++) z.tick();
+    assert.ok(a.events.some((e) => e["type"] === "damage" && e["target"] === "dummy" && e["amount"] === tome.damage), "feriu o inimigo");
   });
 });

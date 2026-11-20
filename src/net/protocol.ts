@@ -59,10 +59,12 @@ import { isChatChannel, type ChatChannel } from "../social/chat.js";
  *   `colosseum_cancelled`/`colosseum_state`/`colosseum_result`; `kind`/`arena` no `welcome` (troca de cena pelo
  *   servidor); categorias `colosseum_1x1/2x2/3x3` no ranking; erros `in_colosseum` e `colosseum_*`.
  * v42: arma inicial ([CLI-09]): `weapon` no `choose_body` (uma das `STARTER_WEAPONS`; chega vestida).
+ * v43: ataque simples livre ([JOGO-05]): sai a mensagem `attack` (alvo fixo) e o `target` do `me`; o golpe vai como
+ *   `cast` com o id do ataque da arma e uma direção; `arc`/`maxTargets` no AbilityView e `arc` no `cast_start`.
  * v22: snapshot por diferença (só o que mudou, `gone`, `me` parcial), posição em cm, eventos só perto, limite da
  *   multidão ({@link SnapshotData}, mmo-docs [INFRA-11]).
  */
-export const PROTOCOL_VERSION = 42;
+export const PROTOCOL_VERSION = 43;
 
 /** Tipos de mensagem cliente → servidor. */
 export const ClientMessageType = {
@@ -156,9 +158,10 @@ export const ClientMessageType = {
    * item; as moedas vêm no `me` do snapshot), ou erro (`bag_full` deixa o item no baú).
    */
   ChestTake: "chest_take",
-  /** Fixa (ou limpa, com `null`) o alvo do ataque simples; o servidor ataca sozinho quando em alcance. Payload: {@link AttackData}. */
-  Attack: "attack",
-  /** Lança uma habilidade (carta) vestida. Payload: {@link CastData}. Ver mmo-docs [JOGO-06]. */
+  /**
+   * Lança uma habilidade (carta) vestida ou o ataque simples (o `abilityId` do ataque da arma, mira "direction":
+   * golpe livre na direção, sem alvo fixo, [JOGO-05]). Payload: {@link CastData}. Ver mmo-docs [JOGO-06].
+   */
   Cast: "cast",
   /**
    * Pede os atributos de outro jogador da zona (Menu → Jogadores Próximos → Atributos, mmo-docs [SOC-02]).
@@ -1065,12 +1068,6 @@ export interface CastData {
   readonly seq: number | null;
 }
 
-/** Payload de `attack`. */
-export interface AttackData {
-  /** Id do jogador ou boneco a atacar; `null` para parar de atacar. */
-  readonly targetId: string | null;
-}
-
 /** Payload de `inspect`. */
 export interface InspectData {
   /** Id do jogador cujos atributos se quer ver (pode ser você mesmo). */
@@ -1184,7 +1181,6 @@ export type ClientMessage =
   | { readonly type: typeof ClientMessageType.Fuse; readonly data: FuseData }
   | { readonly type: typeof ClientMessageType.Respawn; readonly data: Record<string, never> }
   | { readonly type: typeof ClientMessageType.ChestTake; readonly data: ChestTakeData }
-  | { readonly type: typeof ClientMessageType.Attack; readonly data: AttackData }
   | { readonly type: typeof ClientMessageType.Cast; readonly data: CastData }
   | { readonly type: typeof ClientMessageType.Inspect; readonly data: InspectData }
   | { readonly type: typeof ClientMessageType.GroupInvite; readonly data: GroupTargetData }
@@ -1293,7 +1289,7 @@ export type CombatEvent =
       readonly type: "cast_start";
       readonly source: string;
       readonly ability: string;
-      /** Alvo (mira "target" e ataque simples); "" nas outras miras. */
+      /** Alvo (mira "target"/"ally"); "" nas outras miras (inclusive o ataque simples, que é por direção). */
       readonly target: string;
       readonly duration: number;
       /** Ponto mirado (área) ou um ponto na direção (linha); para efeitos visuais. Ausente nas outras miras. */
@@ -1301,13 +1297,23 @@ export type CombatEvent =
       readonly z?: number;
       /** Raio da área (ou meia-largura da linha), em m: o cliente desenha o aviso no chão para todos. */
       readonly radius?: number;
-      /** Tipo de mira da habilidade (só cartas): "direction" = aviso em faixa, "area" = círculo. */
+      /** Tipo de mira da habilidade: "direction" = aviso em faixa (ou leque, com `arc`), "area" = círculo. */
       readonly aim?: string;
+      /**
+       * Golpe em leque ([JOGO-05]): abertura total em radianos, centrada na direção de (x, z); `radius` = alcance do
+       * leque (m). O cliente desenha o aviso em leque (monstros) ou o clarão do golpe (ataque simples). Ausente = linha.
+       */
+      readonly arc?: number;
       /**
        * Segundos antes do fim em que o tiro sai da mão (ataque do cajado, Raio; [JOGO-08]): o cliente lança o
        * projétil visual nesse instante; depois dele andar não cancela. Ausente = sem soltura antecipada.
        */
       readonly release?: number;
+      /**
+       * Golpe do ataque simples que já saiu ([JOGO-05]): o efeito foi na hora e `duration` é o tempo de execução. O
+       * cliente anima e mostra o clarão/projétil, sem aviso no chão nem barra de carregamento. Ausente nos outros.
+       */
+      readonly instant?: true;
     }
   | {
       /** Projétil saiu ([JOGO-08]): voa em linha reta de (x, z) na direção (dirX, dirZ) a `speed` m/s até `range` m. */
@@ -1352,8 +1358,6 @@ export interface OwnStatus {
   readonly maxMana: number;
   /** Segundos até renascer (0 = vivo). */
   readonly respawnIn: number;
-  /** Alvo fixo do ataque simples (`null` = nenhum). */
-  readonly target: string | null;
   /** Lançamento em andamento (`null` = nenhum): habilidade, alvo e segundos que faltam. */
   readonly casting: { readonly ability: string; readonly target: string; readonly remaining: number } | null;
   /**
@@ -1424,6 +1428,10 @@ export interface AbilityView {
   readonly shield: number;
   readonly shieldSeconds: number;
   readonly projectileSpeed: number;
+  /** Golpe em leque: abertura total em radianos (0 = linha). Prévia da mira do ⚔ ([JOGO-05]). */
+  readonly arc: number;
+  /** Golpe em leque: máximo de alvos (0 = todos). Só exibição. */
+  readonly maxTargets: number;
   /** Redução de dano (0..1) e por quantos segundos ([JOGO-09]). 0 = não tem. */
   readonly damageReduction: number;
   readonly reductionSeconds: number;
@@ -2428,15 +2436,6 @@ export function parseCastData(data: unknown): CastData | null {
   return { abilityId, targetId: target, x, z, seq };
 }
 
-/** Valida o payload de `attack`. */
-export function parseAttackData(data: unknown): AttackData | null {
-  if (!isRecord(data)) return null;
-  const { targetId } = data;
-  if (targetId === null || targetId === undefined) return { targetId: null };
-  if (typeof targetId !== "string" || targetId.length === 0 || targetId.length > 64) return null;
-  return { targetId };
-}
-
 /** Valida o payload de `inspect`. */
 export function parseInspectData(data: unknown): InspectData | null {
   if (!isRecord(data)) return null;
@@ -2765,10 +2764,6 @@ export function parseClientMessage(text: string): ClientMessage | null {
     case ClientMessageType.ChestTake: {
       const data = parseChestTakeData(raw);
       return data === null ? null : { type: ClientMessageType.ChestTake, data };
-    }
-    case ClientMessageType.Attack: {
-      const data = parseAttackData(raw);
-      return data === null ? null : { type: ClientMessageType.Attack, data };
     }
     case ClientMessageType.Cast: {
       const data = parseCastData(raw);

@@ -6,7 +6,7 @@ import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js"
 import { PLAYER_MAX_HP, PLAYER_MAX_MANA, PLAYER_RESPAWN_SECONDS } from "../src/combat/stats.js";
 import { playerFactor } from "../src/progression/level.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
-import { SnapshotView } from "./helpers.js";
+import { SnapshotView, keepAttacking } from "./helpers.js";
 
 /** Social, etapa 1 ([SOC-01], [SOC-02]): jogadores fake de teste e a mensagem de Atributos. */
 
@@ -121,14 +121,16 @@ describe("jogadores fake de teste", () => {
     assert.ok(!far.damaged.includes("fake_accept") && !far.damaged.includes("fake_reject"), "zumbi não bate no fake");
 
     // Jogador ao lado do Fake Recusa (x = 4), com PvP, bate nele.
-    const sword: AbilityDef = ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK;
+    // Golpe forte: o fake morre antes do zumbi (que bate em b) derrubar b.
+    const sword: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), damage: 30 };
     const b = new Member("b");
     z.join(b, { x: 5.5, y: 0, z: 0, rotY: 0 }, sword);
-    assert.strictEqual(z.setAttackTarget("b", "fake_reject"), "ok");
+    keepAttacking(z, "b", "fake_reject");
     ticks(z, 3);
     assert.ok(b.damaged.includes("fake_reject"), "jogador com PvP bate no fake");
     ticks(z, 30);
     assert.ok(b.deaths.includes("fake_reject"), "fake morre");
+    keepAttacking(z, "b", null);
     ticks(z, PLAYER_RESPAWN_SECONDS + 1);
     assert.strictEqual(b.field("fake_reject", "dead"), false);
     assert.deepStrictEqual([b.field("fake_reject", "x"), b.field("fake_reject", "z")], [4, 0], "renasce no lugar dele");

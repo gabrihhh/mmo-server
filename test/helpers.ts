@@ -1,5 +1,5 @@
 import { WebSocket, type RawData } from "ws";
-import type { ZoneConfig } from "../src/zones/Zone.js";
+import type { CastResult, Zone, ZoneConfig } from "../src/zones/Zone.js";
 import { TEST_FAKE_PLAYERS, ZONE_CONFIGS } from "../src/zones/zones.js";
 
 /** Mensagem recebida do servidor, decodificada mas sem validação (só para testes). */
@@ -156,4 +156,72 @@ export class SnapshotView {
       me: { ...this.me },
     };
   }
+}
+
+/**
+ * Golpe do ataque simples de `playerId` na direção de `targetId` ([JOGO-05]): o `cast` com o id do ataque da arma e a
+ * direção até o alvo (sem alvo: para a frente). O golpe sai na hora (projétil começa a voar no próximo tick).
+ */
+export function strike(zone: Zone, playerId: string, targetId: string): CastResult {
+  const from = zone.positionOf(playerId);
+  const to = zone.positionOf(targetId);
+  const x: number | null = from === undefined || to === undefined ? null : to.x - from.x;
+  const z: number | null = from === undefined || to === undefined ? null : to.z - from.z;
+  return zone.castAbility(playerId, { abilityId: zone.basicAttackId(playerId) ?? "", targetId: null, x, z, seq: null });
+}
+
+/**
+ * Bate em `targetId` durante `ticks` ticks, como quem fica tocando no ⚔ ([JOGO-05]): a cada tick tenta um golpe (o
+ * servidor recusa enquanto o anterior executa) e avança o tick. Para nos testes que só precisam de dano contínuo.
+ */
+export function attackFor(zone: Zone, playerId: string, targetId: string, ticks: number): void {
+  for (let i = 0; i < ticks; i++) {
+    strike(zone, playerId, targetId);
+    zone.tick();
+  }
+}
+
+/** Quem cada jogador fica atacando em cada zona ({@link keepAttacking}). */
+const ongoingAttacks: WeakMap<Zone, Map<string, string>> = new WeakMap();
+
+/**
+ * Faz `playerId` bater em `targetId` a cada tick de agora em diante (como quem fica tocando no ⚔ mirando nele,
+ * [JOGO-05]); `null` para. Troca o `tick` da zona por um que tenta o golpe antes de cada tick — substitui o antigo
+ * alvo fixo nos testes que só precisam de dano contínuo.
+ */
+export function keepAttacking(zone: Zone, playerId: string, targetId: string | null): void {
+  let attacks: Map<string, string> | undefined = ongoingAttacks.get(zone);
+  if (attacks === undefined) {
+    const fights: Map<string, string> = new Map();
+    attacks = fights;
+    ongoingAttacks.set(zone, fights);
+    const original: () => void = zone.tick.bind(zone);
+    zone.tick = (): void => {
+      for (const [attacker, target] of fights) strike(zone, attacker, target);
+      original();
+    };
+  }
+  if (targetId === null) attacks.delete(playerId);
+  else attacks.set(playerId, targetId);
+}
+
+/** Vida de um jogador ou NPC da zona, ou NaN. */
+export function hpIn(zone: Zone, id: string): number {
+  return zone.getSnapshot(id)?.hp ?? zone.npcSnapshots().find((npc) => npc.id === id)?.hp ?? NaN;
+}
+
+/**
+ * `true` se um golpe de `attacker` na direção de `target` tira vida dele (espera `ticks` ticks pelo projétil). Muda o
+ * estado (o dano fica). Para checar quem pode ser atingido (grupo, guilda, PvP, NPC aliado...).
+ */
+export function canHit(zone: Zone, attacker: string, target: string, ticks: number = 40): boolean {
+  const before: number = hpIn(zone, target);
+  strike(zone, attacker, target);
+  // Menor vida vista (a regeneração dos jogadores devolveria o soco em pouco tempo).
+  let lowest: number = hpIn(zone, target);
+  for (let i = 0; i < ticks; i++) {
+    zone.tick();
+    lowest = Math.min(lowest, hpIn(zone, target));
+  }
+  return lowest < before;
 }

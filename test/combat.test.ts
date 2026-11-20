@@ -4,7 +4,7 @@ import { Zone, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { DUMMY_MAX_HP, DUMMY_RESPAWN_SECONDS, PLAYER_MAX_HP, PLAYER_MAX_MANA, PLAYER_RESPAWN_SECONDS } from "../src/combat/stats.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
-import { SnapshotView } from "./helpers.js";
+import { SnapshotView, attackFor, strike } from "./helpers.js";
 
 /** Membro falso que guarda o último snapshot (decodificado). */
 class Member implements ZoneMember {
@@ -30,9 +30,10 @@ class Member implements ZoneMember {
   }
 }
 
-/** Ataque de espada só do teste, com os números da antiga espada de treino (saiu do jogo em 2026-11-17). */
+/** Ataque de espada só do teste: leque de 90° da espada do Cavaleiro, com números redondos. */
 const SWORD: AbilityDef = { ...(ITEMS["knight_sword"]?.basicAttack ?? UNARMED_ATTACK), id: "sword_attack", range: 2.5, cooldown: 1, castTime: 1, damage: 10 };
 const STAFF: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
+const DAGGERS: AbilityDef = ITEMS["assassin_daggers"]?.basicAttack ?? UNARMED_ATTACK;
 
 function zone(pvp: boolean = true): Zone {
   return new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp, dummies: [{ id: "dummy", name: "Boneco", x: 0, z: -2 }] });
@@ -65,129 +66,124 @@ describe("combate (ataque simples)", () => {
     assert.ok(typeof dummy === "object" && dummy !== null && !("mana" in dummy) && !("maxMana" in dummy));
   });
 
-  it("golpe tem tempo de lançamento: dano só no fim, 1 golpe por lançamento", () => {
+  it("golpe sai na hora (sem carregamento); outro só depois do tempo de execução", () => {
     const z = zone();
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
-    assert.strictEqual(z.setAttackTarget("a", "dummy"), "ok");
-    const castTicks: number = SWORD.castTime * TICK_RATE_HZ;
+    const execTicks: number = SWORD.castTime * TICK_RATE_HZ;
+    assert.deepStrictEqual(strike(z, "a", "dummy"), { ok: true });
     z.tick();
-    assert.ok(a.events().some((e) => e["type"] === "cast_start" && e["target"] === "dummy"), "começa o golpe");
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP, "ainda sem dano");
-    for (let i = 1; i < castTicks; i++) z.tick();
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP, "não acerta antes do fim do lançamento");
+    const start = a.events().find((e) => e["type"] === "cast_start");
+    assert.ok(start !== undefined && start["instant"] === true && start["target"] === "" && start["arc"] === SWORD.arc, "cast_start do golpe livre");
+    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - SWORD.damage, "dano na hora");
+    for (let i = 0; i < execTicks - 4; i++) {
+      const refused = strike(z, "a", "dummy");
+      assert.ok(!refused.ok && refused.reason === "busy", "golpe anterior ainda executando");
+      z.tick();
+    }
+    for (let i = 0; i < 4; i++) z.tick();
+    assert.deepStrictEqual(strike(z, "a", "dummy"), { ok: true }, "acabou a execução: sai outro");
     z.tick();
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - SWORD.damage);
-    assert.ok(a.events().some((e) => e["type"] === "damage" && e["amount"] === SWORD.damage));
-    for (let i = 0; i < castTicks; i++) z.tick();
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - 2 * SWORD.damage, "segundo golpe 1 lançamento depois");
+    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP - 2 * SWORD.damage);
   });
 
-  it("durante o golpe fica virado para o alvo", () => {
+  it("vira para a direção do golpe", () => {
     const z = zone();
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 0, rotY: Math.PI / 2 }, SWORD); // de lado para o boneco
-    z.setAttackTarget("a", "dummy"); // boneco em (0, -2): à frente (-Z) → rotY 0
+    strike(z, "a", "dummy"); // boneco em (0, -2): à frente (-Z) → rotY 0
     z.tick();
     const rot: number | undefined = z.getSnapshot("a")?.rotY;
     assert.ok(rot !== undefined && Math.abs(Math.atan2(Math.sin(rot), Math.cos(rot))) < 0.2, `virado para o boneco (rotY=${rot})`);
   });
 
-  it("andar durante o golpe cancela (cast_cancel), sem dano nem miss", () => {
-    const z = zone();
+  it("espada: leque de 90° acerta todos dentro; fora do ângulo ou do alcance, não", () => {
+    const z = new Zone({
+      id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true,
+      dummies: [
+        { id: "frente", name: "B", x: 0, z: -2 },
+        { id: "diagonal", name: "B", x: 1.2, z: -1.6 }, // ~37° da frente: dentro dos 45°
+        { id: "lado", name: "B", x: 2, z: 0 }, // 90°: fora
+        { id: "atras", name: "B", x: 0, z: 2 },
+        { id: "longe", name: "B", x: 0, z: -4 },
+      ],
+    });
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
-    z.setAttackTarget("a", "dummy");
-    z.tick(); // começa o golpe em alcance
-    let seq = 0;
-    let cancelled = false;
-    let missed = false;
-    for (let i = 0; i < SWORD.castTime * TICK_RATE_HZ; i++) {
-      z.queueInput("a", { seq: ++seq, x: 0, z: 1 }); // se afasta do boneco (que está em -Z)
+    z.castAbility("a", { abilityId: SWORD.id, targetId: null, x: 0, z: -1, seq: null });
+    z.tick();
+    const hit = new Set(a.events().filter((e) => e["type"] === "damage").map((e) => e["target"]));
+    assert.deepStrictEqual([...hit].sort(), ["diagonal", "frente"]);
+  });
+
+  it("adagas: um alvo só (o mais perto) e o golpe vem com um passo à frente", () => {
+    const z = new Zone({
+      id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: true, moveBuffer: 1,
+      dummies: [{ id: "perto", name: "B", x: 0, z: -3 }, { id: "atras_dele", name: "B", x: 0.3, z: -3.5 }],
+    });
+    const a = new Member("a");
+    z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, DAGGERS);
+    // Com seq: vai na fila de movimento (o cliente prevê o passo, [JOGO-07]).
+    assert.deepStrictEqual(z.castAbility("a", { abilityId: DAGGERS.id, targetId: null, x: 0, z: -1, seq: 1 }), { ok: true });
+    z.tick();
+    const hits = a.events().filter((e) => e["type"] === "damage");
+    assert.strictEqual(hits.length, 1, "um alvo");
+    assert.strictEqual(hits[0]?.["target"], "perto", "o mais perto (alcançado graças ao passo)");
+    let seq = 1;
+    for (let i = 0; i < DAGGERS.dashSeconds * TICK_RATE_HZ + 1; i++) {
+      z.queueInput("a", { seq: ++seq, x: 0, z: 0 });
       z.tick();
-      cancelled ||= a.events().some((e) => e["type"] === "cast_cancel" && e["source"] === "a");
-      missed ||= a.events().some((e) => e["type"] === "miss");
     }
-    assert.ok(cancelled, "cancelou");
-    assert.ok(!missed, "sem miss");
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP);
+    const after: number = z.getSnapshot("a")?.z ?? 0;
+    assert.ok(Math.abs(after + DAGGERS.dashDistance) < 0.05, `andou ${DAGGERS.dashDistance} m (z=${after})`);
   });
 
-  it("cajado: andar ANTES do tiro sair cancela; DEPOIS, o tiro chega mesmo se ele se afastar", () => {
-    assert.ok(STAFF.releaseTime > 0, "cajado tem soltura antecipada");
-    const castTicks: number = Math.ceil(STAFF.castTime * TICK_RATE_HZ);
-    const releaseTicks: number = Math.ceil(STAFF.releaseTime * TICK_RATE_HZ);
-    const run = (walkFromTick: number): { cancelled: boolean; damaged: boolean } => {
-      const z = zone();
-      const a = new Member("a");
-      z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, STAFF);
-      z.setAttackTarget("a", "dummy"); // boneco em (0, -2)
-      z.tick(); // tick 1: começa o golpe
-      let cancelled = false;
-      let damaged = false;
-      let seq = 0;
-      for (let t = 2; t <= castTicks + 2; t++) {
-        if (t >= walkFromTick) z.queueInput("a", { seq: ++seq, x: 0, z: 1 }); // se afasta
-        z.tick();
-        cancelled ||= a.events().some((e) => e["type"] === "cast_cancel");
-        damaged ||= a.events().some((e) => e["type"] === "damage" && e["ability"] === STAFF.id);
-      }
-      return { cancelled, damaged };
-    };
-    const early = run(3);
-    assert.ok(early.cancelled && !early.damaged, "andou antes de sair: cancelou, sem dano");
-    const late = run(1 + castTicks - releaseTicks + 1);
-    assert.ok(!late.cancelled && late.damaged, "andou depois de sair: o tiro chegou");
-  });
-
-  it("cast_start do cajado leva release (s antes do fim em que o tiro sai)", () => {
+  it("cajado: faísca em linha acerta o primeiro inimigo do caminho; dá para desviar", () => {
     const z = zone();
     const a = new Member("a");
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, STAFF);
-    z.setAttackTarget("a", "dummy");
-    z.tick();
-    const start = a.events().find((e) => e["type"] === "cast_start");
-    assert.ok(start !== undefined && typeof start["release"] === "number" && Math.abs(start["release"] - 0.3) < 0.051);
+    strike(z, "a", "dummy");
+    let hit = false;
+    for (let i = 0; i < TICK_RATE_HZ; i++) {
+      z.tick();
+      hit ||= a.events().some((e) => e["type"] === "damage" && e["target"] === "dummy" && e["amount"] === STAFF.damage);
+    }
+    assert.ok(hit, "acertou o boneco na linha");
+    const before: number = hpOf(a, "dummy");
+    z.castAbility("a", { abilityId: STAFF.id, targetId: null, x: 1, z: 0, seq: null }); // para o lado: erra
+    for (let i = 0; i < TICK_RATE_HZ; i++) z.tick();
+    assert.strictEqual(hpOf(a, "dummy"), before, "tiro para outro lado não acerta");
   });
 
-  it("fora de alcance não bate (mas o alvo continua fixo)", () => {
-    const z = zone();
-    const a = new Member("a");
-    z.join(a, { x: 50, y: 0, z: 50, rotY: 0 }, SWORD);
-    z.setAttackTarget("a", "dummy");
-    for (let i = 0; i < 40; i++) z.tick();
-    assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP);
-    const me: unknown = a.last["me"];
-    assert.ok(typeof me === "object" && me !== null && "target" in me && me.target === "dummy");
-  });
-
-  it("boneco morre, perde o alvo de quem batia e reaparece", () => {
+  it("boneco morre e reaparece", () => {
     const z = zone();
     const a = new Member("a");
     const hit: AbilityDef = { ...SWORD, damage: DUMMY_MAX_HP, cooldown: 0.05, castTime: 0.05 };
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, hit);
-    z.setAttackTarget("a", "dummy");
-    // Golpe de 0,05 s: sai em poucos ticks (quantos depende da taxa de ticks).
-    for (let i = 0; i < 5 && !a.events().some((e) => e["type"] === "death" && e["id"] === "dummy"); i++) z.tick();
+    strike(z, "a", "dummy");
+    z.tick();
     assert.ok(a.events().some((e) => e["type"] === "death" && e["id"] === "dummy" && e["killer"] === "a"));
-    assert.strictEqual(z.setAttackTarget("a", "dummy"), "invalid_target", "morto não é alvo");
     for (let i = 0; i < DUMMY_RESPAWN_SECONDS * TICK_RATE_HZ; i++) z.tick();
     assert.strictEqual(hpOf(a, "dummy"), DUMMY_MAX_HP);
   });
 
-  it("PvP: jogador é alvo só com pvp ligado; nunca você mesmo", () => {
+  it("PvP: o golpe acerta jogador só com pvp ligado; nunca você mesmo", () => {
     const on = zone(true);
-    on.join(new Member("a"), { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    const a = new Member("a");
+    on.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     on.join(new Member("b"), { x: 1, y: 0, z: 0, rotY: 0 }, SWORD);
-    assert.strictEqual(on.setAttackTarget("a", "b"), "ok");
-    assert.strictEqual(on.setAttackTarget("a", "a"), "invalid_target");
-    assert.strictEqual(on.setAttackTarget("a", "ninguem"), "invalid_target");
+    strike(on, "a", "b");
+    on.tick();
+    assert.ok(a.events().some((e) => e["type"] === "damage" && e["target"] === "b"));
+    assert.ok(!a.events().some((e) => e["type"] === "damage" && e["target"] === "a"));
 
     const off = zone(false);
-    off.join(new Member("a"), { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+    const c = new Member("a");
+    off.join(c, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     off.join(new Member("b"), { x: 1, y: 0, z: 0, rotY: 0 }, SWORD);
-    assert.strictEqual(off.setAttackTarget("a", "b"), "invalid_target");
-    assert.strictEqual(off.setAttackTarget("a", "dummy"), "ok", "monstro continua valendo");
+    strike(off, "a", "b");
+    off.tick();
+    assert.ok(!c.events().some((e) => e["type"] === "damage" && e["target"] === "b"), "sem pvp: não acerta");
   });
 
   it("jogador morto não anda, renasce com vida cheia e regenera", () => {
@@ -197,8 +193,7 @@ describe("combate (ataque simples)", () => {
     const lethal: AbilityDef = { ...SWORD, damage: PLAYER_MAX_HP, cooldown: 0.05, castTime: 0.05 };
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, lethal);
     z.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, SWORD);
-    z.setAttackTarget("a", "b");
-    for (let i = 0; i < 5 && z.getSnapshot("b")?.dead !== true; i++) z.tick();
+    attackFor(z, "a", "b", 1);
     assert.strictEqual(z.getSnapshot("b")?.dead, true);
     z.queueInput("b", { seq: 1, x: 1, z: 0 });
     z.tick();

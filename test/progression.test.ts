@@ -18,7 +18,8 @@ import { Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
 import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js";
 import { PLAYER_MAX_HP, PLAYER_MAX_MANA } from "../src/combat/stats.js";
 import type { Progress } from "../src/progression/level.js";
-import { SnapshotView } from "./helpers.js";
+import { TICK_RATE_HZ } from "../src/sim/movement.js";
+import { SnapshotView, keepAttacking } from "./helpers.js";
 
 /** Membro falso: guarda o último snapshot e o progresso salvo. */
 class Member implements ZoneMember {
@@ -219,7 +220,7 @@ describe("zumbis", () => {
     const zone = zoneWith([zombieConfig("fighter", 0, 0)]);
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 6, rotY: 0 }, SWORD);
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     // Bate até ele levar dano e foge para +Z (mais rápido que o zumbi).
     let seq = 0;
     for (let i = 0; i < 40; i++) zone.tick();
@@ -242,7 +243,7 @@ describe("zumbis", () => {
     zone.join(a, { x: 0, y: 0, z: 8.4, rotY: 0 }, staff);
     ticks(zone, 20);
     assert.strictEqual(a.field("zombie", "z"), 0, "parado antes de apanhar");
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     ticks(zone, 60);
     const z: unknown = a.field("zombie", "z");
     assert.ok(typeof z === "number" && z > 1, `veio atrás (z=${String(z)})`);
@@ -252,7 +253,7 @@ describe("zumbis", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     let died = false;
     for (let i = 0; i < 60 && !died; i++) {
       zone.tick();
@@ -282,7 +283,7 @@ describe("zumbis", () => {
     const info = zone.npcSnapshots().find((n) => n.id === "zombie");
     assert.strictEqual(info?.scale, 2.5);
     assert.strictEqual(info?.boss, true);
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     let died = false;
     for (let i = 0; i < 60 && !died; i++) {
       zone.tick();
@@ -310,8 +311,8 @@ describe("zumbis", () => {
     const staff: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, staff);
-    zone.setAttackTarget("a", "zombie");
-    zone.setAttackTarget("b", "zombie");
+    keepAttacking(zone, "a", "zombie");
+    keepAttacking(zone, "b", "zombie");
     let died = false;
     for (let i = 0; i < 600 && !died; i++) {
       zone.tick();
@@ -328,12 +329,12 @@ describe("zumbis", () => {
     const healer = new Member("healer");
     const idle = new Member("idle");
     const tome: AbilityDef = ITEMS["healer_tome"]?.basicAttack ?? UNARMED_ATTACK;
-    assert.ok(tome.heal > 0 && tome.aim === "ally", "o ataque do livro cura um aliado");
+    assert.ok(tome.heal > 0 && tome.projectileSpeed > 0, "o ataque do livro é um raio que cura aliado");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     zone.join(healer, { x: 3, y: 0, z: 0, rotY: 0 }, tome);
     zone.join(idle, { x: -3, y: 0, z: 0, rotY: 0 }, SWORD);
-    zone.setAttackTarget("a", "zombie");
-    zone.setAttackTarget("healer", "a");
+    keepAttacking(zone, "a", "zombie");
+    keepAttacking(zone, "healer", "a");
     let died = false;
     for (let i = 0; i < 600 && !died; i++) {
       zone.tick();
@@ -351,14 +352,14 @@ describe("zumbis", () => {
     const b = new Member("b");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
     // a bate uma vez e foge para longe (o zumbi vai atrás, passa de 20 m de casa e desiste).
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     let hit = false;
     for (let i = 0; i < 100 && !hit; i++) {
       zone.tick();
       hit = a.events("damage").some((e) => e["target"] === "zombie" && e["source"] === "a");
     }
     assert.ok(hit, "a bateu");
-    zone.setAttackTarget("a", null);
+    keepAttacking(zone, "a", null);
     let seq = 0;
     for (let i = 0; i < 200; i++) {
       zone.queueInput("a", { seq: ++seq, x: 1, z: 0 });
@@ -366,7 +367,7 @@ describe("zumbis", () => {
     }
     ticks(zone, 300); // volta para casa e enche a vida
     zone.join(b, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
-    zone.setAttackTarget("b", "zombie");
+    keepAttacking(zone, "b", "zombie");
     let died = false;
     for (let i = 0; i < 600 && !died; i++) {
       zone.tick();
@@ -377,34 +378,37 @@ describe("zumbis", () => {
     assert.strictEqual(a.saved, null, "a lutou antes da desistência: não ganha");
   });
 
-  it("alvo morreu: quem atacava solta o alvo e o golpe em andamento é cancelado (não fica travado no corpo)", () => {
-    const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
-    const a = new Member("a");
-    const b = new Member("b");
-    const staff: AbilityDef = ITEMS["arcane_staff"]?.basicAttack ?? UNARMED_ATTACK;
-    zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
-    // b começa a golpear depois (cajado, lançamento mais longo): quando a espada de a mata, o golpe de b está no meio.
-    zone.join(b, { x: 1, y: 0, z: 0, rotY: 0 }, staff);
-    zone.setAttackTarget("a", "zombie");
-    zone.setAttackTarget("b", "zombie");
-    let died = false;
-    for (let i = 0; i < 60 && !died; i++) {
-      zone.tick();
-      died = a.events("death").some((e) => e["id"] === "zombie");
-    }
-    assert.ok(died, "zumbi morreu");
-    for (const member of [a, b]) {
-      assert.strictEqual(member.me()["target"], null, `${member.id}: alvo solto`);
-      assert.strictEqual(member.me()["casting"], null, `${member.id}: sem golpe preso no corpo`);
-    }
-    assert.ok(b.events("cast_cancel").some((e) => e["source"] === "b"), "o golpe de b foi cancelado (cliente para a animação)");
+  it("golpe do zumbi é por direção com aviso no chão: quem sai a tempo não toma; quem fica, toma", () => {
+    const run = (dodge: boolean): number => {
+      // Zumbi parado (speed 0) bem na frente; estoque de passos 1 (o passo vale no tick em que chega).
+      const config: DummyConfig = { ...zombieConfig("fighter", 0, -1.5), behavior: { kind: "zombie", attack: "zombie_punch", ability: "zombie_bash", aggroRadius: 8, leashRadius: 20, speed: 0 } };
+      const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 10, spawnRadius: 0, pvp: false, moveBuffer: 1, dummies: [config] });
+      const a = new Member("a");
+      zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD);
+      let started = false;
+      for (let i = 0; i < 60 && !started; i++) {
+        zone.tick();
+        started = a.events("cast_start").some((e) => e["source"] === "zombie" && e["aim"] === "direction");
+      }
+      assert.ok(started, "zumbi começou um golpe com aviso");
+      let seq = 0;
+      let damage = 0;
+      for (let i = 0; i < TICK_RATE_HZ; i++) {
+        if (dodge) zone.queueInput("a", { seq: ++seq, x: 1, z: 0 }); // sai para o lado
+        zone.tick();
+        damage += a.events("damage").filter((e) => e["target"] === "a").length;
+      }
+      return damage;
+    };
+    assert.strictEqual(run(true), 0, "saiu do aviso: não tomou");
+    assert.ok(run(false) > 0, "ficou: tomou");
   });
 
   it("subir de nível manda `level_up` para todos e aumenta vida/mana máximas", () => {
     const zone = zoneWith([{ ...zombieConfig("fighter", 0, -2), maxHp: 1 }]);
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD, new Map(), undefined, 0, { level: 0, xp: 90, gold: 0 });
-    zone.setAttackTarget("a", "zombie");
+    keepAttacking(zone, "a", "zombie");
     let levelUp: Record<string, unknown> | undefined;
     for (let i = 0; i < 60 && levelUp === undefined; i++) {
       zone.tick();

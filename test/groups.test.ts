@@ -6,7 +6,7 @@ import { ITEMS, UNARMED_ATTACK, type AbilityDef } from "../src/items/catalog.js"
 import { goldReward, groupXp, xpReward, type Progress } from "../src/progression/level.js";
 import { GROUP_INVITE_SECONDS, GROUP_MAX_MEMBERS, GROUP_POSITIONS_HZ, type CastData } from "../src/net/protocol.js";
 import { TICK_RATE_HZ } from "../src/sim/movement.js";
-import { SnapshotView } from "./helpers.js";
+import { SnapshotView, keepAttacking, canHit } from "./helpers.js";
 
 /** Grupo ([SOC-03]): convite, líder, saída, sem dano entre membros e XP do grupo. */
 
@@ -269,13 +269,13 @@ describe("grupo ([SOC-03])", () => {
     const b = new Member("b");
     const c = new Member("c");
     z.join(a, { x: 0, y: 0, z: 0, rotY: 0 }, SWORD, new Map([[meteor.id, meteor]]));
-    z.join(b, { x: 0, y: 0, z: -5, rotY: 0 }, SWORD);
-    z.join(c, { x: 0.5, y: 0, z: -5, rotY: 0 }, SWORD);
+    z.join(b, { x: 0, y: 0, z: -2, rotY: 0 }, SWORD);
+    z.join(c, { x: 0.5, y: 0, z: -2, rotY: 0 }, SWORD);
     form(z, a, b);
-    assert.strictEqual(z.setAttackTarget("a", "b"), "invalid_target", "membro não é alvo");
-    assert.strictEqual(z.setAttackTarget("a", "c"), "ok", "de fora, com PvP, é");
-    z.setAttackTarget("a", null);
-    const request: CastData = { abilityId: meteor.id, targetId: null, x: 0, z: -5, seq: null };
+    // O leque da espada pega os dois: só o de fora toma dano.
+    assert.ok(!canHit(z, "a", "b"), "membro não é atingido");
+    assert.ok(canHit(z, "a", "c"), "de fora, com PvP, é");
+    const request: CastData = { abilityId: meteor.id, targetId: null, x: 0, z: -2, seq: null };
     assert.deepStrictEqual(z.castAbility("a", request), { ok: true });
     for (let i = 0; i < Math.ceil(meteor.castTime * TICK_RATE_HZ) + 2; i++) z.tick();
     assert.ok(a.hpOf("c") < a.hpOf("b"), `C tomou dano (${a.hpOf("c")}), B não (${a.hpOf("b")})`);
@@ -303,7 +303,7 @@ describe("grupo ([SOC-03])", () => {
     z.join(far, { x: GROUP_XP_RADIUS + 10, y: 0, z: 0, rotY: 0 }, SWORD);
     z.join(outsider, { x: -20, y: 0, z: 0, rotY: 0 }, SWORD);
     form(z, a, near, far);
-    z.setAttackTarget("a", "zombie");
+    keepAttacking(z, "a", "zombie");
     let died = false;
     for (let i = 0; i < 600 && !died; i++) {
       z.tick();

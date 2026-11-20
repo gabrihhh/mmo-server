@@ -1,7 +1,7 @@
 import assert from "assert";
 
 import { MAX_VIEW_PLAYERS, VIEW_RADIUS, Zone, type DummyConfig, type ZoneMember } from "../src/zones/Zone.js";
-import { SnapshotView } from "./helpers.js";
+import { SnapshotView, keepAttacking } from "./helpers.js";
 import { UNARMED_ATTACK } from "../src/items/catalog.js";
 import { TICK_RATE_HZ, quantize } from "../src/sim/movement.js";
 
@@ -36,7 +36,7 @@ const dummy = (id: string, x: number, z: number): DummyConfig => ({ id, name: id
 
 /** Área de interesse ([INFRA-04]): cada jogador recebe só quem está perto, ele mesmo e o alvo dele. */
 describe("área de interesse do snapshot", () => {
-  it("manda só jogadores e NPCs até VIEW_RADIUS m; o alvo vem mesmo longe", () => {
+  it("manda só jogadores e NPCs até VIEW_RADIUS m", () => {
     const zone = new Zone({
       id: "t",
       halfSize: 150,
@@ -56,9 +56,7 @@ describe("área de interesse do snapshot", () => {
     assert.deepStrictEqual(a.npcs, ["perto"]);
     assert.deepStrictEqual(c.players, ["c"]);
     assert.deepStrictEqual(c.npcs, []);
-    zone.setAttackTarget("a", "alvo");
-    zone.tick();
-    assert.deepStrictEqual(a.npcs.sort(), ["alvo", "perto"]);
+
   });
 
   it("só manda o que mudou: parado não vai de novo; andou vai só a posição ([INFRA-11])", () => {
@@ -101,7 +99,7 @@ describe("área de interesse do snapshot", () => {
     assert.ok(typeof entry === "object" && entry !== null && "hp" in entry && "maxHp" in entry && "x" in entry, "entrou: todos os campos");
   });
 
-  it("multidão: no máximo MAX_VIEW_PLAYERS na vista (os mais perto), o alvo entra sempre", () => {
+  it("multidão: no máximo MAX_VIEW_PLAYERS na vista (os mais perto)", () => {
     const zone = new Zone({ id: "t", halfSize: 150, maxPlayers: 200, spawnRadius: 0, pvp: true, dummies: [] });
     const a = new Member("a");
     zone.join(a, { x: 0, y: 0, z: 0, rotY: 0 });
@@ -109,9 +107,7 @@ describe("área de interesse do snapshot", () => {
     zone.tick();
     assert.strictEqual(a.players.length, MAX_VIEW_PLAYERS + 1, "os 40 mais perto + ele mesmo");
     assert.ok(!a.players.includes("p" + (MAX_VIEW_PLAYERS + 9)), "o mais longe ficou de fora");
-    zone.setAttackTarget("a", "p" + (MAX_VIEW_PLAYERS + 9));
-    zone.tick();
-    assert.ok(a.players.includes("p" + (MAX_VIEW_PLAYERS + 9)), "o alvo entra mesmo fora do limite");
+
   });
 
   it("eventos de combate longe não chegam; troca de roupa chega a todos", () => {
@@ -128,7 +124,7 @@ describe("área de interesse do snapshot", () => {
     };
     zone.join(far, { x: -100, y: 0, z: 0, rotY: 0 });
     zone.join(new Member("fighter"), { x: 100, y: 0, z: 1, rotY: 0 });
-    zone.setAttackTarget("fighter", "boneco");
+    keepAttacking(zone, "fighter", "boneco");
     for (let i = 0; i < 40; i++) zone.tick();
     assert.ok(!events.includes("damage") && !events.includes("cast_start"), "a luta a 200 m não chega");
     zone.setLoadout("fighter", UNARMED_ATTACK, new Map(), { hand: "arcane_staff", head: null, chest: null, feet: null });
