@@ -1,10 +1,11 @@
-import type { AttributeId } from "../items/attributes.js";
-import type { EquipSlot } from "../items/catalog.js";
+import { EQUIP_SLOTS, getItem, type EquipSlot } from "../items/catalog.js";
+import { attributesForSet, type AttributeId } from "../items/attributes.js";
 import {
   ServerMessageType,
   encodeServerMessage,
   type BodyType,
   type ColosseumMemberView,
+  type ColosseumPieceView,
   type ColosseumStateData,
   type ServerMessage,
 } from "../net/protocol.js";
@@ -161,6 +162,13 @@ export class Colosseum {
     const members = match.members();
     const view = (team: TeamIndex): ColosseumMemberView[] =>
       members.filter((m) => m.team === team).map((m) => ({ id: m.id, name: m.name, build: m.build, abandoned: m.abandoned }));
+    const inventory = match.inventoryOf(playerId);
+    const pieces: ColosseumPieceView[] = [];
+    for (const slot of EQUIP_SLOTS) {
+      const stack = inventory?.equipped[slot] ?? null;
+      const set: string = stack === null ? "" : (getItem(stack.itemId)?.set ?? "");
+      if (stack !== null) pieces.push({ slot, set, itemId: stack.itemId, attrs: stack.attrs ?? {}, allowed: attributesForSet(set) });
+    }
     return {
       mode: match.mode,
       phase: match.phase,
@@ -170,6 +178,7 @@ export class Colosseum {
       choicesLeft: match.choicesLeft(playerId),
       team: match.teamOf(playerId) ?? 0,
       teams: [view(0), view(1)],
+      pieces,
     };
   }
 

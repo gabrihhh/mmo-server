@@ -1939,6 +1939,20 @@ export interface ColosseumStateData {
   readonly team: 0 | 1;
   /** Os dois times. */
   readonly teams: readonly [readonly ColosseumMemberView[], readonly ColosseumMemberView[]];
+  /** As suas 4 peças de arena (tela das 20 escolhas): conjunto, item, pontos e os atributos que aceitam. */
+  readonly pieces: readonly ColosseumPieceView[];
+}
+
+/** Uma peça de arena de quem recebe o placar ([JOGO-28]). */
+export interface ColosseumPieceView {
+  readonly slot: EquipSlotName;
+  /** Conjunto escolhido na build. */
+  readonly set: string;
+  readonly itemId: string;
+  /** Pontos de atributo que a peça já tem. */
+  readonly attrs: Readonly<Partial<Record<AttributeId, number>>>;
+  /** Atributos que a peça aceita (os do conjunto, [JOGO-16]): novo +1, repetido +2. */
+  readonly allowed: readonly AttributeId[];
 }
 
 /** Payload de `colosseum_result`: como acabou para você e o prêmio (já aplicado na conta). */

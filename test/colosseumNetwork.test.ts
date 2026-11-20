@@ -100,6 +100,12 @@ describe("Coliseu pela rede (colosseum_*)", () => {
     a.client.send("colosseum_point", { slot: "chest", attribute: "defense" });
     const state: ReceivedMessage = await a.client.nextMatching("colosseum_state", (m) => m.data["choicesLeft"] === 19);
     assert.strictEqual(state.data["phase"], "prep");
+    // As peças vêm no placar: a do peito (Cavaleiro) já com o ponto e os atributos que aceita.
+    const pieces: unknown = state.data["pieces"];
+    assert.ok(Array.isArray(pieces) && pieces.length === 4);
+    const chest: unknown = pieces.find((p: unknown) => typeof p === "object" && p !== null && Reflect.get(p, "slot") === "chest");
+    assert.deepStrictEqual(Reflect.get(chest as object, "attrs"), { defense: 1 });
+    assert.ok((Reflect.get(chest as object, "allowed") as unknown[]).includes("defense"));
 
     // Ninguém se mexe: os rounds acabam no tempo empatados (vida e dano iguais) até o limite de 9.
     const result: ReceivedMessage = await a.client.next("colosseum_result", 15000);
