@@ -212,6 +212,12 @@ describe("Coliseu — partida", () => {
     assert.strictEqual(match.reconnect("b", (): void => {}), true);
     run(match, 1, ["a", "b"]);
     assert.deepStrictEqual(hooks.abandons, []);
+    // Voltar depois de muito tempo parado não cai em AFK na hora (o AFK recomeça na volta).
+    match.disconnect("b");
+    run(match, AFK_SECONDS + 5, ["a"]);
+    assert.strictEqual(match.reconnect("b", (): void => {}), true);
+    run(match, 1, ["a"]);
+    assert.deepStrictEqual(hooks.abandons, [], "voltou e não foi expulso por AFK");
     match.disconnect("b");
     run(match, RECONNECT_SECONDS + 0.5, ["a", "b"]);
     assert.deepStrictEqual(hooks.abandons, [{ id: "b", reason: "timeout" }]);

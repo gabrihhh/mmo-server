@@ -2931,6 +2931,11 @@ export class Zone {
     this.events.push({ type: "death", id, killer: id });
   }
 
+  /** Conta como "fez algo agora" para o AFK da arena (quem acabou de voltar de uma queda, [JOGO-28]). */
+  markActive(id: string): void {
+    if (this.players.has(id)) this.lastActionTick.set(id, this.currentTick);
+  }
+
   /** Último tick em que `id` andou, lançou ou escolheu alvo (AFK da arena); `undefined` fora da zona. */
   lastActionTickOf(id: string): number | undefined {
     return this.lastActionTick.get(id);
@@ -3202,7 +3207,8 @@ export class Zone {
     return {
       mana: round1(player.mana),
       maxMana: player.maxMana,
-      respawnIn: player.dead ? round1(Math.max(0, player.respawnTick - this.currentTick) * TICK_SECONDS) : 0,
+      // Arena ([JOGO-28]): morto não renasce no round (tick infinito) → 0, não Infinity (vira null no JSON).
+      respawnIn: player.dead && Number.isFinite(player.respawnTick) ? round1(Math.max(0, player.respawnTick - this.currentTick) * TICK_SECONDS) : 0,
       target: player.attackTarget,
       casting:
         player.cast === null

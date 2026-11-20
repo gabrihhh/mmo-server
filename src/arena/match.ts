@@ -283,6 +283,8 @@ export class ArenaMatch {
     if (player === undefined || player.abandoned) return false;
     player.disconnectedTick = null;
     player.send = send;
+    // O AFK conta de novo a partir de agora (parado enquanto estava fora não é AFK).
+    this.zone.markActive(id);
     return true;
   }
 
